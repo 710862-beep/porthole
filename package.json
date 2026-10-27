@@ -1,0 +1,15 @@
+{
+  "name": "porthole-webos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebOS estilo Windows 10 no navegador, com DOOM em WebAssembly. O app roda sem npm; estas dependencias existem apenas para os testes headless.",
+  "scripts": {
+    "test": "node tests/node/smoke-wasm.mjs && node tests/node/inline-wasm-test.mjs && node tests/node/dom-integration.mjs",
+    "test:wasm": "node tests/node/smoke-wasm.mjs",
+    "test:dom": "node tests/node/dom-integration.mjs",
+    "serve": "python3 -m http.server 8000 --bind 0.0.0.0"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
