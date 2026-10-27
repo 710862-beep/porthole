@@ -1,0 +1,505 @@
+/* ==========================================================================
+   Porthole WebOS — folha de estilo "Windows 10"
+   CSS puro, sem frameworks, sem pré-processadores.
+   Paleta Win10: fundo #0078d7 (azul de destaque), taskbar #1f1f1f,
+   superfícies #2d2d30 / #f0f0f0 (claro no corpo das janelas).
+   ========================================================================== */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Segoe UI", "Segoe UI Variable", system-ui, -apple-system, Roboto, sans-serif;
+  font-size: 13px;
+  color: #1b1b1b;
+  user-select: none;
+}
+
+button { font-family: inherit; }
+
+:root {
+  --accent: #0078d7;
+  --accent-light: #1a86d9;
+  --taskbar-h: 40px;
+  --titlebar-h: 32px;
+  --dark: #1f1f1f;
+  --dark-2: #2b2b2b;
+  --border-dark: #0d0d0d;
+  --ok: #107c10;
+  --fail: #c42b1c;
+  --warn: #ffb900;
+}
+
+/* --------------------------------------------------------------------------
+   Tela de boot
+   -------------------------------------------------------------------------- */
+#boot-screen {
+  position: fixed; inset: 0; z-index: 100000;
+  background: #000; color: #fff;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 26px;
+  transition: opacity .5s ease;
+}
+#boot-screen.fade-out { opacity: 0; pointer-events: none; }
+
+.boot-logo { display: grid; grid-template-columns: repeat(2, 34px); gap: 5px; }
+.boot-logo span {
+  width: 34px; height: 34px;
+  background: linear-gradient(135deg, #55b7ff, #0b6fce);
+  animation: bootPulse 1.6s ease-in-out infinite;
+}
+.boot-logo span:nth-child(2) { animation-delay: .15s; }
+.boot-logo span:nth-child(3) { animation-delay: .3s; }
+.boot-logo span:nth-child(4) { animation-delay: .45s; }
+@keyframes bootPulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+
+.boot-text { font-size: 22px; font-weight: 300; letter-spacing: .5px; }
+.boot-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid rgba(255,255,255,.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --------------------------------------------------------------------------
+   Desktop e ícones
+   -------------------------------------------------------------------------- */
+#desktop {
+  position: absolute; inset: 0 0 var(--taskbar-h) 0;
+  background: #0b3b6b url("assets/wallpaper.jpg") center/cover no-repeat;
+  overflow: hidden;
+}
+
+#desktop-icons {
+  position: absolute; top: 10px; left: 8px;
+  display: flex; flex-direction: column; flex-wrap: wrap;
+  gap: 4px;
+  max-height: calc(100% - 20px);
+}
+
+.desktop-icon {
+  width: 86px;
+  padding: 8px 4px 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: default;
+  text-align: center;
+}
+.desktop-icon:hover { background: rgba(255,255,255,.12); }
+.desktop-icon.selected {
+  background: rgba(0,120,215,.35);
+  border-color: rgba(120,190,255,.65);
+}
+.desktop-icon .di-glyph {
+  font-size: 34px; line-height: 1;
+  width: 48px; height: 48px;
+  display: grid; place-items: center;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.6));
+}
+.desktop-icon .di-label {
+  color: #fff;
+  font-size: 12px;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.9);
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+/* --------------------------------------------------------------------------
+   Janelas (Window Manager)
+   -------------------------------------------------------------------------- */
+.app-window {
+  position: absolute;
+  min-width: 320px;
+  min-height: 200px;
+  background: #f3f3f3;
+  border: 1px solid #7a7a7a;
+  box-shadow: 0 8px 28px rgba(0,0,0,.45);
+  display: flex; flex-direction: column;
+  /* estados controlados por classes do WM */
+}
+.app-window.inactive {
+  box-shadow: 0 4px 14px rgba(0,0,0,.28);
+}
+.app-window.minimized { display: none; }
+.app-window.maximized {
+  top: 0 !important; left: 0 !important;
+  width: 100% !important; height: 100% !important;
+  border: none;
+}
+
+.window-titlebar {
+  height: var(--titlebar-h);
+  flex: 0 0 var(--titlebar-h);
+  background: var(--dark);
+  color: #fff;
+  display: flex; align-items: center;
+  padding-left: 10px;
+  cursor: default;
+}
+.app-window.inactive .window-titlebar { background: #3a3a3a; }
+
+.window-title {
+  font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 8px;
+  flex: 1;
+}
+.window-title .wt-glyph { font-size: 15px; }
+
+.window-controls { display: flex; height: 100%; align-self: stretch; }
+.window-controls button {
+  width: 46px; height: 100%;
+  border: none; background: transparent; color: #fff;
+  font-size: 12px; cursor: pointer;
+  display: grid; place-items: center;
+}
+.window-controls button:hover { background: #4a4a4a; }
+.window-controls button.win-close:hover { background: #e81123; }
+.app-window.inactive .window-controls button:hover { background: #4a4a4a; }
+
+.window-body {
+  flex: 1; min-height: 0;
+  position: relative;
+  overflow: auto;
+  background: #f3f3f3;
+}
+
+/* Oito alças de redimensionamento; cada uma cobre uma direção */
+.resize-handle { position: absolute; z-index: 5; }
+.rh-n  { top: -3px; left: 8px; right: 8px; height: 7px; cursor: ns-resize; }
+.rh-s  { bottom: -3px; left: 8px; right: 8px; height: 7px; cursor: ns-resize; }
+.rh-e  { right: -3px; top: 8px; bottom: 8px; width: 7px; cursor: ew-resize; }
+.rh-w  { left: -3px; top: 8px; bottom: 8px; width: 7px; cursor: ew-resize; }
+.rh-ne { top: -4px; right: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
+.rh-nw { top: -4px; left: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
+.rh-se { bottom: -4px; right: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
+.rh-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
+.app-window.maximized .resize-handle { display: none; }
+.app-window.is-dragging, .app-window.is-resizing { user-select: none; }
+
+/* --------------------------------------------------------------------------
+   Taskbar
+   -------------------------------------------------------------------------- */
+#taskbar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: var(--taskbar-h);
+  background: rgba(24,24,24,.92);
+  backdrop-filter: blur(8px);
+  display: flex; align-items: stretch;
+  z-index: 9000;
+  color: #fff;
+}
+
+#start-button {
+  width: 48px; border: none; background: transparent; cursor: pointer;
+  display: grid; place-items: center;
+}
+#start-button:hover { background: rgba(255,255,255,.08); }
+#start-button.open { background: rgba(255,255,255,.16); }
+
+/* Logo Windows de 4 blocos em CSS puro */
+.win-logo { display: grid; grid-template-columns: repeat(2, 9px); gap: 2px; }
+.win-logo i { width: 9px; height: 9px; background: #fff; transform: skew(-4deg); }
+#start-button:hover .win-logo i,
+#start-button.open .win-logo i { background: #4cc2ff; }
+
+#taskbar-search {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.92); color: #333;
+  height: 30px; margin: 5px 8px 5px 2px;
+  border-radius: 2px; padding: 0 10px;
+  width: 230px;
+}
+#taskbar-search .search-ico { font-size: 12px; }
+#taskbar-search input {
+  border: none; outline: none; background: transparent;
+  width: 100%; font-size: 12px; color: #222;
+}
+
+#taskbar-windows { flex: 1; display: flex; align-items: stretch; gap: 2px; overflow: hidden; }
+.taskbar-app {
+  max-width: 170px; min-width: 44px;
+  padding: 0 10px;
+  border: none; background: transparent; color: #d8d8d8;
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap; overflow: hidden;
+}
+.taskbar-app .ta-glyph { font-size: 15px; }
+.taskbar-app span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.taskbar-app:hover { background: rgba(255,255,255,.08); color: #fff; }
+.taskbar-app.active {
+  background: rgba(255,255,255,.14);
+  border-bottom-color: var(--accent-light);
+  color: #fff;
+}
+
+#system-tray { display: flex; align-items: center; padding-right: 6px; gap: 2px; }
+.tray-icon { padding: 4px 6px; font-size: 13px; opacity: .9; cursor: default; }
+#clock {
+  border: none; background: transparent; color: #fff; cursor: pointer;
+  display: flex; flex-direction: column; align-items: flex-end;
+  padding: 2px 10px; line-height: 1.25;
+  font-size: 12px;
+}
+#clock:hover { background: rgba(255,255,255,.08); }
+
+/* --------------------------------------------------------------------------
+   Menu Iniciar
+   -------------------------------------------------------------------------- */
+#start-menu {
+  position: absolute;
+  left: 0; bottom: var(--taskbar-h);
+  width: 360px; height: 560px; max-height: calc(100% - var(--taskbar-h) - 12px);
+  background: rgba(30,30,30,.96);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  display: flex;
+  z-index: 9500;
+  transform: translateY(12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform .12s ease, opacity .12s ease;
+  border: 1px solid #3c3c3c;
+}
+#start-menu.visible { transform: translateY(0); opacity: 1; pointer-events: auto; }
+/* Sem .visible o menu permanece invisível (opacity 0 + pointer-events:none) */
+
+.start-sidebar {
+  width: 52px; flex: 0 0 52px;
+  background: rgba(0,0,0,.25);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 10px 0; gap: 6px;
+}
+.start-sidebar-spacer { flex: 1; }
+.start-user, .start-side-btn {
+  width: 40px; height: 40px; border: none; border-radius: 2px;
+  background: transparent; color: #fff; cursor: pointer;
+  display: grid; place-items: center; font-size: 18px;
+}
+.start-user:hover, .start-side-btn:hover { background: rgba(255,255,255,.1); }
+.user-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); display: grid; place-items: center;
+  font-size: 14px; font-weight: 600;
+}
+.start-side-btn.active-dev { outline: 1px solid #4cc2ff; }
+
+.start-apps { flex: 1; padding: 14px 12px; overflow-y: auto; }
+.start-section-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+  color: #9b9b9b; margin: 12px 4px 6px;
+}
+.start-section-title:first-child { margin-top: 0; }
+
+.start-app {
+  width: 100%;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 8px;
+  border: none; background: transparent; color: #fff;
+  font-size: 13px; text-align: left; cursor: pointer;
+  border-radius: 2px;
+}
+.start-app:hover { background: rgba(255,255,255,.09); }
+.start-app .sa-glyph { font-size: 20px; width: 24px; text-align: center; }
+.start-app small { display: block; color: #9b9b9b; font-size: 11px; }
+.start-app.dimmed { opacity: .4; pointer-events: none; }
+
+/* --------------------------------------------------------------------------
+   Overlay de energia e toast
+   -------------------------------------------------------------------------- */
+#power-overlay {
+  position: fixed; inset: 0; z-index: 99000;
+  background: rgba(0,0,0,.82);
+  display: grid; place-items: center;
+}
+#power-overlay.hidden { display: none; }
+.power-card { text-align: center; color: #ddd; }
+.power-card p { font-size: 18px; margin-bottom: 18px; font-weight: 300; }
+.win10-btn {
+  background: var(--accent); color: #fff; border: none;
+  padding: 9px 22px; font-size: 13px; cursor: pointer; border-radius: 2px;
+}
+.win10-btn:hover { background: var(--accent-light); }
+
+.toast {
+  position: fixed; right: 14px; bottom: calc(var(--taskbar-h) + 14px);
+  background: rgba(31,31,31,.96); color: #fff;
+  border-left: 4px solid var(--accent);
+  padding: 12px 16px; max-width: 340px;
+  z-index: 98000;
+  box-shadow: 0 6px 22px rgba(0,0,0,.5);
+  animation: toastIn .25s ease;
+  font-size: 12.5px; line-height: 1.4;
+}
+@keyframes toastIn { from { transform: translateX(30px); opacity: 0; } }
+.toast.hidden { display: none; }
+
+/* --------------------------------------------------------------------------
+   App: DOOM — barra de status do "dispositivo" e canvas Wasm
+   -------------------------------------------------------------------------- */
+.doom-root { display: flex; flex-direction: column; height: 100%; background: #000; color: #d7d7d7; }
+
+.device-status {
+  flex: 0 0 auto;
+  background: #151515;
+  border-bottom: 1px solid #333;
+  padding: 6px 10px;
+  display: flex; flex-wrap: wrap; gap: 6px 16px;
+  font-size: 11.5px; align-items: center;
+}
+.device-status .ds-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.device-status b { color: #fff; font-weight: 600; }
+.ds-pill {
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.ds-pill.gpu-hw { background: #0e3a1c; color: #7ee2a8; border: 1px solid #1d6b38; }
+.ds-pill.gpu-sw { background: #3a2d0e; color: #ffd778; border: 1px solid #6b551d; }
+.ds-pill.gpu-off { background: #3a1212; color: #ff9c9c; border: 1px solid #6b2222; }
+.ds-pill.paused { background: #222; color: #bbb; border: 1px solid #444; }
+
+.doom-stage {
+  flex: 1; min-height: 0;
+  display: grid; place-items: center;
+  background: #050505;
+  padding: 6px;
+  position: relative;
+}
+.doom-canvas {
+  /* Resolução nativa do framebuffer do motor: 640x400.
+     O CSS apenas dimensiona o elemento; a rasterização continua em Wasm. */
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #000;
+  outline: none;
+  image-rendering: auto;
+}
+.doom-canvas:focus { box-shadow: 0 0 0 2px var(--accent); }
+.doom-overlay {
+  position: absolute; inset: 6px;
+  display: grid; place-items: center;
+  background: rgba(0,0,0,.72);
+  color: #fff; text-align: center;
+  padding: 20px;
+}
+.doom-overlay.hidden { display: none; }
+.doom-overlay h2 { font-weight: 300; margin-bottom: 10px; }
+.doom-overlay p { color: #bdbdbd; max-width: 460px; line-height: 1.5; margin-bottom: 14px; }
+.doom-overlay .big-glyph { font-size: 46px; margin-bottom: 12px; }
+.doom-progress {
+  width: 280px; height: 6px; background: #2a2a2a; border-radius: 4px; overflow: hidden;
+  margin: 14px auto 8px;
+}
+.doom-progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.doom-err { color: #ff8a8a; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+.doom-console {
+  flex: 0 0 118px;
+  background: #0c0c0c; border-top: 1px solid #333;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px; color: #9cdcfe;
+  padding: 6px 8px; overflow-y: auto;
+  user-select: text;
+}
+.doom-console .dc-err { color: #f48771; }
+.doom-console .dc-ok { color: #8fd98f; }
+.doom-console .dc-dim { color: #7d7d7d; }
+
+.doom-helpbar {
+  flex: 0 0 auto; background: #151515; border-top: 1px solid #333;
+  padding: 5px 10px; font-size: 11px; color: #9b9b9b;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+}
+.doom-helpbar kbd {
+  background: #2a2a2a; border: 1px solid #444; border-bottom-width: 2px;
+  border-radius: 3px; padding: 1px 5px; font-family: inherit; color: #ddd;
+}
+
+/* --------------------------------------------------------------------------
+   App: Diagnostics & Benchmarks
+   -------------------------------------------------------------------------- */
+.diag-root { padding: 14px 16px; height: 100%; overflow: auto; background: #f7f7f7; user-select: text; }
+.diag-root h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.diag-root .subtitle { color: #666; margin-bottom: 14px; font-size: 12px; }
+.diag-actions { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.diag-actions button {
+  background: var(--accent); color: #fff; border: none; padding: 8px 16px;
+  font-size: 12.5px; cursor: pointer; border-radius: 2px;
+}
+.diag-actions button.secondary { background: #e5e5e5; color: #1b1b1b; border: 1px solid #c8c8c8; }
+.diag-actions button:disabled { opacity: .55; cursor: wait; }
+
+.diag-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d0d0d0; }
+.diag-table th, .diag-table td {
+  text-align: left; padding: 8px 10px; font-size: 12px;
+  border-bottom: 1px solid #e6e6e6; vertical-align: top;
+}
+.diag-table th { background: #f0f0f0; font-weight: 600; }
+.diag-table tr:last-child td { border-bottom: none; }
+.badge { padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.badge.pass { background: #dff6dd; color: #0b6a23; border: 1px solid #9ad39a; }
+.badge.fail { background: #fde7e9; color: #a4262c; border: 1px solid #e0a6aa; }
+.badge.running { background: #fff4ce; color: #8a6d1b; border: 1px solid #e3cf86; }
+.badge.pending { background: #ececec; color: #777; border: 1px solid #d2d2d2; }
+.diag-metric { font-family: ui-monospace, Consolas, monospace; color: #333; }
+.diag-detail { color: #555; font-size: 11.5px; line-height: 1.45; }
+
+.diag-capture { margin-top: 16px; background: #fff; border: 1px solid #d0d0d0; padding: 12px; }
+.diag-capture h2 { font-size: 14px; margin-bottom: 8px; }
+.capture-frame {
+  margin-top: 10px;
+  border: 1px solid #bbb;
+  max-width: 520px;
+  background: #0b3b6b;
+}
+.capture-frame img { display: block; width: 100%; }
+.capture-meta { font-size: 11.5px; color: #555; margin-top: 6px; font-family: ui-monospace, Consolas, monospace; }
+.diag-bench-canvas { border: 1px solid #888; background: #000; display: block; margin: 8px 0; }
+
+/* --------------------------------------------------------------------------
+   Apps utilitários (Notepad, About)
+   -------------------------------------------------------------------------- */
+.notepad-root { display: flex; flex-direction: column; height: 100%; }
+.notepad-toolbar {
+  flex: 0 0 auto; padding: 6px 10px; background: #f0f0f0; border-bottom: 1px solid #d6d6d6;
+  display: flex; gap: 8px;
+}
+.notepad-toolbar button {
+  background: #fff; border: 1px solid #c4c4c4; padding: 4px 12px;
+  font-size: 12px; cursor: pointer; border-radius: 2px;
+}
+.notepad-toolbar button:hover { background: #eaf4fc; border-color: var(--accent); }
+.notepad-root textarea {
+  flex: 1; width: 100%; resize: none; border: none; outline: none;
+  padding: 10px; font: 13px Consolas, ui-monospace, monospace; line-height: 1.5;
+}
+
+.about-root { padding: 22px; max-width: 560px; user-select: text; }
+.about-root h1 { font-size: 20px; font-weight: 600; }
+.about-root h2 { font-size: 14px; margin: 16px 0 6px; color: var(--accent); }
+.about-root p, .about-root li { font-size: 12.5px; line-height: 1.55; color: #333; }
+.about-root ul { padding-left: 20px; }
+.spec-grid { display: grid; grid-template-columns: 170px 1fr; gap: 4px 10px; margin-top: 8px; font-size: 12px; }
+.spec-grid dt { color: #666; }
+.spec-grid dd { font-family: ui-monospace, Consolas, monospace; word-break: break-word; }
+
+/* Scrollbar discreta no estilo Win10 */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-thumb { background: #b5b5b5; border: 3px solid transparent; background-clip: padding-box; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #909090; border: 3px solid transparent; background-clip: padding-box; }
+.doom-console::-webkit-scrollbar-thumb,
+.start-apps::-webkit-scrollbar-thumb { background: #555; background-clip: padding-box; border: 3px solid transparent; }
+
+/* Responsividade mínima: telas pequenas */
+@media (max-width: 720px) {
+  #taskbar-search { display: none; }
+  #start-menu { width: calc(100vw - 16px); }
+  .taskbar-app span:last-child { display: none; }
+}
