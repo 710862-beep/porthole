@@ -1,4 +1,4 @@
-use crate::str16::String16;
+use crate::str16::{AnsiString,String16};
 use crate::winapi::kernel32::set_last_error;
 use crate::winapi::stack_args::ToX86;
 use crate::winapi::types::{DWORD, HFIND, MAX_PATH};
@@ -713,7 +713,7 @@ pub fn GetFileAttributesA(machine: &mut Machine, lpFileName: Option<&str>) -> Fi
  * No host chdir, device paths, UNC or independent per-drive directories.
  */
 #[win32_derive::dllexport]
-pub fn SetCurrentDirectoryA(machine:&mut Machine,lpPathName:crate::str16::AnsiString)->bool{
+pub fn SetCurrentDirectoryA(machine:&mut Machine,lpPathName:AnsiString)->bool{
     let Some(path)=lpPathName.0 else{super::teb_mut(machine).LastErrorValue=87;return false};
     if path.is_empty(){super::teb_mut(machine).LastErrorValue=123;return false}
     match machine.host.set_current_dir(WindowsPath::new(&path)){Ok(())=>true,Err(e)=>{set_last_error(machine,e);false}}
