@@ -37,6 +37,7 @@ jobs:
           node scripts/extract-wine-api.mjs kernelbase FileTimeToLocalFileTime
           node scripts/extract-wine-api.mjs win32u NtUserEnableWindow
           node scripts/extract-wine-api.mjs win32u is_window_visible
+          node scripts/extract-wine-api.mjs win32u NtUserSetWindowPlacement
           node scripts/extract-wine-api.mjs kernelbase CreateMutexA
           node scripts/extract-wine-api.mjs dplayx DirectPlayEnumerateA
           node scripts/extract-wine-api.mjs user32 ComboWndProc_common
@@ -162,6 +163,7 @@ jobs:
           path: |
             artifacts/*.json
             artifacts/*.log
+            artifacts/*.png
             artifacts/wine-extraction/
           if-no-files-found: warn
           retention-days: 14

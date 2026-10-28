@@ -36,6 +36,8 @@ impl Default for SurfaceOptions {
 
 /// Floating window.
 pub trait Window {
+    fn set_position(&mut self,_x:i32,_y:i32)->Result<(),ERROR>{Err(ERROR::NOT_SUPPORTED)}
+    fn set_visible(&mut self,_visible:bool)->Result<(),ERROR>{Err(ERROR::NOT_SUPPORTED)}
     fn set_title(&mut self, title: &str);
     fn set_size(&mut self, width: u32, height: u32);
     fn fullscreen(&mut self);

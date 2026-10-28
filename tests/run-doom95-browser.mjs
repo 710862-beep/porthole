@@ -19,5 +19,6 @@ let browser;try{
  const blockedControl=result.logs?.find(item=>item.message.includes('UNSUPPORTED_WINDOW_CLASS'));
  const report={...result,sha256:crypto.createHash('sha256').update(fs.readFileSync('tests/assets/games/doom95.exe')).digest('hex'),backendSha256:crypto.createHash('sha256').update(fs.readFileSync(wasm)).digest('hex'),unsupportedControl:blockedControl?.message||null,processStatus:result.status,status:result.status==='exited'&&result.exitCode===0?'GAMEPLAY_NOT_VALIDATED':'BACKEND_FAILURE',...diagnostic,lastApi:logger.getLastCall(),last20:logger.getLog(),environment:'real-headless-chromium',registryProfile:'ephemeral-memory-empty-hives-not-durable',gameplayValidated:false};
  report.gameplay=validateGameplay(report);report.gameplayValidated=report.gameplay.passed;if(report.gameplayValidated)report.status='GAMEPLAY_FUNCTIONAL';
+ await page.screenshot({path:'artifacts/doom95-browser.png',fullPage:true}).catch(error=>console.error('Screenshot unavailable: '+error.message));
  fs.writeFileSync('artifacts/doom95-browser.json',JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));process.exitCode=report.gameplayValidated?0:1;
 }finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}

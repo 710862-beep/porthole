@@ -17,6 +17,8 @@ pub use raw_input::*;
 mod resource;
 mod timer;
 mod window;
+mod placement;
+pub use placement::*;
 
 use super::handle::Handles;
 use super::types::HWND;

@@ -1,0 +1,1450 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/win32u/window.c",
+  "sourceSha256": "68b18b72885cad86001923d39b906cba4899578ccb7334ea00757f4bf57819a6",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1993, 1994 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "NtUserSetWindowPlacement",
+  "additionalRoots": [
+    "NtUserGetWindowPlacement"
+  ],
+  "functions": [
+    {
+      "name": "NtUserSetWindowPlacement",
+      "startLine": 3317,
+      "endLine": 3333,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "placement_workarea_to_screen",
+        "set_window_placement"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserGetWindowPlacement",
+      "startLine": 3172,
+      "endLine": 3185,
+      "calls": [
+        "TRACE",
+        "get_window_placement",
+        "placement_screen_to_workarea",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "placement_workarea_to_screen",
+      "startLine": 3024,
+      "endLine": 3053,
+      "calls": [
+        "NtUserGetDesktopWindow",
+        "OffsetRect",
+        "empty_point",
+        "get_thread_dpi",
+        "get_window_long",
+        "monitor_info_from_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "set_window_placement",
+      "startLine": 3252,
+      "endLine": 3312,
+      "calls": [
+        "NtUserSetWindowPos",
+        "NtUserShowWindow",
+        "TRACE",
+        "get_win_ptr",
+        "is_iconic",
+        "make_point_onscreen",
+        "make_rect_onscreen",
+        "point_thread_to_win_dpi",
+        "rect_thread_to_win_dpi",
+        "release_win_ptr",
+        "update_maximized_pos",
+        "win_set_flags",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_placement",
+      "startLine": 3088,
+      "endLine": 3167,
+      "calls": [
+        "FIXME",
+        "empty_point",
+        "get_dpi_for_window",
+        "get_thread_dpi",
+        "get_win_ptr",
+        "get_window_long",
+        "get_window_rect",
+        "map_dpi_point",
+        "map_dpi_rect",
+        "release_win_ptr",
+        "update_maximized_pos"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "placement_screen_to_workarea",
+      "startLine": 3055,
+      "endLine": 3085,
+      "calls": [
+        "NtUserGetDesktopWindow",
+        "OffsetRect",
+        "empty_point",
+        "get_thread_dpi",
+        "get_window_long",
+        "monitor_info_from_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "empty_point",
+      "startLine": 3016,
+      "endLine": 3019,
+      "calls": [],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_long",
+      "startLine": 1410,
+      "endLine": 1413,
+      "calls": [
+        "get_window_long_size"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserSetWindowPos",
+      "startLine": 4255,
+      "endLine": 4286,
+      "calls": [
+        "NtUserMessageCall",
+        "RtlSetLastWin32Error",
+        "TRACE",
+        "TRACE_ON",
+        "dump_winpos_flags",
+        "get_full_window_handle",
+        "is_broadcast",
+        "is_current_thread_window",
+        "map_dpi_winpos",
+        "send_message",
+        "set_window_pos"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserShowWindow",
+      "startLine": 5197,
+      "endLine": 5216,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "get_window_long",
+        "is_broadcast",
+        "is_current_thread_window",
+        "send_message",
+        "show_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_win_ptr",
+      "startLine": 608,
+      "endLine": 617,
+      "calls": [
+        "get_user_handle_ptr",
+        "is_desktop_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_iconic",
+      "startLine": 1318,
+      "endLine": 1321,
+      "calls": [
+        "get_window_long"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "make_point_onscreen",
+      "startLine": 3229,
+      "endLine": 3237,
+      "calls": [
+        "SetRect",
+        "make_rect_onscreen"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "make_rect_onscreen",
+      "startLine": 3188,
+      "endLine": 3212,
+      "calls": [
+        "get_thread_dpi",
+        "monitor_info_from_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "update_maximized_pos",
+      "startLine": 2992,
+      "endLine": 3014,
+      "calls": [
+        "get_desktop_window",
+        "monitor_info_from_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "win_set_flags",
+      "startLine": 4480,
+      "endLine": 4490,
+      "calls": [
+        "get_win_ptr",
+        "release_win_ptr"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_dpi_for_window",
+      "startLine": 1239,
+      "endLine": 1246,
+      "calls": [
+        "NTUSER_DPI_CONTEXT_GET_DPI",
+        "NTUSER_DPI_CONTEXT_IS_MONITOR_AWARE",
+        "get_win_monitor_dpi",
+        "get_window_dpi_awareness_context"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_rect",
+      "startLine": 2029,
+      "endLine": 2032,
+      "calls": [
+        "get_window_rect_rel"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_long_size",
+      "startLine": 1339,
+      "endLine": 1407,
+      "calls": [
+        "NtUserGetAncestor",
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "get_desktop_window",
+        "get_full_window_handle",
+        "get_win_ptr",
+        "get_window_long_shm",
+        "get_window_relative",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "dump_winpos_flags",
+      "startLine": 3685,
+      "endLine": 3712,
+      "calls": [
+        "TRACE"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_full_window_handle",
+      "startLine": 566,
+      "endLine": 578,
+      "calls": [
+        "LOWORD",
+        "get_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_current_thread_window",
+      "startLine": 624,
+      "endLine": 632,
+      "calls": [
+        "GetCurrentThreadId",
+        "get_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "map_dpi_winpos",
+      "startLine": 3717,
+      "endLine": 3728,
+      "calls": [
+        "get_dpi_for_window",
+        "get_thread_dpi",
+        "get_win_monitor_dpi",
+        "map_dpi_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "set_window_pos",
+      "startLine": 4108,
+      "endLine": 4250,
+      "calls": [
+        "NtUserGetAncestor",
+        "NtUserHideCaret",
+        "NtUserNotifyWinEvent",
+        "NtUserShowCaret",
+        "TRACE",
+        "apply_window_pos",
+        "calc_ncsize",
+        "calc_winpos",
+        "erase_now",
+        "fixup_swp_flags",
+        "get_desktop_window",
+        "get_hwnd_message_parent",
+        "get_window_dpi_awareness_context",
+        "get_window_long",
+        "get_window_surface",
+        "send_message",
+        "set_foreground_window",
+        "set_thread_dpi_awareness_context",
+        "swp_owner_popups",
+        "window_surface_release"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "show_window",
+      "startLine": 4982,
+      "endLine": 5169,
+      "calls": [
+        "IsRectEmpty",
+        "MAKELONG",
+        "NtUserGetAncestor",
+        "NtUserNotifyWinEvent",
+        "NtUserSetFocus",
+        "NtUserSetWindowPos",
+        "OffsetRect",
+        "TRACE",
+        "activate_other_window",
+        "get_active_window",
+        "get_client_rect_rel",
+        "get_desktop_window",
+        "get_focus",
+        "get_thread_dpi",
+        "get_win_ptr",
+        "get_window_dpi_awareness_context",
+        "get_window_long",
+        "get_window_relative",
+        "is_iconic",
+        "is_window",
+        "is_window_visible",
+        "pShowWindow",
+        "release_win_ptr",
+        "send_message",
+        "set_startup_info_flags",
+        "set_thread_dpi_awareness_context",
+        "set_window_style_bits",
+        "window_min_maximize"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_user_handle_ptr",
+      "startLine": 212,
+      "endLine": 228,
+      "calls": [
+        "GetCurrentProcessId",
+        "USER_HANDLE_TO_INDEX",
+        "get_user_entry",
+        "user_lock",
+        "user_unlock"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_desktop_window",
+      "startLine": 585,
+      "endLine": 599,
+      "calls": [
+        "HIWORD",
+        "LOWORD",
+        "get_user_thread_info"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_win_monitor_dpi",
+      "startLine": 1199,
+      "endLine": 1218,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "get_shared_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_dpi_awareness_context",
+      "startLine": 1221,
+      "endLine": 1236,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "get_shared_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_rect_rel",
+      "startLine": 2020,
+      "endLine": 2026,
+      "calls": [
+        "get_window_rects"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserGetAncestor",
+      "startLine": 994,
+      "endLine": 1049,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "free",
+        "get_full_window_handle",
+        "get_parent",
+        "get_win_ptr",
+        "is_desktop_window",
+        "list_window_parents",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_ptr_handle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_long_shm",
+      "startLine": 1272,
+      "endLine": 1316,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "WARN",
+        "get_shared_window",
+        "get_window_proc",
+        "is_current_process_window",
+        "memcpy"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_relative",
+      "startLine": 821,
+      "endLine": 894,
+      "calls": [
+        "NtUserGetAncestor",
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "free",
+        "get_win_ptr",
+        "get_window_relative",
+        "is_window_enabled",
+        "is_window_visible",
+        "list_window_children",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_ptr_handle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_user_entry",
+      "startLine": 131,
+      "endLine": 140,
+      "calls": [
+        "USER_HANDLE_FROM_INDEX",
+        "USER_HANDLE_TO_INDEX",
+        "read_acquire_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "apply_window_pos",
+      "startLine": 2326,
+      "endLine": 2511,
+      "calls": [
+        "EqualRect",
+        "IsRectEmpty",
+        "NtUserGetAncestor",
+        "NtUserGetWindowRelative",
+        "NtUserWindowFromPoint",
+        "OffsetRect",
+        "SERVER_START_REQ",
+        "SetRectEmpty",
+        "TRACE",
+        "get_client_rect_rel",
+        "get_driver_window_surface",
+        "get_thread_dpi",
+        "get_win_monitor_dpi",
+        "get_win_ptr",
+        "get_window_icon_info",
+        "get_window_long",
+        "get_window_rects",
+        "invalidate_dce",
+        "is_fullscreen",
+        "map_dpi_window_rects",
+        "map_window_rects_virt_to_raw",
+        "mirror_rect",
+        "monitor_dpi_from_rect",
+        "monitor_info_from_rect",
+        "move_window_bits",
+        "move_window_bits_surface",
+        "pMoveWindowBits",
+        "pSetWindowIcons",
+        "pWindowPosChanged",
+        "register_window_surface",
+        "release_win_ptr",
+        "update_client_surfaces",
+        "update_surface_region",
+        "window_surface_add_ref",
+        "window_surface_release",
+        "wine_server_add_data",
+        "wine_server_call",
+        "wine_server_ptr_handle",
+        "wine_server_rectangle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "calc_ncsize",
+      "startLine": 3855,
+      "endLine": 3933,
+      "calls": [
+        "SetRectEmpty",
+        "TRACE",
+        "get_class_long",
+        "get_valid_rects",
+        "send_message",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "calc_winpos",
+      "startLine": 3733,
+      "endLine": 3792,
+      "calls": [
+        "OffsetRect",
+        "TRACE",
+        "debugstr_window_rects",
+        "get_desktop_window",
+        "get_system_metrics",
+        "get_thread_dpi",
+        "get_win_ptr",
+        "get_window_rects",
+        "release_win_ptr",
+        "send_message"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "fixup_swp_flags",
+      "startLine": 3936,
+      "endLine": 4022,
+      "calls": [
+        "NtUserGetAncestor",
+        "RtlSetLastWin32Error",
+        "get_win_ptr",
+        "get_window_relative",
+        "is_window_visible",
+        "release_win_ptr"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_hwnd_message_parent",
+      "startLine": 553,
+      "endLine": 559,
+      "calls": [
+        "get_desktop_window",
+        "get_user_thread_info"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_surface",
+      "startLine": 2225,
+      "endLine": 2295,
+      "calls": [
+        "IsRectEmpty",
+        "NtGdiDeleteObjectApp",
+        "NtUserGetAncestor",
+        "NtUserGetDesktopWindow",
+        "NtUserGetLayeredWindowAttributes",
+        "NtUserGetWindowLongW",
+        "create_window_surface",
+        "get_default_window_surface",
+        "get_present_rect",
+        "get_surface_rect",
+        "get_thread_dpi",
+        "get_visible_rect",
+        "get_win_monitor_dpi",
+        "get_window_long",
+        "get_window_region",
+        "map_dpi_window_rects",
+        "map_window_rects_virt_to_raw",
+        "monitor_dpi_from_rect",
+        "pWindowPosChanging",
+        "window_surface_add_ref",
+        "window_surface_release",
+        "window_surface_set_layered"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "swp_owner_popups",
+      "startLine": 4032,
+      "endLine": 4105,
+      "calls": [
+        "NtUserSetWindowPos",
+        "TRACE",
+        "free",
+        "get_window_long",
+        "get_window_relative",
+        "list_window_children"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "activate_other_window",
+      "startLine": 4514,
+      "endLine": 4552,
+      "calls": [
+        "NtUserGetAncestor",
+        "NtUserGetForegroundWindow",
+        "NtUserSetActiveWindow",
+        "TRACE",
+        "can_activate_window",
+        "get_desktop_window",
+        "get_window_long",
+        "get_window_relative",
+        "set_foreground_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_client_rect_rel",
+      "startLine": 2034,
+      "endLine": 2040,
+      "calls": [
+        "get_window_rects"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_window",
+      "startLine": 650,
+      "endLine": 659,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "is_valid_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_window_visible",
+      "startLine": 1075,
+      "endLine": 1091,
+      "calls": [
+        "free",
+        "get_desktop_window",
+        "get_window_long",
+        "list_window_parents"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "set_startup_info_flags",
+      "startLine": 60,
+      "endLine": 70,
+      "calls": [
+        "InterlockedCompareExchange"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "set_window_style_bits",
+      "startLine": 1459,
+      "endLine": 1499,
+      "calls": [
+        "get_win_ptr",
+        "invalidate_dce",
+        "is_window",
+        "pSetWindowStyle",
+        "release_win_ptr",
+        "send_message",
+        "server_set_window_info",
+        "update_window_state"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "window_min_maximize",
+      "startLine": 4794,
+      "endLine": 4904,
+      "calls": [
+        "NtUserGetAncestor",
+        "NtUserSetFocus",
+        "SetRect",
+        "TRACE",
+        "call_hooks",
+        "get_focus",
+        "get_min_max_info",
+        "get_minimized_pos",
+        "get_system_metrics",
+        "get_window_long",
+        "get_window_placement",
+        "is_iconic",
+        "is_zoomed",
+        "send_message",
+        "set_window_style_bits",
+        "win_get_flags",
+        "win_set_flags"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_shared_window",
+      "startLine": 151,
+      "endLine": 174,
+      "calls": [
+        "CONTAINING_RECORD",
+        "find_shared_session_object",
+        "get_user_entry",
+        "shared_object_acquire_seqlock",
+        "shared_object_release_seqlock"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_rects",
+      "startLine": 1889,
+      "endLine": 2018,
+      "calls": [
+        "OffsetRect",
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "get_dpi_for_window",
+        "get_hwnd_message_parent",
+        "get_primary_monitor_rect",
+        "get_win_ptr",
+        "map_dpi_rect",
+        "mirror_rect",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_get_rect",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_parent",
+      "startLine": 678,
+      "endLine": 713,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "get_win_ptr",
+        "get_window_long",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_ptr_handle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "list_window_parents",
+      "startLine": 902,
+      "endLine": 963,
+      "calls": [
+        "SERVER_START_REQ",
+        "free",
+        "get_win_ptr",
+        "malloc",
+        "realloc",
+        "release_win_ptr",
+        "wine_server_call",
+        "wine_server_ptr_handle",
+        "wine_server_set_reply",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_proc",
+      "startLine": 1262,
+      "endLine": 1270,
+      "calls": [
+        "MAKE_WNDPROC",
+        "get_winproc"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_current_process_window",
+      "startLine": 639,
+      "endLine": 647,
+      "calls": [
+        "GetCurrentProcessId",
+        "get_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_window_enabled",
+      "startLine": 1189,
+      "endLine": 1197,
+      "calls": [
+        "RtlGetLastWin32Error",
+        "RtlSetLastWin32Error",
+        "get_window_long"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "list_window_children",
+      "startLine": 971,
+      "endLine": 989,
+      "calls": [
+        "NtUserBuildHwndList",
+        "free",
+        "get_window_relative",
+        "malloc"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "read_acquire_user_entry",
+      "startLine": 118,
+      "endLine": 129,
+      "calls": [
+        "ReadAcquire64",
+        "ReadNoFence64",
+        "is_valid_entry_uniq"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserWindowFromPoint",
+      "startLine": 2909,
+      "endLine": 2914,
+      "calls": [
+        "window_from_point"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_icon_info",
+      "startLine": 2302,
+      "endLine": 2313,
+      "calls": [
+        "LoadImageW",
+        "get_class_long_ptr",
+        "get_icon_info",
+        "send_message"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_fullscreen",
+      "startLine": 2315,
+      "endLine": 2319,
+      "calls": [],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "mirror_rect",
+      "startLine": 1876,
+      "endLine": 1882,
+      "calls": [],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "update_client_surfaces",
+      "startLine": 377,
+      "endLine": 395,
+      "calls": [
+        "LIST_FOR_EACH_ENTRY_SAFE",
+        "NtUserGetAncestor",
+        "client_surface_release_locked",
+        "client_surface_update_locked",
+        "pthread_mutex_lock",
+        "pthread_mutex_unlock"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "update_surface_region",
+      "startLine": 2110,
+      "endLine": 2142,
+      "calls": [
+        "NtGdiCombineRgn",
+        "NtGdiCreateRectRgn",
+        "NtGdiDeleteObjectApp",
+        "NtGdiOffsetRgn",
+        "NtUserMirrorRgn",
+        "get_win_ptr",
+        "get_window_region",
+        "release_win_ptr",
+        "window_surface_set_clip",
+        "window_surface_set_shape"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_valid_rects",
+      "startLine": 3800,
+      "endLine": 3853,
+      "calls": [
+        "SetRectEmpty",
+        "intersect_rect",
+        "min"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserGetLayeredWindowAttributes",
+      "startLine": 2656,
+      "endLine": 2673,
+      "calls": [
+        "SERVER_START_REQ",
+        "wine_server_call_err",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_default_window_surface",
+      "startLine": 2196,
+      "endLine": 2223,
+      "calls": [
+        "EqualRect",
+        "TRACE",
+        "get_desktop_window",
+        "get_win_ptr",
+        "release_win_ptr",
+        "window_surface_add_ref",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_present_rect",
+      "startLine": 6270,
+      "endLine": 6281,
+      "calls": [
+        "IsRectEmpty",
+        "get_dpi_for_window",
+        "get_win_ptr",
+        "map_dpi_rect",
+        "map_rect_virt_to_raw",
+        "release_win_ptr"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_surface_rect",
+      "startLine": 2175,
+      "endLine": 2194,
+      "calls": [
+        "OffsetRect",
+        "get_virtual_screen_rect",
+        "intersect_rect",
+        "max"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_visible_rect",
+      "startLine": 2145,
+      "endLine": 2172,
+      "calls": [
+        "EqualRect",
+        "IsRectEmpty",
+        "TRACE",
+        "adjust_window_rect",
+        "debugstr_window_rects",
+        "get_dpi_for_window",
+        "get_present_rect",
+        "get_thread_dpi",
+        "pGetWindowStyleMasks",
+        "round_dpi",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_region",
+      "startLine": 2068,
+      "endLine": 2105,
+      "calls": [
+        "FIELD_OFFSET",
+        "NtGdiExtCreateRegion",
+        "SERVER_START_REQ",
+        "free",
+        "malloc",
+        "wine_server_call",
+        "wine_server_get_rect",
+        "wine_server_reply_size",
+        "wine_server_set_reply",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "can_activate_window",
+      "startLine": 4497,
+      "endLine": 4507,
+      "calls": [
+        "get_window_long"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_valid_entry",
+      "startLine": 110,
+      "endLine": 116,
+      "calls": [
+        "ReadAcquire64",
+        "USER_HANDLE_TO_INDEX",
+        "is_valid_entry_uniq"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "server_set_window_info",
+      "startLine": 1438,
+      "endLine": 1457,
+      "calls": [
+        "SERVER_START_REQ",
+        "wine_server_call_err",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "update_window_state",
+      "startLine": 4951,
+      "endLine": 4975,
+      "calls": [
+        "NtUserPostMessage",
+        "apply_window_pos",
+        "get_thread_dpi",
+        "get_window_dpi_awareness_context",
+        "get_window_rects",
+        "get_window_surface",
+        "is_current_thread_window",
+        "set_thread_dpi_awareness_context",
+        "window_surface_release"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_min_max_info",
+      "startLine": 4574,
+      "endLine": 4659,
+      "calls": [
+        "NtUserGetAncestor",
+        "TRACE",
+        "adjust_window_rect",
+        "empty_point",
+        "get_client_rect",
+        "get_maximized_rect",
+        "get_menu",
+        "get_primary_monitor_rect",
+        "get_system_dpi",
+        "get_system_metrics",
+        "get_thread_dpi",
+        "get_win_ptr",
+        "get_window_dpi_awareness_context",
+        "get_window_long",
+        "get_window_rect",
+        "max",
+        "release_win_ptr",
+        "send_message",
+        "set_thread_dpi_awareness_context"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_minimized_pos",
+      "startLine": 4731,
+      "endLine": 4789,
+      "calls": [
+        "NtGdiCombineRgn",
+        "NtGdiCreateRectRgn",
+        "NtGdiDeleteObjectApp",
+        "NtGdiRectInRegion",
+        "NtGdiSetRectRgn",
+        "NtUserGetAncestor",
+        "NtUserSystemParametersInfo",
+        "SetRect",
+        "get_client_rect",
+        "get_desktop_window",
+        "get_first_minimized_child_pos",
+        "get_next_minimized_child_pos",
+        "get_system_metrics",
+        "get_thread_dpi",
+        "get_window_long",
+        "get_window_rect_rel",
+        "get_window_relative",
+        "monitor_info_from_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_zoomed",
+      "startLine": 1323,
+      "endLine": 1326,
+      "calls": [
+        "get_window_long"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserBuildHwndList",
+      "startLine": 3338,
+      "endLine": 3364,
+      "calls": [
+        "SERVER_START_REQ",
+        "wine_server_call",
+        "wine_server_obj_handle",
+        "wine_server_ptr_handle",
+        "wine_server_set_reply",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_valid_entry_uniq",
+      "startLine": 104,
+      "endLine": 108,
+      "calls": [
+        "HIWORD",
+        "LOWORD",
+        "MAKELONG"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "window_from_point",
+      "startLine": 2859,
+      "endLine": 2904,
+      "calls": [
+        "MAKELPARAM",
+        "TRACE",
+        "free",
+        "get_desktop_window",
+        "get_dpi_for_window",
+        "get_thread_dpi",
+        "get_win_monitor_dpi",
+        "get_window_long",
+        "is_current_thread_window",
+        "list_children_from_point",
+        "map_dpi_point",
+        "send_message"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_icon_info",
+      "startLine": 2297,
+      "endLine": 2300,
+      "calls": [
+        "NtUserGetIconInfo"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "client_surface_release_locked",
+      "startLine": 308,
+      "endLine": 319,
+      "calls": [
+        "InterlockedDecrement",
+        "TRACE",
+        "client_surface_detach_locked",
+        "debugstr_client_surface",
+        "destroy",
+        "free"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "client_surface_update_locked",
+      "startLine": 360,
+      "endLine": 375,
+      "calls": [
+        "EqualRect",
+        "NtUserGetAncestor",
+        "TRACE",
+        "debugstr_client_surface",
+        "get_client_surface_rects",
+        "update",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_client_rect",
+      "startLine": 2043,
+      "endLine": 2046,
+      "calls": [
+        "get_client_rect_rel"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_maximized_rect",
+      "startLine": 2966,
+      "endLine": 2978,
+      "calls": [
+        "get_window_long",
+        "monitor_info_from_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_first_minimized_child_pos",
+      "startLine": 4661,
+      "endLine": 4676,
+      "calls": [],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_next_minimized_child_pos",
+      "startLine": 4678,
+      "endLine": 4729,
+      "calls": [],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "list_children_from_point",
+      "startLine": 2818,
+      "endLine": 2852,
+      "calls": [
+        "SERVER_START_REQ",
+        "free",
+        "malloc",
+        "wine_server_call",
+        "wine_server_ptr_handle",
+        "wine_server_set_reply",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "client_surface_detach_locked",
+      "startLine": 298,
+      "endLine": 306,
+      "calls": [
+        "detach",
+        "list_remove"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_client_surface_rects",
+      "startLine": 335,
+      "endLine": 358,
+      "calls": [
+        "NtUserGetAncestor",
+        "OffsetRect",
+        "get_client_rect",
+        "get_dpi_for_window",
+        "get_present_rect",
+        "get_win_monitor_dpi",
+        "get_window_rects",
+        "map_dpi_rect",
+        "map_window_points",
+        "map_window_rects_virt_to_raw"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "map_window_points",
+      "startLine": 3659,
+      "endLine": 3680,
+      "calls": [
+        "LOWORD",
+        "MAKELONG",
+        "get_windows_offset"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_windows_offset",
+      "startLine": 3475,
+      "endLine": 3582,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "get_dpi_for_window",
+        "get_win_monitor_dpi",
+        "get_win_ptr",
+        "map_dpi_point",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    }
+  ],
+  "boundaries": [
+    "CONTAINING_RECORD",
+    "EqualRect",
+    "FIELD_OFFSET",
+    "FIXME",
+    "GetCurrentProcessId",
+    "GetCurrentThreadId",
+    "HIWORD",
+    "InterlockedCompareExchange",
+    "InterlockedDecrement",
+    "IsRectEmpty",
+    "LIST_FOR_EACH_ENTRY_SAFE",
+    "LOWORD",
+    "LoadImageW",
+    "MAKELONG",
+    "MAKELPARAM",
+    "MAKE_WNDPROC",
+    "NTUSER_DPI_CONTEXT_GET_DPI",
+    "NTUSER_DPI_CONTEXT_IS_MONITOR_AWARE",
+    "NtGdiCombineRgn",
+    "NtGdiCreateRectRgn",
+    "NtGdiDeleteObjectApp",
+    "NtGdiExtCreateRegion",
+    "NtGdiOffsetRgn",
+    "NtGdiRectInRegion",
+    "NtGdiSetRectRgn",
+    "NtUserGetDesktopWindow",
+    "NtUserGetForegroundWindow",
+    "NtUserGetIconInfo",
+    "NtUserGetWindowLongW",
+    "NtUserGetWindowRelative",
+    "NtUserHideCaret",
+    "NtUserMessageCall",
+    "NtUserMirrorRgn",
+    "NtUserNotifyWinEvent",
+    "NtUserPostMessage",
+    "NtUserSetActiveWindow",
+    "NtUserSetFocus",
+    "NtUserShowCaret",
+    "NtUserSystemParametersInfo",
+    "OffsetRect",
+    "ReadAcquire64",
+    "ReadNoFence64",
+    "RtlGetLastWin32Error",
+    "RtlSetLastWin32Error",
+    "SERVER_START_REQ",
+    "SetRect",
+    "SetRectEmpty",
+    "TRACE",
+    "TRACE_ON",
+    "USER_HANDLE_FROM_INDEX",
+    "USER_HANDLE_TO_INDEX",
+    "WARN",
+    "adjust_window_rect",
+    "call_hooks",
+    "create_window_surface",
+    "debugstr_client_surface",
+    "debugstr_window_rects",
+    "destroy",
+    "detach",
+    "erase_now",
+    "find_shared_session_object",
+    "free",
+    "get_active_window",
+    "get_class_long",
+    "get_class_long_ptr",
+    "get_desktop_window",
+    "get_driver_window_surface",
+    "get_focus",
+    "get_menu",
+    "get_primary_monitor_rect",
+    "get_system_dpi",
+    "get_system_metrics",
+    "get_thread_dpi",
+    "get_user_thread_info",
+    "get_virtual_screen_rect",
+    "get_winproc",
+    "intersect_rect",
+    "invalidate_dce",
+    "is_broadcast",
+    "list_remove",
+    "malloc",
+    "map_dpi_point",
+    "map_dpi_rect",
+    "map_dpi_window_rects",
+    "map_rect_virt_to_raw",
+    "map_window_rects_virt_to_raw",
+    "max",
+    "memcpy",
+    "min",
+    "monitor_dpi_from_rect",
+    "monitor_info_from_rect",
+    "monitor_info_from_window",
+    "move_window_bits",
+    "move_window_bits_surface",
+    "pGetWindowStyleMasks",
+    "pMoveWindowBits",
+    "pSetWindowIcons",
+    "pSetWindowStyle",
+    "pShowWindow",
+    "pWindowPosChanged",
+    "pWindowPosChanging",
+    "point_thread_to_win_dpi",
+    "pthread_mutex_lock",
+    "pthread_mutex_unlock",
+    "realloc",
+    "rect_thread_to_win_dpi",
+    "register_window_surface",
+    "release_win_ptr",
+    "round_dpi",
+    "send_message",
+    "set_foreground_window",
+    "set_thread_dpi_awareness_context",
+    "shared_object_acquire_seqlock",
+    "shared_object_release_seqlock",
+    "update",
+    "user_lock",
+    "user_unlock",
+    "win_get_flags",
+    "window_surface_add_ref",
+    "window_surface_release",
+    "window_surface_set_clip",
+    "window_surface_set_layered",
+    "window_surface_set_shape",
+    "wine_dbgstr_rect",
+    "wine_server_add_data",
+    "wine_server_call",
+    "wine_server_call_err",
+    "wine_server_get_rect",
+    "wine_server_obj_handle",
+    "wine_server_ptr_handle",
+    "wine_server_rectangle",
+    "wine_server_reply_size",
+    "wine_server_set_reply",
+    "wine_server_user_handle"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

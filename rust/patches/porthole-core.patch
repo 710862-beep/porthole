@@ -29,7 +29,32 @@
 +profile = "minimal"
 --- a/web/glue/src/host.rs
 +++ b/web/glue/src/host.rs
-@@ -215,6 +215,10 @@
+@@ -97,6 +97,8 @@
+ export interface JsWindow {
+   title: string;
+   set_size(width: number, height: number): void;
++  set_position(x: number, y: number): void;
++  set_visible(visible: boolean): void;
+ }"#;
+ 
+ #[wasm_bindgen]
+@@ -106,9 +108,15 @@
+     fn set_title(this: &JsWindow, title: &str);
+     #[wasm_bindgen(method)]
+     fn set_size(this: &JsWindow, width: u32, height: u32);
++    #[wasm_bindgen(method)]
++    fn set_position(this: &JsWindow,x:i32,y:i32);
++    #[wasm_bindgen(method)]
++    fn set_visible(this: &JsWindow,visible:bool);
+ }
+ 
+ impl win32::Window for JsWindow {
++    fn set_position(&mut self,x:i32,y:i32)->Result<(),win32::ERROR>{JsWindow::set_position(self,x,y);Ok(())}
++    fn set_visible(&mut self,visible:bool)->Result<(),win32::ERROR>{JsWindow::set_visible(self,visible);Ok(())}
+     fn set_title(&mut self, title: &str) {
+         JsWindow::set_title(self, title);
+     }
+@@ -215,6 +223,10 @@
          .unwrap() as u32;
      let time = event.time_stamp() as u32;
      let detail = match event.type_().as_str() {
@@ -40,7 +65,7 @@
          "mousedown" => {
              let mut event = map_mousevent(event.unchecked_into::<web_sys::MouseEvent>())?;
              event.down = true;
-@@ -253,6 +257,29 @@
+@@ -253,6 +265,29 @@
      pub type JsHost;
  
      #[wasm_bindgen(method)]
@@ -70,7 +95,7 @@
      fn log(this: &JsHost, level: u8, msg: String);
  
      #[wasm_bindgen(method)]
-@@ -274,8 +301,15 @@
+@@ -274,8 +309,15 @@
  }
  
  impl win32::Host for JsHost {
@@ -87,7 +112,7 @@
      }
  
      fn system_time(&self) -> chrono::DateTime<chrono::Local> {
-@@ -312,11 +346,29 @@
+@@ -312,11 +354,29 @@
      }
  
      fn stat(&self, path: &WindowsPath) -> Result<Stat, ERROR> {
@@ -119,7 +144,7 @@
      }
  
      fn log(&self, buf: &[u8]) {
-@@ -337,11 +389,20 @@
+@@ -337,11 +397,20 @@
      }
  
      fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
@@ -142,7 +167,7 @@
      }
  
      fn remove_file(&self, path: &WindowsPath) -> Result<(), ERROR> {
-@@ -352,3 +413,7 @@
+@@ -352,3 +421,7 @@
          todo!("remove_dir {path}")
      }
  }
@@ -254,7 +279,16 @@
  	clang-cl -fuse-ld=lld -target i586-pc-windows-msvc \
 --- a/win32/src/host.rs
 +++ b/win32/src/host.rs
-@@ -115,6 +115,7 @@
+@@ -36,6 +36,8 @@
+ 
+ /// Floating window.
+ pub trait Window {
++    fn set_position(&mut self,_x:i32,_y:i32)->Result<(),ERROR>{Err(ERROR::NOT_SUPPORTED)}
++    fn set_visible(&mut self,_visible:bool)->Result<(),ERROR>{Err(ERROR::NOT_SUPPORTED)}
+     fn set_title(&mut self, title: &str);
+     fn set_size(&mut self, width: u32, height: u32);
+     fn fullscreen(&mut self);
+@@ -115,6 +117,7 @@
  
  #[derive(Debug)]
  pub enum MessageDetail {
@@ -262,7 +296,7 @@
      Quit,
      Mouse(MouseMessage),
  }
-@@ -129,6 +130,14 @@
+@@ -129,6 +132,14 @@
  pub trait Host {
      /// Get an arbitrary time counter, measured in milliseconds.
      fn ticks(&self) -> u32;
@@ -277,7 +311,7 @@
      fn system_time(&self) -> chrono::DateTime<chrono::Local>;
  
      /// Get the next pending message, or None if no message waiting.
-@@ -142,6 +151,8 @@
+@@ -142,6 +153,8 @@
  
      /// Retrieves the absolute (Windows-style) path of the current working directory.
      fn current_dir(&self) -> Result<WindowsPathBuf, ERROR>;
@@ -2441,7 +2475,7 @@
 +}
 --- a/win32/src/winapi/user32/mod.rs
 +++ b/win32/src/winapi/user32/mod.rs
-@@ -1,11 +1,19 @@
+@@ -1,14 +1,24 @@
  #![allow(non_snake_case)]
  
 +pub(crate) mod controls;
@@ -2461,7 +2495,12 @@
  mod resource;
  mod timer;
  mod window;
-@@ -27,6 +35,11 @@
++mod placement;
++pub use placement::*;
+ 
+ use super::handle::Handles;
+ use super::types::HWND;
+@@ -27,6 +37,11 @@
  
  #[derive(Default)]
  pub struct State {
@@ -2483,6 +2522,53 @@
      let window = machine.state.user32.windows.get_mut(hWnd).unwrap();
      match &mut window.typ {
          WindowType::TopLevel(toplevel) => {
+--- /dev/null
++++ b/win32/src/winapi/user32/placement.rs
+@@ -0,0 +1,44 @@
++//! Wine-derived normal placement subset; LGPL-2.1-or-later.
++//! wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2,
++//! dlls/win32u/window.c:3172-3186,3317-3333 and set_window_placement helper.
++//! Copyright 1993, 1994 Alexandre Julliard.
++//! Single virtual monitor/work-area origin (0,0); normal/hide only. No fake
++//! minimized/maximized state, taskbar offsets, async ownership or cross-thread UI.
++use crate::{Machine,winapi::{kernel32,types::{HWND,RECT}}};
++use super::window::{WindowType,WindowStyle,window_rect};
++use memory::{Extensions,ExtensionsMut};
++const TRACE_CONTEXT:&str="user32/placement";
++fn error(machine:&mut Machine,e:u32)->bool{kernel32::teb_mut(machine).LastErrorValue=e;false}
++fn pointer(machine:&Machine,p:u32)->bool{p!=0&&p.checked_add(44).map_or(false,|e|e as usize<=machine.mem().as_slice().len())}
++#[win32_derive::dllexport]
++pub fn GetWindowPlacement(machine:&mut Machine,hWnd:HWND,lpwndpl:u32)->bool{
++ if !pointer(machine,lpwndpl)||machine.mem().get_pod::<u32>(lpwndpl)!=44{return error(machine,87)}
++ let Some(w)=machine.state.user32.windows.get(hWnd)else{return error(machine,1400)};
++ if !matches!(w.typ,WindowType::TopLevel(_)){return error(machine,50)}
++ let show=if w.style.contains(WindowStyle::VISIBLE){1}else{0};
++ let mut rect=RECT{left:0,top:0,right:0,bottom:0};if !super::GetWindowRect(machine,hWnd,Some(&mut rect)){return false}
++ let words=[44u32,0,show,u32::MAX,u32::MAX,u32::MAX,u32::MAX,rect.left as u32,rect.top as u32,rect.right as u32,rect.bottom as u32];
++ for(i,v)in words.into_iter().enumerate(){machine.mem().put_pod::<u32>(lpwndpl+i as u32*4,v)}true
++}
++#[win32_derive::dllexport]
++pub async fn SetWindowPlacement(machine:&mut Machine,hWnd:HWND,lpwndpl:u32)->bool{
++ if !pointer(machine,lpwndpl)||machine.mem().get_pod::<u32>(lpwndpl)!=44{return error(machine,87)}
++ if machine.state.user32.windows.get(hWnd).is_none(){return error(machine,1400)}
++ let flags=machine.mem().get_pod::<u32>(lpwndpl+4);let show=machine.mem().get_pod::<u32>(lpwndpl+8);
++ if flags!=0||!matches!(show,0|1|4|5|8|10){return error(machine,50)}
++ let x=machine.mem().get_pod::<i32>(lpwndpl+28);let y=machine.mem().get_pod::<i32>(lpwndpl+32);
++ let width=machine.mem().get_pod::<i32>(lpwndpl+36).checked_sub(x);let height=machine.mem().get_pod::<i32>(lpwndpl+40).checked_sub(y);
++ let(Some(width),Some(height))=(width,height)else{return error(machine,87)};
++ if width<=0||height<=0||width>4096||height>4096{return error(machine,87)}
++ let w=machine.state.user32.windows.get_mut(hWnd).unwrap();if !matches!(w.typ,WindowType::TopLevel(_)){return error(machine,50)}
++ let mut border=RECT{left:0,top:0,right:0,bottom:0};window_rect(&mut border,w.style,true);
++ let cw=width-(border.right-border.left);let ch=height-(border.bottom-border.top);if cw<=0||ch<=0{return error(machine,87)}
++ let previous=w.style.contains(WindowStyle::VISIBLE);let visible=show!=0;
++ let host=w.expect_toplevel_mut();if let Err(e)=host.host.set_position(x,y){kernel32::set_last_error(machine,e);return false}if let Err(e)=host.host.set_visible(visible){kernel32::set_last_error(machine,e);return false}
++ let w=machine.state.user32.windows.get_mut(hWnd).unwrap();w.x=x;w.y=y;w.style.set(WindowStyle::VISIBLE,visible);if let Some(c)=w.control.as_mut(){c.style=(c.style&!0x10000000)|if visible{0x10000000}else{0};}w.set_client_size(&mut *machine.host,cw as u32,ch as u32);
++ super::controls::paint_children(machine,hWnd);
++ // Guest messages are real calls; no references into window/guest memory survive await.
++ Box::pin(super::SendMessageA(machine,hWnd,Err(3),0,(x as u32&0xffff)|((y as u32&0xffff)<<16))).await;
++ Box::pin(super::SendMessageA(machine,hWnd,Err(5),0,cw as u32|((ch as u32)<<16))).await;
++ if visible!=previous{Box::pin(super::SendMessageA(machine,hWnd,Err(0x18),visible as u32,0)).await;}true
++}
 --- /dev/null
 +++ b/win32/src/winapi/user32/raw_input.rs
 @@ -0,0 +1,46 @@
@@ -2831,6 +2917,15 @@
  
  async fn def_window_proc(
      machine: &mut Machine,
+@@ -766,7 +784,7 @@
+ }
+ 
+ /// Compute window rectangle from client rectangle.
+-fn window_rect(rect: &mut RECT, style: WindowStyle, menu: bool) {
++pub(super) fn window_rect(rect: &mut RECT, style: WindowStyle, menu: bool) {
+     const CAPTION: i32 = 19;
+     rect.top = rect.top - CAPTION;
+     rect.left = rect.left;
 @@ -941,8 +959,9 @@
  
  #[win32_derive::dllexport]
@@ -2857,15 +2952,35 @@
  
      let mut result = RECT {
          left: 0,
-@@ -976,7 +1000,6 @@
+@@ -966,9 +990,9 @@
+     let menu = true; // TODO
+     window_rect(&mut result, window.style, menu);
+ 
+-    // TODO: this pretends that the window is at 0,0
+-    let offset_x = -result.left;
+-    let offset_y = -result.top;
++    // Top-level coordinates follow the virtual desktop; child transform is partial.
++    let offset_x = window.x-result.left;
++    let offset_y = window.y-result.top;
+ 
+     result.left += offset_x;
+     result.right += offset_x;
+@@ -976,14 +1000,8 @@
      result.top += offset_y;
      result.bottom += offset_y;
  
 -    let rect = lpRect.unwrap();
      *rect = result;
      true
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn GetWindowPlacement(_machine: &mut Machine, hWnd: HWND, lpwndpl: Option<&mut u32>) -> bool {
+-    false
  }
-@@ -1021,16 +1044,9 @@
+ 
+ #[win32_derive::dllexport]
+@@ -1021,16 +1039,9 @@
  }
  
  #[win32_derive::dllexport]
@@ -2885,7 +3000,7 @@
  }
  
  #[win32_derive::dllexport]
-@@ -1077,7 +1093,10 @@
+@@ -1077,7 +1088,10 @@
  }
  
  #[win32_derive::dllexport]
@@ -2897,7 +3012,7 @@
      match machine.state.user32.windows.get_mut(hWnd) {
          Some(window) => {
              window
-@@ -1105,7 +1124,62 @@
+@@ -1105,7 +1119,62 @@
      todo!();
  }
  

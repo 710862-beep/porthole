@@ -784,7 +784,7 @@ pub async fn DefWindowProcW(
 }
 
 /// Compute window rectangle from client rectangle.
-fn window_rect(rect: &mut RECT, style: WindowStyle, menu: bool) {
+pub(super) fn window_rect(rect: &mut RECT, style: WindowStyle, menu: bool) {
     const CAPTION: i32 = 19;
     rect.top = rect.top - CAPTION;
     rect.left = rect.left;
@@ -990,9 +990,9 @@ pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT
     let menu = true; // TODO
     window_rect(&mut result, window.style, menu);
 
-    // TODO: this pretends that the window is at 0,0
-    let offset_x = -result.left;
-    let offset_y = -result.top;
+    // Top-level coordinates follow the virtual desktop; child transform is partial.
+    let offset_x = window.x-result.left;
+    let offset_y = window.y-result.top;
 
     result.left += offset_x;
     result.right += offset_x;
@@ -1002,11 +1002,6 @@ pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT
 
     *rect = result;
     true
-}
-
-#[win32_derive::dllexport]
-pub fn GetWindowPlacement(_machine: &mut Machine, hWnd: HWND, lpwndpl: Option<&mut u32>) -> bool {
-    false
 }
 
 #[win32_derive::dllexport]

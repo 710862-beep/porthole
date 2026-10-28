@@ -338,3 +338,24 @@ inválido retorna -1/1413; LB_SET preserva o TRUE documentado no código Wine.
 Erros do dispatcher são aplicados após soltar o borrow do controle, evitando
 alias de Machine/TEB. Sem dereferenciar item-data ou pintar um ponteiro.
 Novo CI necessário para essas duas correções.
+
+## Resultado 40761708664: 131 presents de startup, próximo SetWindowPlacement
+
+https://github.com/710862-beep/porthole/actions/runs/40761708664
+Fonte 0dcc42d: build/24 testes win32, 5/5 PEs e controles PASS (64 presents).
+IsWindowVisible e os item-data passaram. DOOM95 chegou a 131 presents/79 mudanças,
+mas sem 5s/input/loop; causal **user32!SetWindowPlacement**, não gameplay.
+
+Adaptação seguinte extrai NtUserSet/GetWindowPlacement e auxiliares do Wine.
+Escopo suportado: top-level normal/hide, 44 bytes x86, length/retângulo/bounds,
+posição/tamanho/visibilidade reais no Host DOM, retornos e mensagens guest.
+GetWindowPlacement deixou de ser false incondicional. Min/max/flags assíncronos,
+work-area/taskbar/DPI múltiplos retornam NOT_SUPPORTED neste perfil, não sucesso.
+Ponteiros são copiados antes de mutar estado; não reter Window/mem borrow em
+MOVE/SIZE/SHOWWINDOW callback. Novos métodos Host nativos sem suporte falham
+explicitamente; ponte Wasm implementa posição/visibilidade em elementos reais.
+Fixture verifica HWND NULL, length inválido e roundtrip retângulo normal real.
+GetWindowRect top-level usa posição armazenada; transformação child→screen
+permanece parcial. Full ShowWindow/ativação/oclusão não está sendo reivindicado.
+Screenshot real do Chromium agora é transportado como evidência diagnóstica;
+uma imagem do launcher não substitui o gate de gameplay.

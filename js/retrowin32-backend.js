@@ -487,6 +487,8 @@
       };
       const hostWindow = {
         canvas,
+        set_position(x,y) {const element=frame||canvas;record.x=x;record.y=y;if(element.style){element.style.position='absolute';element.style.left=x+'px';element.style.top=y+'px';}},
+        set_visible(visible) {record.visible=Boolean(visible);const element=frame||canvas;if(element.style)element.style.display=visible?'':'none';},
         get title() { return record.title; },
         set title(value) {
           record.title = String(value);

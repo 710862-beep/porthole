@@ -119,3 +119,12 @@ Copyright 1993, 1994 Alexandre Julliard/LGPL), traversing only real parents, not
 top-level owners. Item-data messages use `listbox.c:2776-2792` and the combo
 forwarding at `combo.c:2063-2066`, preserving opaque x86 DWORD data and Wine's
 undocumented TRUE return from LB_SETITEMDATA, not a fabricated pointer/value.
+
+### Wine-derived normal window placement subset
+
+`user32/placement.rs` adapts `dlls/win32u/window.c:3172-3186,3317-3333` and
+`set_window_placement` helpers, Copyright 1993, 1994 Alexandre Julliard,
+LGPL-2.1-or-later. A 44-byte x86 WINDOWPLACEMENT is checked/copied; a single
+virtual work area replaces monitor/server queries. Normal position/size and
+visibility reach real Host DOM methods; guest MOVE/SIZE/SHOWWINDOW callbacks
+remain real. Min/max/DPI/taskbar/asynchronous placement explicitly unsupported.

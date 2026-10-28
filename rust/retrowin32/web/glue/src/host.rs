@@ -97,6 +97,8 @@ const JSWINDOW_TS: &'static str = r#"
 export interface JsWindow {
   title: string;
   set_size(width: number, height: number): void;
+  set_position(x: number, y: number): void;
+  set_visible(visible: boolean): void;
 }"#;
 
 #[wasm_bindgen]
@@ -106,9 +108,15 @@ extern "C" {
     fn set_title(this: &JsWindow, title: &str);
     #[wasm_bindgen(method)]
     fn set_size(this: &JsWindow, width: u32, height: u32);
+    #[wasm_bindgen(method)]
+    fn set_position(this: &JsWindow,x:i32,y:i32);
+    #[wasm_bindgen(method)]
+    fn set_visible(this: &JsWindow,visible:bool);
 }
 
 impl win32::Window for JsWindow {
+    fn set_position(&mut self,x:i32,y:i32)->Result<(),win32::ERROR>{JsWindow::set_position(self,x,y);Ok(())}
+    fn set_visible(&mut self,visible:bool)->Result<(),win32::ERROR>{JsWindow::set_visible(self,visible);Ok(())}
     fn set_title(&mut self, title: &str) {
         JsWindow::set_title(self, title);
     }
