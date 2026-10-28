@@ -11,8 +11,8 @@ use std::{fmt::Write, path::Path};
 fn write_if_changed(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     match std::fs::read(path) {
         Ok(old_contents) if old_contents == contents => return Ok(()),
-        Ok(_) => {},
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
     std::fs::write(path, contents)?;
@@ -302,6 +302,7 @@ mod porthole_generator_tests {
         write_if_changed(&path, b"first").unwrap();
         write_if_changed(&path, b"second").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert!(write_if_changed(&dir, b"not a regular file").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

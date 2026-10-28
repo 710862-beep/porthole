@@ -12,6 +12,7 @@
     "rust-toolchain.toml",
     "web/glue/src/host.rs",
     "win32/Cargo.toml",
+    "win32/derive/src/main.rs",
     "win32/src/host.rs",
     "win32/src/machine_emu.rs",
     "win32/src/shims.rs",
@@ -25,5 +26,13 @@
     "x86/src/x86.rs"
   ],
   "localBuildStatus": "BUILD_BLOCKED: missing cargo",
-  "promoted": false
+  "promoted": false,
+  "remoteBuild": {
+    "sha": "e872de720385b4301a5167c3391b0f4f7571aeb4",
+    "runId": 40712277632,
+    "url": "https://github.com/710862-beep/porthole/actions/runs/40712277632",
+    "build": "PASS",
+    "integrity": "PASS on CI",
+    "guests": "FAIL; not promoted"
+  }
 }
