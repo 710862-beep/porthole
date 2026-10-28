@@ -1,0 +1,81 @@
+name: Rust Wasm candidate
+
+on:
+  push:
+    branches: [arena/6a52f3cb-porthole]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-wasm-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-wasm-candidate:
+    name: Rebuild and validate candidate Rust/Wasm (no automatic promotion)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@1.81.0
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - name: Install PE DLL linker and matching binding generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          cargo install wasm-bindgen-cli --version 0.2.92 --locked
+      - name: Rebuild Wasm
+        id: rebuild
+        run: bash scripts/rebuild-wasm.sh
+      - name: Prepare authored synthetic PE32 fixtures
+        if: always() && steps.rebuild.outcome == 'success'
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+          PORTHOLE_ZIG="$RUNNER_TEMP/porthole-tools/ziglang/zig" node scripts/build-synthetic.mjs
+      - name: Validate all five PEs against candidate (failures are mandatory)
+        if: always() && steps.rebuild.outcome == 'success'
+        env:
+          PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
+          PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
+        run: node scripts/run-synthetic.mjs
+      - name: Acquire real upstream and game probes
+        if: always() && steps.rebuild.outcome == 'success'
+        run: node scripts/fetch-with-fallbacks.mjs
+      - name: Probe original binaries against candidate
+        if: always() && steps.rebuild.outcome == 'success'
+        env:
+          PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
+          PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
+        run: node scripts/probe-test-assets.mjs
+      - name: Validate candidate Wasm integrity
+        if: always() && steps.rebuild.outcome == 'success'
+        run: node scripts/validate-wasm.mjs artifacts/wasm-candidate
+      - name: Publish candidate Wasm and binding
+        if: always() && steps.rebuild.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrowin32-candidate-wasm
+          path: artifacts/wasm-candidate/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish rebuild and test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            artifacts/*.json
+            artifacts/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
