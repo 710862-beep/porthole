@@ -102,7 +102,7 @@ fn msg_from_message(machine:&mut Machine,message: host::Message) -> MSG {
             if let Some((hwnd,cx,cy))=child{msg.hwnd=hwnd;x-=cx;y-=cy;}else{break}
         }
         msg.lParam=((y as u32&0xffff)<<16)|(x as u32&0xffff);
-        if msg.message==WM::LBUTTONDOWN as u32{machine.state.user32.focused=msg.hwnd;}
+        if msg.message==WM::LBUTTONDOWN as u32{super::SetFocus(machine,msg.hwnd);}
     }
     msg
 }

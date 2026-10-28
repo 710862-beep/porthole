@@ -8,6 +8,8 @@ void mainCRTStartup(void){
  HMODULE common=LoadLibraryA("comctl32.dll");REQUIRE(common);void (WINAPI *initOrdinal)(void)=(void (WINAPI *)(void))GetProcAddress(common,(LPCSTR)17);REQUIRE(initOrdinal);initOrdinal();
  WNDCLASSA wc={0};wc.lpfnWndProc=parent_proc;wc.lpszClassName="ControlsParent";REQUIRE(RegisterClassA(&wc));
  HWND parent=CreateWindowExA(0,"ControlsParent","Controls",WS_VISIBLE,0,0,400,300,0,0,0,0);REQUIRE(parent);
+ REQUIRE(!FindWindowA("NoSuchClass",0));REQUIRE(FindWindowA("ControlsParent","Controls")==parent);
+ HWND ansi=CreateWindowExA(0,"ControlsParent","Windows\xae 95",0,0,0,100,100,0,0,0,0);REQUIRE(ansi);REQUIRE(FindWindowA("ControlsParent","Windows\xae 95")==ansi);REQUIRE(SetWindowTextA(ansi,"New\xae title"));REQUIRE(FindWindowA("ControlsParent","New\xae title")==ansi);REQUIRE(DestroyWindow(ansi));
  HWND button=CreateWindowExA(0,"BUTTON","Click",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,5,5,100,24,parent,(HMENU)101,0,0);REQUIRE(button);
  HWND edit=CreateWindowExA(0,"EDIT","abc",WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,5,35,180,24,parent,(HMENU)102,0,0);REQUIRE(edit);
  HWND stat=CreateWindowExA(0,"STATIC","Label",WS_CHILD|WS_VISIBLE,5,65,100,20,parent,0,0,0);REQUIRE(stat);

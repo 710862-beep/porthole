@@ -71,12 +71,6 @@ jobs:
           PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
           PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
         run: node scripts/run-synthetic.mjs
-      - name: Validate native Common Controls guest messages
-        if: always() && steps.rebuild.outcome == 'success'
-        env:
-          PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
-          PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
-        run: node scripts/run-synthetic.mjs controls-test
       - name: Acquire real upstream and game probes
         if: always() && steps.rebuild.outcome == 'success'
         env:

@@ -73,6 +73,7 @@ pub struct UpdateRegion {
 }
 
 pub struct Window {
+    pub title: String,
     pub parent: HWND,
     pub id: u32,
     pub x: i32,
@@ -270,7 +271,7 @@ unsafe impl memory::Pod for WNDCLASSEXW {}
 #[win32_derive::dllexport]
 pub fn RegisterClassExA(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXA>) -> u32 {
     let lpWndClassEx = lpWndClassEx.unwrap();
-    let name = expect_ascii(machine.mem().slicez(lpWndClassEx.lpszClassName)).to_string();
+    let name = crate::str16::decode_cp1252(machine.mem().slicez(lpWndClassEx.lpszClassName));
     let wndclass = WndClass {
         name,
         wndproc: lpWndClassEx.lpfnWndProc,
@@ -355,6 +356,11 @@ impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassName<'a, st
         }
     }
 }
+#[derive(Debug)]
+pub enum CreateWindowClassNameA {Atom(u16),Name(String)}
+impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassNameA {
+    unsafe fn from_arg(mem:memory::Mem<'a>,arg:u32)->Self {if arg<=0xffff{Self::Atom(arg as u16)}else{Self::Name(crate::str16::decode_cp1252(mem.slicez(arg)))}}
+}
 impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassName<'a, Str16> {
     unsafe fn from_arg(mem: memory::Mem<'a>, arg: u32) -> Self {
         if arg <= 0xFFFF {
@@ -369,8 +375,8 @@ impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassName<'a, St
 pub async fn CreateWindowExA(
     machine: &mut Machine,
     dwExStyle: Result<WindowStyleEx, u32>,
-    lpClassName: CreateWindowClassName<'_, str>,
-    lpWindowName: Option<&str>,
+    lpClassName: CreateWindowClassNameA,
+    lpWindowName: AnsiString,
     dwStyle: Result<WindowStyle, u32>,
     X: u32,
     Y: u32,
@@ -383,13 +389,13 @@ pub async fn CreateWindowExA(
 ) -> HWND {
     let class_name_wide: String16;
     let class_name = match lpClassName {
-        CreateWindowClassName::Name(name) => {
-            class_name_wide = String16::from(name);
+        CreateWindowClassNameA::Name(name) => {
+            class_name_wide = String16::from(&name);
             CreateWindowClassName::Name(class_name_wide.as_str16())
         }
-        CreateWindowClassName::Atom(a) => CreateWindowClassName::Atom(a),
+        CreateWindowClassNameA::Atom(a) => CreateWindowClassName::Atom(a),
     };
-    let window_name = String16::from(lpWindowName.unwrap_or(""));
+    let window_name = String16::from(lpWindowName.0.as_deref().unwrap_or(""));
     CreateWindowExW(
         machine,
         dwExStyle,
@@ -425,7 +431,7 @@ pub async fn CreateWindowExW(
     lpParam: u32,
 ) -> HWND {
     let class_name = match lpClassName {
-        CreateWindowClassName::Atom(_) => unimplemented!(),
+        CreateWindowClassName::Atom(_) => {winapi::kernel32::teb_mut(machine).LastErrorValue=1407;return HWND::null();},
         CreateWindowClassName::Name(name) => name.to_string(),
     };
     super::controls::standard(machine);
@@ -492,7 +498,7 @@ pub async fn CreateWindowExW(
     let raw_style = match dwStyle {Ok(value)=>value.bits(),Err(value)=>value};
     let control = if wndclass.wndproc==super::controls::NATIVE_PROC {super::controls::kind(&class_name).map(|kind|super::controls::Control::new(kind,&lpWindowName.map(|s|s.to_string()).unwrap_or_default(),raw_style))}else{None};
     let window = Window {
-        parent:hWndParent,id:hMenu,x:X as i32,y:Y as i32,control,
+        title:lpWindowName.map(|s|s.to_string()).unwrap_or_default(),parent:hWndParent,id:hMenu,x:X as i32,y:Y as i32,control,
         hwnd,
         typ,
         width,
@@ -522,7 +528,7 @@ pub fn DestroyWindow(machine: &mut Machine, hWnd: HWND) -> bool {
     if machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false}
     let children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==hWnd).map(|w|w.hwnd).collect();
     for child in children {DestroyWindow(machine,child);}
-    machine.state.user32.windows.remove(hWnd);true
+    machine.state.user32.windows.remove(hWnd);if machine.state.user32.focused==hWnd{machine.state.user32.focused=HWND::null()}true
 }
 
 #[win32_derive::dllexport]
@@ -558,18 +564,8 @@ pub fn GetLastActivePopup(machine: &mut Machine) -> HWND {
 }
 
 #[win32_derive::dllexport]
-pub fn FindWindowA(
-    machine: &mut Machine,
-    lpClassName: Option<&str>,
-    lpWindowName: Option<&str>,
-) -> HWND {
-    match machine.state.user32.windows.iter().find(|_window| {
-        // TODO: obey class/window name
-        true
-    }) {
-        Some(window) => window.hwnd,
-        None => HWND::null(),
-    }
+pub fn FindWindowA(machine:&mut Machine,lpClassName:AnsiString,lpWindowName:AnsiString)->HWND {
+    machine.state.user32.windows.iter().find(|w|matches!(w.typ,WindowType::TopLevel(_))&&lpClassName.0.as_ref().map_or(true,|name|w.wndclass.name.eq_ignore_ascii_case(name))&&lpWindowName.0.as_ref().map_or(true,|title|w.title==*title)).map_or(HWND::null(),|w|w.hwnd)
 }
 
 #[win32_derive::dllexport]
@@ -1096,7 +1092,9 @@ pub fn ReleaseCapture(_machine: &mut Machine) -> bool {
 }
 
 #[win32_derive::dllexport]
-pub fn SetWindowTextA(machine: &mut Machine, hWnd: HWND, lpString: Option<&str>) -> bool {
+pub fn SetWindowTextA(machine: &mut Machine, hWnd: HWND, lpString: AnsiString) -> bool {
+    let lpString=lpString.0.as_deref();
+    if let Some(w)=machine.state.user32.windows.get_mut(hWnd){w.title=lpString.unwrap_or("").into();}
     if let Some(c)=machine.state.user32.windows.get_mut(hWnd).and_then(|w|w.control.as_mut()){c.text=lpString.unwrap_or("").as_bytes().to_vec();c.start=c.text.len();c.end=c.start;super::controls::paint(machine,hWnd);return true}
     match machine.state.user32.windows.get_mut(hWnd) {
         Some(window) => {

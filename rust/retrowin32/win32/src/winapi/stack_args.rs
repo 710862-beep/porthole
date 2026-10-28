@@ -214,3 +214,7 @@ impl ToX86 for () {
         0
     }
 }
+
+impl<'a> FromArg<'a> for crate::str16::AnsiString {
+    unsafe fn from_arg(mem:Mem<'a>,arg:u32)->Self {Self(if arg==0{None}else{Some(crate::str16::decode_cp1252(mem.slicez(arg)))})}
+}

@@ -48,16 +48,7 @@ impl Str16 {
     }
 
     pub fn to_string(&self) -> String {
-        self.0
-            .iter()
-            .map(|&c| {
-                if c > 0xFF {
-                    // TODO
-                    panic!("unhandled non-ascii {:?}", char::from_u32(c as u32));
-                }
-                c as u8 as char
-            })
-            .collect()
+        String::from_utf16_lossy(&self.0)
     }
 }
 
@@ -94,16 +85,7 @@ impl String16 {
     }
 
     pub fn from(str: &str) -> Self {
-        String16(
-            str.chars()
-                .map(|c| {
-                    if c as u16 > 0x7f {
-                        panic!("unhandled non-ascii {:?}", c);
-                    }
-                    c as u16
-                })
-                .collect(),
-        )
+        String16(str.encode_utf16().collect())
     }
 }
 
@@ -123,4 +105,17 @@ pub fn expect_ascii(slice: &[u8]) -> &str {
             panic!("failed to ascii convert {:?}: {}", slice, err);
         }
     }
+}
+
+/// Owned ANSI argument for APIs that must decode the Win95 western ACP, not UTF-8.
+#[derive(Debug)]
+pub struct AnsiString(pub Option<String>);
+pub fn decode_cp1252(bytes:&[u8])->String {
+    const C1:[u16;32]=[0x20ac,0x81,0x201a,0x192,0x201e,0x2026,0x2020,0x2021,0x2c6,0x2030,0x160,0x2039,0x152,0x8d,0x17d,0x8f,0x90,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,0x2dc,0x2122,0x161,0x203a,0x153,0x9d,0x17e,0x178];
+    bytes.iter().map(|&b|char::from_u32(if (0x80..0xa0).contains(&b){C1[(b-0x80)as usize]as u32}else{b as u32}).unwrap()).collect()
+}
+#[cfg(test)] mod encoding_tests {
+    use super::*;
+    #[test] fn win95_caption_is_cp1252_not_utf8(){assert_eq!(decode_cp1252(b"Windows\xae 95 \x80"),"Windows® 95 €");}
+    #[test] fn utf16_round_trip_includes_surrogates(){let text="Windows® € 😀";assert_eq!(String16::from(text).to_string(),text);}
 }
