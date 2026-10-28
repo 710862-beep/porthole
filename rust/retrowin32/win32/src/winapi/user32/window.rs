@@ -1127,3 +1127,8 @@ mod porthole_style_tests {
         assert_eq!(style.bits(),0x54001844);
     }
 }
+
+#[win32_derive::dllexport]
+pub fn IsWindow(machine: &mut Machine, hwnd: HWND) -> bool {
+    hwnd.to_raw()==0xffff0001 || (!hwnd.is_null() && machine.state.user32.windows.get(hwnd).is_some())
+}

@@ -7,6 +7,7 @@ void mainCRTStartup(void) {
     SetLastError(0);REQUIRE(SendMessageA(0,WM_SETFONT,0,0)==0);REQUIRE(GetLastError()==ERROR_INVALID_WINDOW_HANDLE);
     HWND desktop=GetDesktopWindow();RECT desktopRect;REQUIRE(desktop!=0 && GetWindowRect(desktop,&desktopRect));REQUIRE(desktopRect.right==GetSystemMetrics(SM_CXSCREEN) && desktopRect.bottom==GetSystemMetrics(SM_CYSCREEN));
     SetLastError(0);REQUIRE(!GetWindowRect(0,&desktopRect));REQUIRE(GetLastError()==ERROR_INVALID_WINDOW_HANDLE);
+    REQUIRE(IsWindow(desktop) && !IsWindow(0) && !IsWindow((HWND)0xdeadbeef));
     RECT workArea;REQUIRE(SystemParametersInfoA(SPI_GETWORKAREA,0,&workArea,0));REQUIRE(workArea.left==0 && workArea.top==0 && workArea.right==desktopRect.right && workArea.bottom==desktopRect.bottom);
     REQUIRE(!SystemParametersInfoA(0xffff,0,0,0));REQUIRE(GetLastError()==ERROR_NOT_SUPPORTED);
     RAWINPUTDEVICE dev={1,2,0,0};
