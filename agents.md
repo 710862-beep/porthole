@@ -160,3 +160,11 @@ Honestidade rigorosa: injeção sintética não valida input físico; socket/con
 ## Estado confirmado — CI 40727092030, 2026-10-28
 
 Fonte `6eb2c0eb6207111a5b38c952aa7c1f0bf57b07c1`; [run](https://github.com/710862-beep/porthole/actions/runs/40727092030). Input headless injetado e ws2_32 guest Node passaram; cinco PEs sintéticos PASS. DOOM95 com DLLs/IWAD reais adquiridos falha causalmente em comctl32.dll ordinal 17 (InitCommonControls). Janela/presents/exit 0 não validam gameplay. Gate `promotable=false`, workflow vermelho, vendor intacto. Os resultados de fases anteriores são históricos. Continuar com controles comuns e regressão guest; não considerar os três bloqueios resolvidos. Evidências e limites: [relatório](docs/remaining-blockers.md).
+
+## Fase 0 — Common Controls e gameplay (2026-10-28)
+
+Eu devo implementar Common Controls reais com comportamento funcional, não stubs vazios. Cada controle deve suportar suas mensagens específicas (WM_CREATE, WM_PAINT, WM_COMMAND, etc.) e renderizar corretamente.
+
+Continuo atuando como engenheiro sênior/arquiteto de compatibilidade Rust/Wasm e CI. Adapto os exemplos à ABI x86 e memória guest do retrowin32: ponteiros guest não são ponteiros nativos Rust. BUTTON/EDIT/STATIC/LISTBOX são classes padrão user32; comctl32 deve inicializar classes segundo suas flags reais, não registrar nomes fictícios como prova de implementação. Funções DLL devem usar o gerador/loader existente, incluindo ordinal 17, e não exports wasm-bindgen desconectados da IAT.
+
+Não declaro controles funcionais sem testes guest de estado, mensagens e renderização. Não atribuo input processado ao mero despacho de eventos JS nem game loop a um contador artificial. Só avalio promoção com evidência do mesmo candidato: cinco PEs PASS, sessão de cinco segundos, >=100 presents e frames efetivos, input consumido e loop do jogo demonstrado. Falhas e evidências insuficientes mantêm promotable=false; vendor não é substituído antecipadamente. Cada correção executável deve passar pelo CI remoto. Limites e implementação parcial serão explicitados.
