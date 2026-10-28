@@ -82,3 +82,15 @@ EnableWindow/IsWindowEnabled marked section in `user32/window.rs` adapts Wine
 Copyright 1993, 1994 Alexandre Julliard. Server style updates are per-process
 window-table updates; WM_CANCELMODE/WM_ENABLE still reach guest wndprocs.
 Accessibility WinEvents/server/multi-thread window ownership are not ported.
+
+### Wine-derived cooperative mutex objects
+
+`kernel32/mutex.rs` and mutex portions of sync/misc/init adapt Wine
+`dlls/kernelbase/sync.c:702-760,782-785` and `server/mutex.c:85-140,185-198`,
+Copyright 1998 Alexandre Julliard, LGPL-2.1-or-later, pinned SHA above.
+`dlls/ntdll/unix/sync.c` was read as the NT/server boundary reference, not
+translated as Linux syscalls. Kernel object storage is per-Machine; real guest
+CPU/thread IDs, recursion, shared named objects, owned-object references,
+ReleaseMutex errors and abandonment feed the existing cooperative waits.
+Security descriptors/access masks, global cross-process objects and NT futex
+fast paths are not ported.

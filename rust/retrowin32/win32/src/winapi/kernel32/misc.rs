@@ -269,6 +269,7 @@ pub fn FormatMessageW(
 
 #[win32_derive::dllexport]
 pub fn CloseHandle(machine: &mut Machine, hObject: HFILE) -> bool {
+    if machine.state.kernel32.mutexes.close(hObject.to_raw()){return true}
     if machine.state.kernel32.thread_handles.remove(&hObject.to_raw()).is_some() {
         return true;
     }

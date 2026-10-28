@@ -28,13 +28,17 @@ fn ready(machine: &Machine, handle: u32) -> Option<bool> {
                 .map(|cpu| matches!(cpu.state, x86::CPUState::Terminated(_)));
         }
     }
+    if let Some(ready)=machine.state.kernel32.mutexes.ready(handle,super::mutex_tid(machine)){return Some(ready)}
     machine.state.kernel32.event_handles.get(HEVENT::from_raw(handle)).map(|e| e.state)
 }
 
-fn consume(machine: &mut Machine, handle: u32) {
+fn consume(machine: &mut Machine, handle: u32)->bool {
+    let tid=super::mutex_tid(machine);
+    if machine.state.kernel32.mutexes.ready(handle,tid).is_some(){return machine.state.kernel32.mutexes.acquire(handle,tid)}
     if let Some(event) = machine.state.kernel32.event_handles.get_mut(HEVENT::from_raw(handle)) {
         if !event.manual { event.state = false; }
     }
+    false
 }
 
 async fn wait(machine: &mut Machine, handles: Vec<u32>, all: bool, timeout: u32) -> u32 {
@@ -45,16 +49,17 @@ async fn wait(machine: &mut Machine, handles: Vec<u32>, all: bool, timeout: u32)
         log::debug!("Porthole wait count={} all={} timeout={}", handles.len(), all, timeout);
         let start = machine.host.ticks();
         loop {
+            super::refresh_mutexes(machine);
             let states: Option<Vec<bool>> = handles.iter().map(|h| ready(machine, *h)).collect();
             let states = match states { Some(s) => s, None => return fail(machine, 6) };
             if all && states.iter().all(|s| *s) {
-                for handle in &handles { consume(machine, *handle); }
-                return 0;
+                let mut abandoned=false;for handle in &handles {abandoned|=consume(machine,*handle);}
+                return if abandoned{0x80}else{0};
             }
             if !all {
                 if let Some(index) = states.iter().position(|s| *s) {
-                    consume(machine, handles[index]);
-                    return index as u32;
+                    let abandoned=consume(machine, handles[index]);
+                    return index as u32+if abandoned{0x80}else{0};
                 }
             }
             // One deadline for the entire wait, including wait-all. Readiness

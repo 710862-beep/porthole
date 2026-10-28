@@ -241,3 +241,29 @@ nenhuma notificação de acessibilidade foi inventada. Fixture exercita
 false/true/repetição, foco/estado observável e handle inválido. Ainda falta
 conformidade completa de foco/capture/WinEvents e ownership entre threads.
 Novo build remoto necessário; gameplay continua não validado.
+
+## Nono resultado remoto: 40756848168
+
+https://github.com/710862-beep/porthole/actions/runs/40756848168
+Fonte `941c6d1577d10606285d2d267752699c413e054c`: build, 21 Rust tests,
+5/5 PEs, controles/diálogo/updown PASS (**58 presents**). EnableWindow passou.
+DOOM95 chegou a 57 presents e call EBX=0 em ip=0x34456, sem causalImport
+porque o target fora carregado antes do call register. Desassemblagem real de
+DOOMLNCH.DLL: RVA 0x4456, EBX carregado de IAT RVA 0x17348; lookup PE dessa
+entrada identifica **KERNEL32!CreateMutexA**, não GetDlgItem (último trace).
+
+Mineração seguinte: CreateMutexA/ExA/ExW em kernelbase/sync.c, fronteira NT em
+ntdll/unix/sync.c, objeto/ownership em server/mutex.c. Adaptação revisada por
+função: `create` compartilha objeto por nome e retorna ERROR_ALREADY_EXISTS;
+`ready` compara CPU/thread real; `acquire` incrementa recursão; `release`
+valida owner e só libera em zero; `abandon` trata CPUs terminadas e entrega
+WAIT_ABANDONED; `close` fecha handle sem soltar referência do owner vivo.
+Wait-all consome apenas após todos prontos, cooperativamente, sem await entre
+teste e aquisição. ANSI usa o adaptador CP1252 existente, W usa UTF16; nenhum
+ponteiro host é exposto ao guest. Nomes são deliberadamente isolados por
+processo/Machine; security attributes retornam NOT_SUPPORTED, não sucesso.
+Fixtures novas exercitam aliases nomeados, recursão, contenção entre CPUs,
+release por não-owner, fechamento e abandono com thread real emulada.
+Dois testes Rust de estado/vida complementam, não substituem, o PE remoto.
+Novo candidato ainda precisa compilar/executar remotamente. Gameplay não
+validado; enumeração Combo 0x14a/0x14c também permanece parcial e diagnosticada.

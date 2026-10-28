@@ -36,6 +36,7 @@ jobs:
           node scripts/extract-wine-api.mjs kernelbase FindFirstFileA
           node scripts/extract-wine-api.mjs kernelbase FileTimeToLocalFileTime
           node scripts/extract-wine-api.mjs win32u NtUserEnableWindow
+          node scripts/extract-wine-api.mjs kernelbase CreateMutexA
           node --test tests/node/wine-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.81.0
         with:

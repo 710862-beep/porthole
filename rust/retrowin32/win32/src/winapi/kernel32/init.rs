@@ -218,6 +218,7 @@ pub struct State {
     pub resources: pe::IMAGE_DATA_DIRECTORY,
     pub resource_handles: Handles<HRSRC, ResourceHandle>,
 
+    pub mutexes: super::MutexRegistry,
     pub event_handles: Handles<HEVENT, EventObject>,
     /// Porthole thread handles occupy a disjoint namespace from files/events.
     pub thread_handles: HashMap<u32, usize>,
@@ -282,6 +283,7 @@ impl State {
             dlls,
             dll_init_order:Vec::new(),
             dll_attached:Default::default(),
+            mutexes: Default::default(),
             event_handles: Handles::new(0x2000_0000),
             thread_handles: Default::default(),
             files: Default::default(),

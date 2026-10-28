@@ -29,6 +29,8 @@
     "win32/src/winapi/kernel32/file.rs",
     "win32/src/winapi/kernel32/init.rs",
     "win32/src/winapi/kernel32/misc.rs",
+    "win32/src/winapi/kernel32/mod.rs",
+    "win32/src/winapi/kernel32/mutex.rs",
     "win32/src/winapi/kernel32/nls.rs",
     "win32/src/winapi/kernel32/sync.rs",
     "win32/src/winapi/kernel32/thread.rs",
@@ -91,7 +93,7 @@
     "promotable": false,
     "promoted": false
   },
-  "patchSha256": "21ed40ef65e6464fcbd03f9d120f1ca52ae241904a2737d076b510863e6b724a",
+  "patchSha256": "3382f8aa7959ac3c47be1eb8c9d13f8aca6d487ca445fad5004f061d8e995d38",
   "fontSource": {
     "repository": "dhepper/font8x8",
     "path": "font8x8_basic.h",
@@ -113,7 +115,8 @@
       "win32/src/winapi/kernel32/nls.rs: WideCharToMultiByte",
       "win32/src/winapi/kernel32/file.rs: current-directory APIs",
       "win32/src/winapi/kernel32/time.rs: timezone conversion",
-      "win32/src/winapi/user32/window.rs: EnableWindow/IsWindowEnabled"
+      "win32/src/winapi/user32/window.rs: EnableWindow/IsWindowEnabled",
+      "win32/src/winapi/kernel32/mutex.rs and mutex integration in sync/init/misc"
     ],
     "notices": "vendor/ATTRIBUTION.md; LICENSE.Wine",
     "status": "PARTIAL_ADAPTATION_NOT_FULL_WINE"

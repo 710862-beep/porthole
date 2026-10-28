@@ -30,3 +30,6 @@ pub use resource::*;
 pub use sync::*;
 pub use thread::*;
 pub use time::*;
+
+mod mutex;
+pub use mutex::*;
