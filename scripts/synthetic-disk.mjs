@@ -15,6 +15,7 @@ export async function createSyntheticDisk(normalizePath) {
 }
 export async function verifySyntheticOutputs(name,disk,RegistryStore) {
   const store=new RegistryStore({vfs:disk.vfs});await store.ready;
+  if(name==='input-test'){assert.ok((await fs.stat(disk.file('C:\\Synthetic\\cwd-probe'))).isDirectory());assert.equal((await fs.stat(disk.file('C:\\Synthetic\\cwd-probe\\marker.dat'))).size,0);return {kind:'node-disk-directory-change-and-relative-create',directory:true,markerBytes:0};}
   if(name==='registry-test'){
     const token=await store.query('HKCU\\Software\\Roblox\\Client','AuthToken');
     assert.equal(token?.type,3);assert.deepEqual(Array.from(token.data),Array.from({length:128},(_,i)=>i));

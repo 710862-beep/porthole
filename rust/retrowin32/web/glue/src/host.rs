@@ -272,6 +272,8 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn file_info(this:&JsHost,path:&str)->String;
     #[wasm_bindgen(method)]
+    fn read_dir(this:&JsHost,path:&str)->String;
+    #[wasm_bindgen(method)]
     fn key_state(this: &JsHost, key: u32) -> u32;
     #[wasm_bindgen(method)]
     fn raw_input_events(this: &JsHost) -> String;
@@ -353,7 +355,20 @@ impl win32::Host for JsHost {
     }
 
     fn read_dir(&self, path: &WindowsPath) -> Result<Box<dyn ReadDir>, ERROR> {
-        todo!("read_dir {path}")
+        let raw=JsHost::read_dir(self,&path.to_string_lossy());
+        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|_|ERROR::INVALID_DATA)?;
+        let status=value["status"].as_u64().ok_or(ERROR::INVALID_DATA)? as u32;
+        if status!=0{return Err(ERROR::try_from(status).unwrap_or(ERROR::INVALID_DATA))}
+        let list=value["entries"].as_array().ok_or(ERROR::INVALID_DATA)?;
+        if list.len()>4096{return Err(ERROR::INVALID_DATA)}
+        let mut entries=Vec::new();
+        for item in list{
+            let name=item["name"].as_str().ok_or(ERROR::INVALID_DATA)?.to_string();
+            if name.is_empty()||name.contains(['/', '\\', '\0']){return Err(ERROR::INVALID_DATA)}
+            let kind=match item["kind"].as_str(){Some("file")=>StatKind::File,Some("directory")=>StatKind::Directory,_=>return Err(ERROR::INVALID_DATA)};
+            entries.push(win32::ReadDirEntry{name,stat:Stat{kind,size:item["size"].as_u64().ok_or(ERROR::INVALID_DATA)?,atime:0,ctime:0,mtime:0}});
+        }
+        Ok(Box::new(CachedReadDir{entries:entries.into_iter()}))
     }
 
     fn log(&self, buf: &[u8]) {
@@ -398,3 +413,7 @@ impl win32::Host for JsHost {
         todo!("remove_dir {path}")
     }
 }
+
+// Authorized synchronous overlay snapshot, not a directory scan of the host OS.
+struct CachedReadDir { entries:std::vec::IntoIter<win32::ReadDirEntry> }
+impl ReadDir for CachedReadDir { fn next(&mut self)->Result<Option<win32::ReadDirEntry>,ERROR>{Ok(self.entries.next())} }

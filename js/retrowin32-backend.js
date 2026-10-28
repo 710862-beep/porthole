@@ -91,6 +91,7 @@
       this.heldKeys = new Set();
       this.pressedKeys = new Set();
       this.directories = new Set(['']);
+      this.directoryNames = new Map();
       this.path = Porthole.VFSUtils.normalizePath(opts.path || opts.name || 'C:\\program.exe');
       this.name = opts.name || this.path.segments[this.path.segments.length - 1] || 'program.exe';
       this.commandLine = opts.commandLine || this.name;
@@ -229,7 +230,7 @@
       const record = { path: normalized, bytes: copyBytes(data), dirty: false, version: 0 };
       this.files.set(normalized.key, record);
       for (let i = 1; i < normalized.segments.length; i++) {
-        this.directories.add(normalized.segments.slice(0, i).join('/').toLocaleLowerCase('en-US'));
+        const key=normalized.segments.slice(0,i).join('/').toLocaleLowerCase('en-US');this.directories.add(key);this.directoryNames.set(key,normalized.segments[i-1]);
       }
       this.preloadReport.files += 1;
       this.preloadReport.bytes += record.bytes.byteLength;
@@ -245,6 +246,7 @@
         }
         const entries = await this.vfs.listDirectory(path.win32);
         this.directories.add(path.key);
+        this.directoryNames.set(path.key,path.segments.at(-1)||'');
         for (const entry of entries) {
           const child = Porthole.VFSUtils.normalizePath(`C:\\${path.segments.concat(entry.name).join('\\')}`);
           if (entry.kind === 'directory') {
@@ -306,6 +308,7 @@
       if (this.files.has(path.key)) return 183;
       if (this.vfs && typeof this.vfs.createDirectory !== 'function') return 50;
       this.directories.add(path.key);
+        this.directoryNames.set(path.key,path.segments.at(-1)||'');
       if (this.vfs) {
         this.pendingWrites++;
         this.writeChain = this.writeChain.then(() => this.vfs.createDirectory(path.win32))
@@ -339,6 +342,18 @@
       this._emit('stdout', { text, process: this });
     }
 
+    read_dir(request) {
+      if (typeof request !== 'string' || request.includes('\0')) return JSON.stringify({status:123});
+      const dir=this._normalizeGuestPath(request||'.');
+      if(!dir)return JSON.stringify({status:5});
+      if(!this.directories.has(dir.key))return JSON.stringify({status:this.files.has(dir.key)?267:3});
+      const prefix=dir.key?dir.key+'/':'';const entries=[];
+      for(const key of this.directories){if(!key.startsWith(prefix))continue;const tail=key.slice(prefix.length);if(tail&&!tail.includes('/'))entries.push({name:this.directoryNames.get(key)||tail,kind:'directory',size:0});}
+      for(const record of this.files.values()){if(record.path.segments.slice(0,-1).join('/').toLocaleLowerCase('en-US')===dir.key)entries.push({name:record.path.segments.at(-1),kind:'file',size:record.bytes.byteLength});}
+      if(entries.length>4096)return JSON.stringify({status:13});
+      entries.sort((a,b)=>a.name.toLowerCase().localeCompare(b.name.toLowerCase(),'en-US'));
+      return JSON.stringify({status:0,entries});
+    }
     file_info(request) {
       if (typeof request !== 'string' || !request.trim() || request.includes('\0')) return JSON.stringify({status:123});
       const path=this._normalizeGuestPath(request);

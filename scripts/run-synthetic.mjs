@@ -20,6 +20,8 @@ if(process.argv[2]==='--worker') {
     item.backendSha256=crypto.createHash('sha256').update(wasmBytes).digest('hex');
     const backend=new globalThis.Porthole.Retrowin32Backend({wasmBytes, ...(process.env.PORTHOLE_GLUE?{moduleURL:pathToFileURL(path.resolve(process.env.PORTHOLE_GLUE)).href}:{}),tracer:{log(scope,message,kind){if(item.logs.length<100)item.logs.push({scope,kind,message:sanitizeEvidence(String(message))});}}});
     disk=await createSyntheticDisk(globalThis.Porthole.VFSUtils.normalizePath);
+    // Materialize the declared guest working directory before the PE can create children.
+    await disk.vfs.createDirectory('C:\\Synthetic');
     const registryBridge=new globalThis.Porthole.GuestRegistryBridge(new globalThis.Porthole.Registry.RegistryStore({vfs:disk.vfs}));
     if(name==='network-test') {
       server=http.createServer((req,res)=>{requestSeen=req.method==='GET'&&req.url==='/'&&req.headers.host==='localhost';res.writeHead(200,{'Content-Type':'text/plain'});res.end('PORTHOLE_NETWORK_OK');});

@@ -51,3 +51,7 @@ test('synchronous stat reflects actual cached bytes and directories, rejects emp
 test('process current directory changes relative resolution without changing host cwd',()=>{
  const p=proc();assert.equal(p.create_dir('C:\\Sandbox'),0);assert.equal(p.set_current_dir('C:\\Sandbox'),0);assert.equal(p.current_dir(),'C:\\Sandbox');p._registerFile('C:\\Sandbox\\marker',new Uint8Array([1]));assert.equal(JSON.parse(p.file_info('marker')).status,0);assert.equal(p.set_current_dir('marker'),267);assert.equal(p.set_current_dir('missing'),3);assert.equal(p.current_dir(),'C:\\Sandbox');assert.equal(p.set_current_dir('..'),0);assert.equal(p.current_dir(),'C:\\');assert.equal(p.set_current_dir('D:\\Outside'),5);assert.equal(p.set_current_dir(''),123);
 });
+test('directory snapshot enumerates only immediate authorized cached children',()=>{
+ const p=proc();p._registerFile('C:\\Tests\\Game.WAD',new Uint8Array([1,2,3]));p._registerFile('C:\\Tests\\Nested\\Hidden.WAD',new Uint8Array([1]));
+ const snapshot=JSON.parse(p.read_dir(''));assert.equal(snapshot.status,0);assert.equal(snapshot.entries.find(e=>e.name==='Game.WAD').size,3);assert.equal(snapshot.entries.find(e=>e.name==='Nested').kind,'directory');assert.ok(!snapshot.entries.some(e=>e.name==='Hidden.WAD'));assert.equal(JSON.parse(p.read_dir('D:\\Denied')).status,5);assert.equal(JSON.parse(p.read_dir('missing')).status,3);assert.equal(JSON.parse(p.read_dir('Game.WAD')).status,267);
+});

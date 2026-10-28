@@ -140,3 +140,64 @@ https://github.com/710862-beep/porthole/actions/runs/40753064900
   erro em arquivo/nome ausente, restauração e verificação pelo caminho antigo.
   Unitário host verifica erro sem alteração de cwd e rejeita drive não autorizado.
 - Próximo candidato ainda depende de ensaio remoto. Sem promoção.
+
+## Portabilidade: fronteiras e tipos
+
+| Família | Dependência Wine | Adaptação / limite |
+|---|---|---|
+| Recurso | FindResourceA/LoadResource | Range RT_DIALOG existente; handle retrowin32 não confundido com ponteiro Wine |
+| Template | DLGTEMPLATE, DLGITEMTEMPLATE (include/winuser.h:2152–2179), DLGPROC (linha 43) | Cursor LE checked; objetos owned não são structs ABI sobrepostas à memória guest |
+| Estado | DIALOGINFO (dlls/user32/controls.h:139–148), DIALOG_get_info (defdlg.c:291–313) | Option por HWND; somente subset de campos, sem font/menu/contexto completo |
+| Janela | CreateWindowExA/W → win32u/NtUserCreateWindowEx | Mecanismo nativo HWND/Canvas já existente; não copiado syscall NT |
+| Callback | SendMessageW e DWLP_DLGPROC | Endereço guest/call_x86, sem borrow mutável atravessando await; W e DWLP completos pendentes |
+| Fontes | NtUserGetDC, CreateFont*, SelectObject, GdiGetCharDimensions | Não portados; fallback 8x8 explicitamente registrado |
+| Menu/tema | LoadMenuW/NtUserDestroyMenu; updown uxtheme | Menu template rejeitado; temas e sysmenu completo não portados |
+| Posicionamento | MonitorFrom*/GetMonitorInfo/ClientToScreen | Monitor/DPI/centralização não equivalentes ao Wine; subset de geometria local |
+| Estado global | NtUserSetFocus/ShowWindow/EnableWindow/GetCapture | Parte mapeada ao núcleo; captura, modal owner, thread input não completos |
+| Identidade | GetEnvironmentVariableA/W → RtlQueryEnvironmentVariable_U/PEB | Map virtual por processo e blocos owned; não token/conta real do host |
+| Encoding | WideCharToMultiByte → codepage tables/RtlUnicodeToUTF8N | CP1252/UTF8 subset; sem todas tabelas best-fit/composição |
+| Diretório | RtlSetCurrentDirectory_U | Operação Host/JS no VFS autorizado; sem chdir do host, UNC e drives independentes |
+
+O grafo completo cruza user32/win32u, kernelbase/kernel32, gdi32/gdi32full, ntdll e drivers/servidor Wine; controles adicionais usam comctl32/uxtheme. Isso não é uma lista de DLLs de que o Wasm candidato depende em runtime. Não houve tradução integral desses componentes.
+
+### Revisão manual por grupo de funções adaptadas
+
+| Grupo | ABI/tipos | Ponteiros/memória | Driver/erros | Licença/SHA | Estado de cobertura |
+|---|---|---|---|---|---|
+| CreateDialogParamA/indirect | HWND/proc/LPARAM 32-bit revisados | Range de recurso limitado; Vec owned; rollback de filhos | Host existente + TEB | Preservados | Subset executado nos fixtures e DOOM |
+| ParseTemplate/GetControl | Layout normal/estendido, ID32, alinhamento revisados | Cursor checked; truncamento testado | Erro de dados inválidos | Preservados | Vários ramos, não fuzz/conformidade completa |
+| Dispatch/init/tab/text/check | Callback x86 e mensagens revisados | Handles lidos novamente após await | Foco/comandos locais; W/default result incompletos | Preservados | Fixtures de IDs/param/foco/Tab/Enter/texto |
+| Updown mensagens/ação | Range invertido, ID/header32 revisados | Buffer NM_UPDOWN no heap liberado após callback | Parent pode cancelar/modificar delta; timers pendentes | Preservados | Range/buddy/tecla testados; não todos os ramos |
+| GetUserNameA/W | DWORD tamanho inclui NUL; BOOL revisado | DWORD e buffers checked | TEB/buffer curto/ausência; conta virtual | Preservados | Fixture A/W aprovado |
+| Ambiente A/W | Query length/UTF16 e duração revisados | Blocos heap rastreados; double-free rejeitado | Mapa por processo, não lock/PEB Wine | Preservados | ANSI e casefold Unicode parciais |
+| WideCharToMultiByte | Corrigida ABI de 7 para 8 argumentos | Offsets/len/default/used checked | 87/122/1004/1113; codepages limitadas | Preservados | Rust+PE de subset aprovados |
+| Set/GetCurrentDirectory | Assinatura/recurso Host revisados | Adapter de strings existente; getter checked | VFS autorizado/TEB; testes novos | Preservados | Depende do último CI; não marcar PASS antecipado |
+
+As revisões foram semânticas/manuais com referência ao C real. `translate-c-to-rust.mjs` emite inventário de revisão, **não** Rust executável. Não houve primeira passagem automática declarada como tradução válida. A segurança dos novos parsers não prova segurança de todos os adapters raw do emulador preexistente.
+
+## Quinto/sexto resultados remotos: diretório e enumeração
+
+- Run **40753946252**, fonte edc383a: build falhou no gerador de exports, que não
+  aceita o tipo qualificado `crate::str16::AnsiString` na assinatura. Corrigido
+  com import do tipo reconhecido, sem substituir export por stub.
+- Run **40754153859**, fonte `e6c93719493860b0a7b8311a75e1b0759c4de669`:
+  build/20 testes Rust e controles PASS; **4/5 PEs PASS**. O guest input chegou a
+  SUCCESS com deltas corretos, mas o flush em disco FALHOU: harness não havia
+  materializado C:\Synthetic antes de criar cwd-probe. O gate corretamente
+  rejeitou exit 0 com erro de persistência. Setup corrigido para criar a pasta
+  declarada, mantendo o gate e adicionando releitura de diretório/marker em disco.
+- DOOM95 passou por SetCurrentDirectoryA, chegou a FindFirstFileA e encontrou
+  panic **Host.read_dir** (web/glue/src/host.rs:356). 48 presents, gameplay=false.
+- Lida/extraída referência Wine FindFirstFileA → FindFirstFileExA/W →
+  NtQueryDirectoryFile, arquivo kernelbase/file.c; inventário
+  wine-kernelbase-find-extraction.json. Não copiei chamadas NT para Wasm.
+- A API Win32 de enumeração continua a implementação existente de retrowin32;
+  o trabalho novo é sua **fronteira de plataforma**: snapshot dos filhos imediatos
+  do cache VFS autorizado via JSON tipado para ReadDir Rust, com limites/erros,
+  nomes e tamanhos reais do overlay. Não é scan do disco arbitrário do host e não
+  é uma tradução integral de FindFirstFileExW/NtQueryDirectoryFile.
+- FindNextFileA agora usa ERROR_NO_MORE_FILES no fim do iterator; fixture verifica
+  criação relativa, enumeração, término, FindClose, restauração e persistência.
+  Timestamps virtuais continuam desconhecidos/zero, sem inventar metadados reais.
+- Novo ensaio remoto ainda necessário; não marcar cinco PEs novamente aprovados
+  até ele terminar.

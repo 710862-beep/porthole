@@ -873,7 +873,7 @@ pub fn FindNextFileA(
                 }
             }
             Ok(None) => {
-                set_last_error(machine, ERROR::FILE_NOT_FOUND);
+                set_last_error(machine, ERROR::NO_MORE_FILES);
                 return false;
             }
             Err(err) => {
