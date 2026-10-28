@@ -435,3 +435,17 @@ Não anuncia aceleração, capacidades de impressora, física do monitor ou refr
 medido. Índices sem implementação retornam0 (fallback Wine), não panic.
 Sem ponteiro guest/callback novo, stdcall 2 argumentos/retorno INT32 preservado.
 Fixture confere campos, índice desconhecido e HDC inválido. CI pendente.
+
+## CI 40767068553: consulta GDI passou; interrupção guest sem diagnóstico
+
+https://github.com/710862-beep/porthole/actions/runs/40767068553
+Fonte e07e924: build/24 Rust, controles PASS e 5 PEs PASS. DOOM executou
+GetDeviceCaps e avançou por DirectDrawCreate, SetCooperativeLevel,
+EnumDisplayModes e SetDisplayMode(640,400,8). Depois houve INT3; o match de
+CPUState::DebugBreak dava panic genérico, perdendo PC/símbolo/pilha. Não há
+prova de qual API causou a interrupção e SetCursor NÃO é diagnóstico causal.
+Alterado núcleo para falha estruturada GUEST_DEBUG_BREAK com PC, símbolo exato,
+ESP e 8 DWORDs validados da pilha; **não ignora INT3 nem continua execução**.
+Também completada revisão get_dc_attr:121-131: HDC inválido deve retornar0
+com ERROR_INVALID_HANDLE6, agora coberto pela fixture. Gameplay continua FAIL,
+268 presents/86 mudanças de startup, sem input/loop/observação completos.

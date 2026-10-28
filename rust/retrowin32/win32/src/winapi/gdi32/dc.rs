@@ -137,7 +137,7 @@ pub fn GetDeviceCaps(
     hdc: HDC,
     index: Result<GetDeviceCapsArg, u32>,
 ) -> u32 {
-    if machine.state.gdi32.dcs.get(hdc).is_none() { return 0; }
+    if machine.state.gdi32.dcs.get(hdc).is_none() { crate::winapi::kernel32::teb_mut(machine).LastErrorValue=6; return 0; }
     let Ok(index)=index else { return 0; };
     match index {
         GetDeviceCapsArg::TECHNOLOGY => 1, // DT_RASDISPLAY

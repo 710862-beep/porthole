@@ -184,6 +184,14 @@ impl MachineX<Emulator> {
                     message: format!("{} causal_import={:?} LAST20_API={:?}",message,self.emu.x86.cpu().fault_operand.and_then(|addr|self.labels.get(&addr)),self.emu.api_tail),
                 };
             }
+            x86::CPUState::DebugBreak => {
+                let cpu=self.emu.x86.cpu();
+                let ip=cpu.regs.eip;
+                let esp=cpu.regs.get32(x86::Register::ESP);
+                let mem=self.emu.memory.mem();
+                let stack:Vec<u32>=(0..8u32).filter_map(|i|esp.checked_add(i*4)).filter(|p|p.checked_add(4).map_or(false,|e|e as usize<=mem.as_slice().len())).map(|p|mem.get_pod::<u32>(p)).collect();
+                self.status=Status::Error{message:format!("GUEST_DEBUG_BREAK ip={ip:x} symbol={:?} esp={esp:x} stack={stack:x?} LAST20_API={:?}",self.labels.get(&ip),self.emu.api_tail)};
+            }
             state => unimplemented!("{state:?}"),
         }
         self.status.is_running()
