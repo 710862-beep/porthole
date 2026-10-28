@@ -196,23 +196,42 @@ pub fn load_library(machine: &mut Machine, filename: &str) -> HMODULE {
             dll,
         },
     );
+    machine.state.kernel32.dll_init_order.push(hmodule);
     hmodule
 }
 
-#[win32_derive::dllexport]
-pub fn LoadLibraryA(machine: &mut Machine, filename: Option<&str>) -> HMODULE {
-    load_library(machine, filename.unwrap())
+pub(super) async fn attach_loaded_dlls(machine:&mut Machine,reserved:u32)->bool {
+    loop {
+        let next=machine.state.kernel32.dll_init_order.iter().copied().find(|h|!machine.state.kernel32.dll_attached.contains(h)&&machine.state.kernel32.dlls.contains_key(h));
+        let Some(handle)=next else{return true};
+        machine.state.kernel32.dll_attached.insert(handle);
+        let dll=&machine.state.kernel32.dlls[&handle];
+        let (entry,base)=(dll.dll.entry_point,dll.dll.base);
+        if let Some(entry)=entry {
+            log::info!("DLL_PROCESS_ATTACH {} base={base:x}",dll.name);
+            let ok=machine.call_x86(entry,vec![base,1,reserved]).await;
+            if ok==0 {machine.state.kernel32.dlls.remove(&handle);machine.state.kernel32.dll_attached.remove(&handle);set_last_error(machine,winapi::ERROR::DLL_INIT_FAILED);return false}
+        }
+    }
 }
 
 #[win32_derive::dllexport]
-pub fn LoadLibraryExW(
+pub async fn LoadLibraryA(machine: &mut Machine, filename: Option<&str>) -> HMODULE {
+    let handle=load_library(machine, filename.unwrap_or(""));
+    if handle.is_null() {set_last_error(machine,winapi::ERROR::MOD_NOT_FOUND);return handle}
+    if !attach_loaded_dlls(machine,0).await{return HMODULE::null()}
+    handle
+}
+
+#[win32_derive::dllexport]
+pub async fn LoadLibraryExW(
     machine: &mut Machine,
     lpLibFileName: Option<&Str16>,
     hFile: HFILE,
     dwFlags: u32,
 ) -> HMODULE {
     let filename = lpLibFileName.map(|f| f.to_string());
-    LoadLibraryA(machine, filename.as_deref())
+    LoadLibraryA(machine, filename.as_deref()).await
 }
 
 #[win32_derive::dllexport]

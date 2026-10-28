@@ -209,6 +209,8 @@ pub struct State {
     pub process_heap: u32,
 
     pub dlls: HashMap<HMODULE, DLL>,
+    pub dll_init_order: Vec<HMODULE>,
+    pub dll_attached: std::collections::HashSet<HMODULE>,
 
     pub resources: pe::IMAGE_DATA_DIRECTORY,
     pub resource_handles: Handles<HRSRC, ResourceHandle>,
@@ -272,6 +274,8 @@ impl State {
             mappings,
             heaps: HashMap::new(),
             dlls,
+            dll_init_order:Vec::new(),
+            dll_attached:Default::default(),
             event_handles: Handles::new(0x2000_0000),
             thread_handles: Default::default(),
             files: Default::default(),
@@ -476,31 +480,7 @@ pub fn GetCommandLineW(machine: &mut Machine) -> u32 {
 /// It probably has some better name within ntdll.dll.
 #[win32_derive::dllexport]
 pub async fn retrowin32_main(machine: &mut Machine, entry_point: u32) {
-    struct DllData {
-        base: u32,
-        entry_point: u32,
-    }
-
-    let dlls = machine
-        .state
-        .kernel32
-        .dlls
-        .iter()
-        .filter(|(_, dll)| dll.dll.entry_point.is_some())
-        .map(|(_, dll)| DllData {
-            base: dll.dll.base,
-            entry_point: dll.dll.entry_point.unwrap(),
-        })
-        .collect::<Vec<_>>();
-    // TODO: invoking dllmains can load more dlls.
-    for dll in dlls {
-        let hInstance = dll.base;
-        let fdwReason = 1u32; // DLL_PROCESS_ATTACH
-        let lpvReserved = 0u32;
-        machine
-            .call_x86(dll.entry_point, vec![hInstance, fdwReason, lpvReserved])
-            .await;
-    }
+    if !super::dll::attach_loaded_dlls(machine,1).await {machine.exit(1114);return}
 
     machine.call_x86(entry_point, vec![]).await;
     #[cfg(feature = "x86-emu")]

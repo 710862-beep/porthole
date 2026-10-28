@@ -3,6 +3,7 @@
 static int clicked=0,changes=0;
 static LRESULT CALLBACK parent_proc(HWND h,UINT m,WPARAM w,LPARAM l){if(m==WM_COMMAND){if(LOWORD(w)==101 && HIWORD(w)==BN_CLICKED)clicked++;if(LOWORD(w)==102&&HIWORD(w)==EN_CHANGE)changes++;return 0;}return DefWindowProcA(h,m,w,l);}
 void mainCRTStartup(void){
+ HMODULE attached=LoadLibraryA("dll-attach.dll");REQUIRE(attached);DWORD (WINAPI *count)(void)=(DWORD(WINAPI*)(void))GetProcAddress(attached,"AttachCount");REQUIRE(count&&count()==1);REQUIRE(LoadLibraryA("dll-attach.dll")==attached);REQUIRE(count()==1);REQUIRE(!LoadLibraryA("dll-fail.dll"));REQUIRE(GetLastError()==ERROR_DLL_INIT_FAILED);REQUIRE(!GetModuleHandleA("dll-fail.dll"));
  INITCOMMONCONTROLSEX ex={sizeof(ex),ICC_STANDARD_CLASSES};REQUIRE(InitCommonControlsEx(&ex));
  ex.dwSize=7;REQUIRE(!InitCommonControlsEx(&ex));ex.dwSize=8;ex.dwICC=0x80000000;REQUIRE(!InitCommonControlsEx(&ex));
  HMODULE common=LoadLibraryA("comctl32.dll");REQUIRE(common);void (WINAPI *initOrdinal)(void)=(void (WINAPI *)(void))GetProcAddress(common,(LPCSTR)17);REQUIRE(initOrdinal);initOrdinal();

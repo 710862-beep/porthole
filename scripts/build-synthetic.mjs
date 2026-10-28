@@ -10,6 +10,14 @@ const root = 'tests/synthetic';
 const names = ['thread-validation', 'input-test', 'network-test', 'registry-test', 'installer-test', 'controls-test'];
 const result = { kind: 'porthole-authored-synthetic-pe32', compiler: 'zig 0.13.0', tests: [] };
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+result.dlls=[];
+for(const name of ['dll-attach','dll-fail']){
+ const output=`${root}/${name}.dll`;
+ const args=['cc','-target','x86-windows-gnu','-Os','-march=i386','-mno-sse','-mno-sse2','-nostdlib','-fno-stack-protector','-isystem',path.join(path.dirname(zig),'lib/libc/include/any-windows-any'),'-shared','-Wl,--entry,DllMain@12',...(name==='dll-fail'?['-DATTACH_FAIL=1']:[]),`${root}/dll-attach.c`,'-o',output];
+ const run=spawnSync(zig,args,{encoding:'utf8',timeout:120000});
+ if(run.status!==0){fs.mkdirSync('artifacts',{recursive:true});fs.writeFileSync('artifacts/synthetic-build-error.json',JSON.stringify({name,args,error:run.stderr||run.error?.message}));throw Error(`${name}: ${run.stderr}`);}
+ const bytes=fs.readFileSync(output);validatePE(bytes);bytes.writeUInt32LE(0,bytes.readUInt32LE(60)+8);fs.writeFileSync(output,bytes);result.dlls.push({name,path:output,sha256:hash(bytes),args});
+}
 for (const name of names) {
   const source = `${root}/${name}.c`, output = `${root}/${name}.exe`;
   const libs = name === 'controls-test' ? ['-luser32','-lcomctl32','-lgdi32'] : name === 'network-test' ? ['-lws2_32'] : name === 'input-test' ? ['-luser32'] : ['registry-test', 'installer-test'].includes(name) ? ['-ladvapi32'] : [];

@@ -106,7 +106,7 @@ pub fn paint(machine:&mut Machine,hwnd:HWND) {
     for y in 0..height as i32 {for x in 0..width as i32 {let dx=ox+x;let dy=oy+y;if dx>=0&&dy>=0&&(dx as u32)<rw&&(dy as u32)<rh{dest[(dy as u32*rw+dx as u32)as usize]=px[(y as u32*width+x as u32)as usize];}}}
     w.expect_toplevel_mut().flush_pixels(machine.emu.memory.mem());
 }
-pub fn paint_children(machine:&mut Machine,parent:HWND){let children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.control.is_some()).map(|w|w.hwnd).collect();for child in children {paint(machine,child)}}
+pub fn paint_children(machine:&mut Machine,parent:HWND){let mut children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.control.is_some()).map(|w|w.hwnd).collect();children.sort_by_key(|h|h.to_raw());for child in children {paint(machine,child)}}
 
 pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
     let (hwnd,m,wp,lp)=(msg.hwnd,msg.message,msg.wParam,msg.lParam);
