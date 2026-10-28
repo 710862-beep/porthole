@@ -22,8 +22,9 @@ export function maskC(s){
  }
  if(!['code','line'].includes(state))throw Error('Unterminated C comment/literal');return out;
 }
-export function definitions(source){
- const text=maskC(source),result=new Map();
+export function definitions(source,{deferAmbiguity=false}={}){
+ let directive=false;
+ const text=maskC(source).split('\n').map(line=>{const skip=directive||/^\s*#/.test(line);directive=skip&&line.trimEnd().endsWith('\\');return skip?' '.repeat(line.length):line;}).join('\n'),result=new Map();
  // Only top-level definitions. Reject control statements and prototypes.
  const re=/\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{/g;
  let m;
@@ -32,7 +33,7 @@ export function definitions(source){
   for(;end<text.length&&depth;end++){if(text[end]==='{')depth++;if(text[end]==='}')depth--;}
   if(depth)throw Error('Unbalanced C function');
   const start=text.lastIndexOf('\n',m.index)+1,name=m[1];
-  if(result.has(name))throw Error(`Ambiguous definition ${name}`);
+  if(result.has(name)){if(!deferAmbiguity)throw Error(`Ambiguous definition ${name}`);const old=result.get(name);old.duplicateDefinitions??=[old.startLine];old.duplicateDefinitions.push(source.slice(0,start).split("\n").length);re.lastIndex=end;continue;}
   const body=text.slice(open+1,end-1),calls=[...new Set([...body.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)].map(x=>x[1]))].filter(x=>!['if','while','for','switch','sizeof','return'].includes(x)).sort();
   result.set(name,{name,startLine:source.slice(0,start).split('\n').length,endLine:source.slice(0,end).split('\n').length,code:source.slice(start,end),calls});re.lastIndex=end;
  }
@@ -41,11 +42,11 @@ export function definitions(source){
 export function extract(dll='user32',entry='CreateDialogParamA'){
  const sourceFile={winmm:'winmm.c',dplayx:'dplay.c',win32u:'window.c',user32:entry==='ComboWndProc_common'?'combo.c':entry==='LISTBOX_FindString'||entry==='LISTBOX_InsertString'?'listbox.c':'dialog.c',comctl32:'updown.c',advapi32:'advapi.c',kernelbase:entry==='GetSystemInfo'?'memory.c':entry==='CreateMutexA'?'sync.c':entry==='WideCharToMultiByte'?'locale.c':['SetCurrentDirectoryA','FindFirstFileA','FileTimeToLocalFileTime'].includes(entry)?'file.c':'process.c'}[dll];if(!sourceFile)throw Error('Unsupported Wine DLL/source root');
  if(!/^[A-Za-z_]\w*$/.test(entry))throw Error('Invalid function');
- const commit=fetchWine(),file=`dlls/${dll}/${sourceFile}`,source=fs.readFileSync(`vendor/wine-source/${file}`,'utf8'),defs=definitions(source);
+ const commit=fetchWine(),file=`dlls/${dll}/${sourceFile}`,source=fs.readFileSync(`vendor/wine-source/${file}`,'utf8'),defs=definitions(source,{deferAmbiguity:true});
  if(!defs.has(entry))throw Error(`Definition not found: ${entry}`);
  const additionalRoots=dll==='dplayx'&&entry==='DirectPlayEnumerateA'?['DP_InitConnections','DP_ReadConnections']:entry==='NtUserSetWindowPlacement'?['NtUserGetWindowPlacement']:[];
  const queue=[entry,...additionalRoots],seen=new Set(),functions=[];
- while(queue.length){const name=queue.shift();if(seen.has(name))continue;seen.add(name);const fn=defs.get(name);functions.push({...fn,source:file});for(const dep of fn.calls)if(defs.has(dep))queue.push(dep);}
+ while(queue.length){const name=queue.shift();if(seen.has(name))continue;seen.add(name);const fn=defs.get(name);if(fn.duplicateDefinitions)throw Error(`Ambiguous reachable definition ${name} at ${fn.duplicateDefinitions}`);functions.push({...fn,source:file});for(const dep of fn.calls)if(defs.has(dep))queue.push(dep);}
  const boundaries=[...new Set(functions.flatMap(f=>f.calls).filter(x=>!seen.has(x)))].sort();
  const out='artifacts/wine-extraction';fs.mkdirSync(out,{recursive:true});
  fs.writeFileSync(`${out}/${dll}-${entry}-functions.c`,functions.map(f=>`/* ${file}:${f.startLine}-${f.endLine} ${commit} */\n${f.code}`).join('\n\n'));

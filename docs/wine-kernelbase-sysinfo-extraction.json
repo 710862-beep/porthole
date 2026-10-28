@@ -1,0 +1,42 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/kernelbase/memory.c",
+  "sourceSha256": "0009b69046b7b225969e78cbd11c9171d6995b7ce0b6f872a02472603d7f4b01",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1997 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "GetSystemInfo",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "GetSystemInfo",
+      "startLine": 237,
+      "endLine": 249,
+      "calls": [
+        "NtQuerySystemInformation",
+        "fill_system_info",
+        "set_ntstatus"
+      ],
+      "source": "dlls/kernelbase/memory.c"
+    },
+    {
+      "name": "fill_system_info",
+      "startLine": 158,
+      "endLine": 202,
+      "calls": [
+        "FIXME"
+      ],
+      "source": "dlls/kernelbase/memory.c"
+    }
+  ],
+  "boundaries": [
+    "FIXME",
+    "NtQuerySystemInformation",
+    "set_ntstatus"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}
