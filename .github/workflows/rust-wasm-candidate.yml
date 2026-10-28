@@ -76,8 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/fetch-with-fallbacks.mjs
           node scripts/fetch-doom95-resources.mjs
+          node scripts/fetch-with-fallbacks.mjs
       - name: Probe original binaries against candidate
         if: always() && steps.rebuild.outcome == 'success'
         env:
