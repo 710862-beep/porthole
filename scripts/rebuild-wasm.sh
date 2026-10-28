@@ -25,4 +25,10 @@ mv "$out/glue.js" "$out/glue.mjs"
 printf '\nexport { __wbg_init as initRetrowin32, new_emulator as createRetrowin32Emulator, Status as Retrowin32Status };\n' >> "$out/glue.mjs"
 cp "$out/glue_bg.wasm" "$out/retrowin32.wasm"
 sha256sum "$out/retrowin32.wasm" "$out/glue.mjs" > "$out/SHA256SUMS"
+# Carry notices and exact tracked corresponding source alongside experimental binary.
+cp LICENSE.Wine "$out/LICENSE.Wine"
+cp vendor/ATTRIBUTION.md "$out/ATTRIBUTION.md"
+git rev-parse HEAD > "$out/SOURCE_COMMIT"
+git archive --format=tar.gz --output="$out/corresponding-source.tar.gz" HEAD rust scripts js shims tests .github package.json package-lock.json LICENSE.Wine vendor/ATTRIBUTION.md README.md docs/wine-commit.txt docs/wine-porting-guide.md
+sha256sum "$out/LICENSE.Wine" "$out/ATTRIBUTION.md" "$out/SOURCE_COMMIT" "$out/corresponding-source.tar.gz" >> "$out/SHA256SUMS"
 echo "BUILD_COMPLETE: candidate artifacts only; guest validation still required."

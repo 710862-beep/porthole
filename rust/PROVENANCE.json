@@ -3,7 +3,7 @@
   "revision": "00d8809d579fb7baf8fecb2c0118abe72a91bd6c",
   "archive": "https://codeload.github.com/evmar/retrowin32/tar.gz/00d8809d579fb7baf8fecb2c0118abe72a91bd6c",
   "archiveSha256": "f87ae0f4c7bed0e91302039ad9a55b297c90680a0d217ebb1b39c39d4a702526",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 upstream; derived Wine sections/files LGPL-2.1-or-later",
   "rust": "1.81.0",
   "wasmBindgen": "0.2.92",
   "modifiedFiles": [
@@ -18,15 +18,18 @@
     "win32/dll/Makefile",
     "win32/src/host.rs",
     "win32/src/machine_emu.rs",
+    "win32/src/pe/resources.rs",
     "win32/src/shims.rs",
     "win32/src/str16.rs",
     "win32/src/winapi/advapi32.rs",
     "win32/src/winapi/comctl32.rs",
     "win32/src/winapi/error.rs",
     "win32/src/winapi/kernel32/dll.rs",
+    "win32/src/winapi/kernel32/env.rs",
     "win32/src/winapi/kernel32/file.rs",
     "win32/src/winapi/kernel32/init.rs",
     "win32/src/winapi/kernel32/misc.rs",
+    "win32/src/winapi/kernel32/nls.rs",
     "win32/src/winapi/kernel32/sync.rs",
     "win32/src/winapi/kernel32/thread.rs",
     "win32/src/winapi/kernel32/time.rs",
@@ -35,11 +38,15 @@
     "win32/src/winapi/types.rs",
     "win32/src/winapi/user32/control_font.rs",
     "win32/src/winapi/user32/controls.rs",
+    "win32/src/winapi/user32/dialog.rs",
+    "win32/src/winapi/user32/dialog_helpers.rs",
+    "win32/src/winapi/user32/dialog_template.rs",
     "win32/src/winapi/user32/message.rs",
     "win32/src/winapi/user32/misc.rs",
     "win32/src/winapi/user32/mod.rs",
     "win32/src/winapi/user32/paint.rs",
     "win32/src/winapi/user32/raw_input.rs",
+    "win32/src/winapi/user32/updown.rs",
     "win32/src/winapi/user32/window.rs",
     "win32/src/winapi/ws2_32.rs",
     "x86/src/ops/control.rs",
@@ -84,11 +91,32 @@
     "promotable": false,
     "promoted": false
   },
-  "patchSha256": "530f8956a6665508ddb810d456a61be1cb8eb53f42ae4bffa37bfbb637f83ebd",
+  "patchSha256": "21ed40ef65e6464fcbd03f9d120f1ca52ae241904a2737d076b510863e6b724a",
   "fontSource": {
     "repository": "dhepper/font8x8",
     "path": "font8x8_basic.h",
     "gitBlob": "125cf165c93f0bcf954d570aa6e3c84d9b6bacf4",
     "license": "Public Domain"
-  }
+  },
+  "wine": {
+    "repository": "https://github.com/wine-mirror/wine",
+    "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+    "license": "LGPL-2.1-or-later",
+    "derivedFiles": [
+      "win32/src/winapi/user32/dialog_template.rs",
+      "win32/src/winapi/user32/dialog_helpers.rs",
+      "win32/src/winapi/user32/updown.rs"
+    ],
+    "additionalDerivedSections": [
+      "win32/src/winapi/advapi32.rs: GetUserNameA/W",
+      "win32/src/winapi/kernel32/env.rs",
+      "win32/src/winapi/kernel32/nls.rs: WideCharToMultiByte",
+      "win32/src/winapi/kernel32/file.rs: current-directory APIs",
+      "win32/src/winapi/kernel32/time.rs: timezone conversion",
+      "win32/src/winapi/user32/window.rs: EnableWindow/IsWindowEnabled"
+    ],
+    "notices": "vendor/ATTRIBUTION.md; LICENSE.Wine",
+    "status": "PARTIAL_ADAPTATION_NOT_FULL_WINE"
+  },
+  "upstreamLicense": "Apache-2.0"
 }

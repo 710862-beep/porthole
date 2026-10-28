@@ -19,7 +19,7 @@
   "tsify",
   "typed-path",
   "unicorn-engine",
---- a/rust-toolchain.toml
+--- /dev/null
 +++ b/rust-toolchain.toml
 @@ -0,0 +1,5 @@
 +[toolchain]
@@ -40,7 +40,7 @@
          "mousedown" => {
              let mut event = map_mousevent(event.unchecked_into::<web_sys::MouseEvent>())?;
              event.down = true;
-@@ -253,6 +257,25 @@
+@@ -253,6 +257,29 @@
      pub type JsHost;
  
      #[wasm_bindgen(method)]
@@ -55,7 +55,11 @@
 +    #[wasm_bindgen(method)]
 +    fn current_dir(this: &JsHost) -> String;
 +    #[wasm_bindgen(method)]
++    fn set_current_dir(this: &JsHost, path: &str) -> u32;
++    #[wasm_bindgen(method)]
 +    fn file_info(this:&JsHost,path:&str)->String;
++    #[wasm_bindgen(method)]
++    fn read_dir(this:&JsHost,path:&str)->String;
 +    #[wasm_bindgen(method)]
 +    fn key_state(this: &JsHost, key: u32) -> u32;
 +    #[wasm_bindgen(method)]
@@ -66,7 +70,7 @@
      fn log(this: &JsHost, level: u8, msg: String);
  
      #[wasm_bindgen(method)]
-@@ -274,8 +297,15 @@
+@@ -274,8 +301,15 @@
  }
  
  impl win32::Host for JsHost {
@@ -83,7 +87,7 @@
      }
  
      fn system_time(&self) -> chrono::DateTime<chrono::Local> {
-@@ -312,7 +342,12 @@
+@@ -312,11 +346,29 @@
      }
  
      fn stat(&self, path: &WindowsPath) -> Result<Stat, ERROR> {
@@ -97,12 +101,36 @@
      }
  
      fn read_dir(&self, path: &WindowsPath) -> Result<Box<dyn ReadDir>, ERROR> {
-@@ -337,11 +372,14 @@
+-        todo!("read_dir {path}")
++        let raw=JsHost::read_dir(self,&path.to_string_lossy());
++        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|_|ERROR::INVALID_DATA)?;
++        let status=value["status"].as_u64().ok_or(ERROR::INVALID_DATA)? as u32;
++        if status!=0{return Err(ERROR::try_from(status).unwrap_or(ERROR::INVALID_DATA))}
++        let list=value["entries"].as_array().ok_or(ERROR::INVALID_DATA)?;
++        if list.len()>4096{return Err(ERROR::INVALID_DATA)}
++        let mut entries=Vec::new();
++        for item in list{
++            let name=item["name"].as_str().ok_or(ERROR::INVALID_DATA)?.to_string();
++            if name.is_empty()||name.contains(['/', '\\', '\0']){return Err(ERROR::INVALID_DATA)}
++            let kind=match item["kind"].as_str(){Some("file")=>StatKind::File,Some("directory")=>StatKind::Directory,_=>return Err(ERROR::INVALID_DATA)};
++            entries.push(win32::ReadDirEntry{name,stat:Stat{kind,size:item["size"].as_u64().ok_or(ERROR::INVALID_DATA)?,atime:0,ctime:0,mtime:0}});
++        }
++        Ok(Box::new(CachedReadDir{entries:entries.into_iter()}))
+     }
+ 
+     fn log(&self, buf: &[u8]) {
+@@ -337,11 +389,20 @@
      }
  
      fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
 -        todo!()
 +        Ok(win32::WindowsPathBuf::from(JsHost::current_dir(self)))
++    }
++
++    fn set_current_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
++        match JsHost::set_current_dir(self, &path.to_string_lossy()) {
++            0 => Ok(()), code => Err(ERROR::try_from(code).unwrap_or(ERROR::INVALID_PARAMETER)),
++        }
      }
  
      fn create_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
@@ -114,6 +142,14 @@
      }
  
      fn remove_file(&self, path: &WindowsPath) -> Result<(), ERROR> {
+@@ -352,3 +413,7 @@
+         todo!("remove_dir {path}")
+     }
+ }
++
++// Authorized synchronous overlay snapshot, not a directory scan of the host OS.
++struct CachedReadDir { entries:std::vec::IntoIter<win32::ReadDirEntry> }
++impl ReadDir for CachedReadDir { fn next(&mut self)->Result<Option<win32::ReadDirEntry>,ERROR>{Ok(self.entries.next())} }
 --- a/win32/Cargo.toml
 +++ b/win32/Cargo.toml
 @@ -11,6 +11,7 @@
@@ -241,6 +277,15 @@
      fn system_time(&self) -> chrono::DateTime<chrono::Local>;
  
      /// Get the next pending message, or None if no message waiting.
+@@ -142,6 +151,8 @@
+ 
+     /// Retrieves the absolute (Windows-style) path of the current working directory.
+     fn current_dir(&self) -> Result<WindowsPathBuf, ERROR>;
++    /// Change emulated-process directory, never the host OS working directory.
++    fn set_current_dir(&self, _path: &WindowsPath) -> Result<(), ERROR> { Err(ERROR::NOT_SUPPORTED) }
+     /// Open a file at the given (Windows-style) path.
+     fn open(&self, path: &WindowsPath, options: FileOptions) -> Result<Box<dyn File>, ERROR>;
+     /// Retrieve file or directory metadata at the given (Windows-style) path.
 --- a/win32/src/machine_emu.rs
 +++ b/win32/src/machine_emu.rs
 @@ -46,6 +46,7 @@
@@ -308,6 +353,65 @@
          match shim.func {
              Handler::Sync(func) => {
                  let ret = unsafe { func(self, stack_args) };
+--- a/win32/src/pe/resources.rs
++++ b/win32/src/pe/resources.rs
+@@ -106,29 +106,32 @@
+     query_type: ResourceName,
+     query_id: ResourceName,
+ ) -> Option<Range<u32>> {
+-    // Resources are structured as generic nested directories, but in practice there
+-    // are always exactly three levels with known semantics.
+-    let mut dir = IMAGE_RESOURCE_DIRECTORY::entries(section);
+-
+-    let etype = dir.find(|entry| entry.name(section) == query_type)?;
+-    let mut dir = match etype.value(section) {
+-        ResourceValue::Dir(dir) => IMAGE_RESOURCE_DIRECTORY::entries(dir),
+-        _ => todo!(),
+-    };
+-
+-    let eid = dir.find(|entry| entry.name(section) == query_id)?;
+-    let mut dir = match eid.value(section) {
+-        ResourceValue::Dir(dir) => IMAGE_RESOURCE_DIRECTORY::entries(dir),
+-        _ => todo!(),
+-    };
+-
+-    let first = dir.next()?;
+-    if dir.next().is_some() {
+-        log::warn!("multiple res entries, picking first");
++    fn word(b:&[u8],p:usize)->Option<u16>{let s=b.get(p..p.checked_add(2)?)?;Some(u16::from_le_bytes([s[0],s[1]]))}
++    fn dword(b:&[u8],p:usize)->Option<u32>{let s=b.get(p..p.checked_add(4)?)?;Some(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
++    fn entries(b:&[u8],off:usize)->Option<Vec<(u32,u32)>>{
++        let n=word(b,off.checked_add(12)?)? as usize+word(b,off.checked_add(14)?)? as usize;
++        let start=off.checked_add(16)?;b.get(start..start.checked_add(n.checked_mul(8)?)?)?;
++        (0..n).map(|i|Some((dword(b,start+i*8)?,dword(b,start+i*8+4)?))).collect()
+     }
+-    let data = match first.value(section) {
+-        ResourceValue::Data(data) => data,
+-        _ => todo!(),
+-    };
+-    Some(data.OffsetToData..(data.OffsetToData + data.Size))
++    fn matches(b:&[u8],raw:u32,q:&ResourceName)->Option<bool>{
++        if raw&0x80000000==0{return Some(*q==ResourceName::Id(raw))}
++        let p=(raw&0x7fffffff)as usize;let len=word(b,p)? as usize;
++        let chars:Vec<_>=(0..len).map(|i|word(b,p+2+i*2)).collect::<Option<Vec<_>>>()?;
++        Some(match q{ResourceName::Name(n)=>n.to_string()==String::from_utf16_lossy(&chars),_=>false})
++    }
++    let mut offset=0usize;
++    for query in [&query_type,&query_id]{
++        let mut next=None;
++        for (name,value) in entries(section,offset)?{if matches(section,name,query)?{if value&0x80000000==0{return None}next=Some((value&0x7fffffff)as usize);break}}
++        offset=next?;
++    }
++    let (_,value)=entries(section,offset)?.into_iter().next()?;
++    if value&0x80000000!=0{return None}
++    let start=dword(section,value as usize)?;let size=dword(section,value as usize+4)?;
++    Some(start..start.checked_add(size)?)
+ }
++#[cfg(test)]mod tests{
++ use super::*;
++ #[test]fn missing_and_truncated_resource_sections(){for n in 0..32{assert!(find_resource(&vec![0;n],ResourceName::Id(5),ResourceName::Id(1)).is_none());}}
++ #[test]fn malicious_entry_count(){let mut b=vec![0;16];b[14]=255;b[15]=255;assert!(find_resource(&b,ResourceName::Id(5),ResourceName::Id(1)).is_none());}
++}
 --- a/win32/src/shims.rs
 +++ b/win32/src/shims.rs
 @@ -25,6 +25,7 @@
@@ -527,16 +631,35 @@
  }
  
  #[win32_derive::dllexport]
-@@ -99,5 +102,5 @@
+@@ -99,5 +102,24 @@
      lpData: u32,
      cbData: u32,
  ) -> u32 {
 -    0 // success
 +    50 // Wide value marshaling is not implemented by this candidate.
  }
---- a/win32/src/winapi/comctl32.rs
++
++/* SPDX-License-Identifier: LGPL-2.1-or-later (this Wine-derived section)
++ * Wine dlls/advapi32/advapi.c:45-71, GetUserNameA/W
++ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1995 Sven Verdoolaege. See LICENSE.Wine.
++ * WINEUSERNAME belongs to the emulated process; not the host OS account.
++ * Added checked guest DWORD access instead of native pointer dereference.
++ */
++fn user_name(machine:&mut Machine,name:u32,size:u32,wide:bool)->bool{
++ let cap={let mem=machine.mem();if size==0||(size as usize).checked_add(4).map_or(true,|e|e>mem.as_slice().len()){super::kernel32::teb_mut(machine).LastErrorValue=87;return false}mem.get_pod::<u32>(size)};
++ let mut len=super::kernel32::query_environment(machine,Some("WINEUSERNAME".into()),name,cap,wide);
++ if len==0{return false}
++ let ret=len<cap;if ret{len+=1}else{super::kernel32::teb_mut(machine).LastErrorValue=122;}
++ machine.mem().sub32_mut(size,4).copy_from_slice(&len.to_le_bytes());ret
++}
++#[win32_derive::dllexport]
++pub fn GetUserNameA(machine:&mut Machine,lpBuffer:u32,pcbBuffer:u32)->bool{user_name(machine,lpBuffer,pcbBuffer,false)}
++#[win32_derive::dllexport]
++pub fn GetUserNameW(machine:&mut Machine,lpBuffer:u32,pcbBuffer:u32)->bool{user_name(machine,lpBuffer,pcbBuffer,true)}
+--- /dev/null
 +++ b/win32/src/winapi/comctl32.rs
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,26 @@
 +//! Common controls registered through the actual PE DLL/ordinal ABI.
 +#![allow(non_snake_case)]
 +use crate::{Machine,winapi::{user32::controls,kernel32}};
@@ -546,6 +669,7 @@
 +pub fn InitCommonControls(machine:&mut Machine) {
 +    controls::standard(machine);
 +    controls::register(machine,"msctls_progress32",controls::Kind::Progress);
++    controls::register(machine,"msctls_updown32",controls::Kind::Updown);
 +    // Legacy API has no return value. Do not claim unsupported Win95 classes exist.
 +    log::warn!("COMMON_CONTROLS_PARTIAL: progress and standard controls registered; other ICC_WIN95 classes unavailable");
 +}
@@ -556,14 +680,15 @@
 +    let bytes=&mem.as_slice()[icex as usize..end as usize];
 +    let size=u32::from_le_bytes(bytes[..4].try_into().unwrap());let flags=u32::from_le_bytes(bytes[4..8].try_into().unwrap());
 +    // ICC_PROGRESS_CLASS=0x20, ICC_STANDARD_CLASSES=0x4000. Reject unsupported flags atomically.
-+    if size!=8 || flags & !0x4020 !=0 {kernel32::teb_mut(machine).LastErrorValue=87;return false}
++    if size!=8 || flags & !0x4030 !=0 {kernel32::teb_mut(machine).LastErrorValue=87;return false}
 +    if flags&0x4000!=0 {controls::standard(machine)}
 +    if flags&0x20!=0 {controls::register(machine,"msctls_progress32",controls::Kind::Progress)}
++    if flags&0x10!=0 {controls::register(machine,"msctls_updown32",controls::Kind::Updown)}
 +    true
 +}
 --- a/win32/src/winapi/error.rs
 +++ b/win32/src/winapi/error.rs
-@@ -6,6 +6,11 @@
+@@ -6,6 +6,13 @@
  pub enum ERROR {
      SUCCESS = 0,
      FILE_NOT_FOUND = 2,
@@ -571,6 +696,8 @@
 +    NOT_SUPPORTED = 50,
 +    INVALID_PARAMETER = 87,
 +    INVALID_NAME = 123,
++    DIRECTORY = 267,
++    NO_MORE_FILES = 18,
 +    DLL_INIT_FAILED = 1114,
      ACCESS_DENIED = 5,
      INVALID_HANDLE = 6,
@@ -641,8 +768,114 @@
  }
  
  #[win32_derive::dllexport]
+--- a/win32/src/winapi/kernel32/env.rs
++++ b/win32/src/winapi/kernel32/env.rs
+@@ -1,51 +1,52 @@
+-use crate::{str16::Str16, winapi::stack_args::ArrayWithSize, Machine};
+-
+-const TRACE_CONTEXT: &'static str = "kernel32/env";
+-
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Adapted from Wine dlls/kernelbase/process.c:1553-1780, in particular
++ * GetEnvironmentVariableA/W and SetEnvironmentVariableA/W at 1656-1780.
++ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1996, 1998 Alexandre Julliard. See LICENSE.Wine.
++ * RtlQuery/SetEnvironmentVariable and PEB lock become a per-emulated-process map.
++ * ANSI entry points use existing ASCII argument adapter; not complete CP_ACP.
++ * No host process environment or real user identity is queried.
++ */
++use crate::{str16::Str16, Machine};
++use memory::{Extensions,ExtensionsMut};
++const TRACE_CONTEXT:&str="kernel32/env";
++fn error(machine:&mut Machine,e:u32)->u32{super::teb_mut(machine).LastErrorValue=e;0}
++fn encode(s:&str,wide:bool)->Vec<u8>{if wide{s.encode_utf16().flat_map(|c|c.to_le_bytes()).collect()}else{s.chars().map(|c|if c as u32<=255{c as u8}else{b'?'}).collect()}}
++fn block(machine:&mut Machine,wide:bool)->u32{
++ let mut values:Vec<_>=machine.state.kernel32.env_vars.iter().map(|(k,v)|format!("{k}={v}")).collect();values.sort();
++ let mut text=values.join("\0");text.push('\0');text.push('\0');let bytes=encode(&text,wide);
++ let heap=super::GetProcessHeap(machine);let p=super::HeapAlloc(machine,heap,Ok(super::HeapAllocFlags::empty()),bytes.len()as u32);
++ if p!=0{machine.mem().sub32_mut(p,bytes.len()as u32).copy_from_slice(&bytes);machine.state.kernel32.env_blocks.insert(p);}p
++}
+ #[win32_derive::dllexport]
+-pub fn GetEnvironmentStrings(machine: &mut Machine) -> u32 {
+-    machine.state.kernel32.env
++pub fn GetEnvironmentStrings(machine:&mut Machine)->u32{block(machine,false)}
++#[win32_derive::dllexport]
++pub fn GetEnvironmentStringsA(machine:&mut Machine)->u32{block(machine,false)}
++#[win32_derive::dllexport]
++pub fn GetEnvironmentStringsW(machine:&mut Machine)->u32{block(machine,true)}
++#[win32_derive::dllexport]
++pub fn FreeEnvironmentStringsA(machine:&mut Machine,penv:u32)->bool{if !machine.state.kernel32.env_blocks.remove(&penv){error(machine,87);return false}let heap=super::GetProcessHeap(machine);super::HeapFree(machine,heap,0,penv)}
++#[win32_derive::dllexport]
++pub fn FreeEnvironmentStringsW(machine:&mut Machine,penv:u32)->bool{FreeEnvironmentStringsA(machine,penv)}
++pub fn query_environment(machine:&mut Machine,name:Option<String>,buf:u32,size:u32,wide:bool)->u32{
++ let Some(name)=name else{return error(machine,203)};
++ let Some(value)=machine.state.kernel32.env_vars.get(&name.to_ascii_uppercase()).cloned()else{return error(machine,203)};
++ let bytes=encode(&value,wide);let unit=if wide{2}else{1};let len=bytes.len()/unit;let size=size.min(32767);
++ if size as usize<=len{return len as u32+1}
++ let count=bytes.len()+unit;
++ let valid={let mem=machine.mem();buf!=0&&(buf as usize).checked_add(count).map_or(false,|e|e<=mem.as_slice().len())};
++ if !valid{return error(machine,87)}
++ let out=machine.mem().sub32_mut(buf,count as u32);out[..bytes.len()].copy_from_slice(&bytes);out[bytes.len()..].fill(0);len as u32
+ }
+-
+ #[win32_derive::dllexport]
+-pub fn FreeEnvironmentStringsA(_machine: &mut Machine, _penv: u32) -> bool {
+-    true // success
++pub fn GetEnvironmentVariableA(machine:&mut Machine,name:Option<&str>,buf:u32,size:u32)->u32{query_environment(machine,name.map(str::to_string),buf,size,false)}
++#[win32_derive::dllexport]
++pub fn GetEnvironmentVariableW(machine:&mut Machine,name:Option<&Str16>,buf:u32,size:u32)->u32{query_environment(machine,name.map(|s|s.to_string()),buf,size,true)}
++fn set(machine:&mut Machine,name:Option<String>,value:Option<String>)->bool{
++ let Some(name)=name else{error(machine,203);return false};if name.is_empty()||name.contains('='){error(machine,87);return false}
++ let key=name.to_ascii_uppercase();if let Some(v)=value{machine.state.kernel32.env_vars.insert(key,v);}else if machine.state.kernel32.env_vars.remove(&key).is_none(){error(machine,203);return false}true
+ }
+-
+ #[win32_derive::dllexport]
+-pub fn GetEnvironmentStringsW(_machine: &mut Machine) -> u32 {
+-    // CRT startup appears to fallback on non-W version of this if it returns null.
+-    0
+-}
+-
++pub fn SetEnvironmentVariableA(machine:&mut Machine,name:Option<&str>,value:Option<&str>)->bool{set(machine,name.map(str::to_string),value.map(str::to_string))}
+ #[win32_derive::dllexport]
+-pub fn FreeEnvironmentStringsW(_machine: &mut Machine) -> bool {
+-    true // success
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn GetEnvironmentVariableA(
+-    _machine: &mut Machine,
+-    name: Option<&str>,
+-    buf: ArrayWithSize<u8>,
+-) -> bool {
+-    false
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn GetEnvironmentVariableW(
+-    _machine: &mut Machine,
+-    name: Option<&Str16>,
+-    buf: ArrayWithSize<u16>,
+-) -> bool {
+-    false
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn SetEnvironmentVariableA(
+-    _machine: &mut Machine,
+-    name: Option<&str>,
+-    value: Option<&str>,
+-) -> bool {
+-    true
+-}
++pub fn SetEnvironmentVariableW(machine:&mut Machine,name:Option<&Str16>,value:Option<&Str16>)->bool{set(machine,name.map(|s|s.to_string()),value.map(|s|s.to_string()))}
 --- a/win32/src/winapi/kernel32/file.rs
 +++ b/win32/src/winapi/kernel32/file.rs
+@@ -1,4 +1,4 @@
+-use crate::str16::String16;
++use crate::str16::{AnsiString,String16};
+ use crate::winapi::kernel32::set_last_error;
+ use crate::winapi::stack_args::ToX86;
+ use crate::winapi::types::{DWORD, HFIND, MAX_PATH};
 @@ -12,7 +12,7 @@
      FileOptions, ReadDir, ReadDirEntry, Stat, StatKind,
  };
@@ -652,7 +885,70 @@
  use typed_path::WindowsPath;
  
  const TRACE_CONTEXT: &'static str = "kernel32/file";
-@@ -1164,3 +1164,32 @@
+@@ -704,31 +704,28 @@
+     }
+ }
+ 
+-#[win32_derive::dllexport]
+-pub fn GetCurrentDirectoryA(machine: &mut Machine, nBufferLength: u32, lpBuffer: u32) -> u32 {
+-    let cwd = match machine.host.current_dir() {
+-        Ok(value) => value,
+-        Err(err) => {
+-            log::debug!("GetCurrentDirectoryA failed: {err:?}");
+-            set_last_error(machine, err);
+-            return 0;
+-        }
+-    };
+-    let out_bytes = cwd.as_bytes();
+-
+-    let buf = machine.mem().sub32_mut(lpBuffer, nBufferLength);
+-
+-    if buf.len() < out_bytes.len() + 1 {
+-        // not enough space
+-        log::debug!("GetCurrentDirectoryA -> size {}", out_bytes.len() + 1);
+-        return out_bytes.len() as u32 + 1;
+-    }
+-
+-    buf[..out_bytes.len()].copy_from_slice(out_bytes);
+-    buf[out_bytes.len()] = 0;
+-
+-    set_last_error(machine, ERROR::SUCCESS);
+-    out_bytes.len() as u32
++/* SPDX-License-Identifier: LGPL-2.1-or-later (this adapted section)
++ * Wine dlls/kernelbase/file.c:1732-1756,2964-2984
++ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1993 John Burton; 1996, 2004 Alexandre Julliard;
++ * 2008 Jeff Zaroyko. See LICENSE.Wine.
++ * RtlSet/GetCurrentDirectory_U -> authorized per-process Host VFS directory.
++ * No host chdir, device paths, UNC or independent per-drive directories.
++ */
++#[win32_derive::dllexport]
++pub fn SetCurrentDirectoryA(machine:&mut Machine,lpPathName:AnsiString)->bool{
++    let Some(path)=lpPathName.0 else{super::teb_mut(machine).LastErrorValue=87;return false};
++    if path.is_empty(){super::teb_mut(machine).LastErrorValue=123;return false}
++    match machine.host.set_current_dir(WindowsPath::new(&path)){Ok(())=>true,Err(e)=>{set_last_error(machine,e);false}}
++}
++#[win32_derive::dllexport]
++pub fn SetCurrentDirectoryW(machine:&mut Machine,lpPathName:Option<&Str16>)->bool{SetCurrentDirectoryA(machine,crate::str16::AnsiString(lpPathName.map(|s|s.to_string())))}
++#[win32_derive::dllexport]
++pub fn GetCurrentDirectoryA(machine:&mut Machine,nBufferLength:u32,lpBuffer:u32)->u32{
++    let cwd=match machine.host.current_dir(){Ok(v)=>v,Err(e)=>{set_last_error(machine,e);return 0}};
++    let bytes=cwd.as_bytes();if nBufferLength as usize<=bytes.len(){return bytes.len()as u32+1}
++    let mem=machine.mem();if lpBuffer==0||(lpBuffer as usize).checked_add(bytes.len()+1).map_or(true,|e|e>mem.as_slice().len()){super::teb_mut(machine).LastErrorValue=87;return 0}
++    let b=mem.sub32_mut(lpBuffer,bytes.len()as u32+1);b[..bytes.len()].copy_from_slice(bytes);b[bytes.len()]=0;bytes.len()as u32
+ }
+ 
+ #[repr(C)]
+@@ -876,7 +873,7 @@
+                 }
+             }
+             Ok(None) => {
+-                set_last_error(machine, ERROR::FILE_NOT_FOUND);
++                set_last_error(machine, ERROR::NO_MORE_FILES);
+                 return false;
+             }
+             Err(err) => {
+@@ -1164,3 +1161,32 @@
  pub fn FlushFileBuffers(machine: &mut Machine, hFile: HFILE) -> bool {
      todo!();
  }
@@ -687,11 +983,13 @@
 +}
 --- a/win32/src/winapi/kernel32/init.rs
 +++ b/win32/src/winapi/kernel32/init.rs
-@@ -207,13 +207,18 @@
+@@ -207,13 +207,20 @@
      /// Heaps created by HeapAlloc().
      heaps: HashMap<u32, Heap>,
      pub process_heap: u32,
 +    pub error_mode:u32,
++    pub env_vars: HashMap<String,String>,
++    pub env_blocks: std::collections::HashSet<u32>,
  
      pub dlls: HashMap<HMODULE, DLL>,
 +    pub dll_init_order: Vec<HMODULE>,
@@ -706,11 +1004,13 @@
  
      pub files: Handles<HFILE, Box<dyn crate::host::File>>,
  
-@@ -267,10 +272,14 @@
+@@ -267,10 +274,16 @@
              image_base: 0,
              teb,
              process_heap: 0,
 +            error_mode:0,
++            env_vars: [("WINDIR","C:\\Windows"),("USERNAME","Porthole"),("WINEUSERNAME","Porthole")].iter().map(|(k,v)|(k.to_string(),v.to_string())).collect(),
++            env_blocks: Default::default(),
              mappings,
              heaps: HashMap::new(),
              dlls,
@@ -722,7 +1022,7 @@
              files: Default::default(),
              find_handles: Default::default(),
              env: env_addr,
-@@ -385,11 +394,16 @@
+@@ -385,11 +398,16 @@
      }
  }
  
@@ -741,7 +1041,7 @@
  }
  pub fn peb_mut(machine: &mut Machine) -> &mut PEB {
      let peb_addr = teb(machine).Peb;
-@@ -468,41 +482,28 @@
+@@ -468,41 +486,28 @@
  /// It probably has some better name within ntdll.dll.
  #[win32_derive::dllexport]
  pub async fn retrowin32_main(machine: &mut Machine, entry_point: u32) {
@@ -830,6 +1130,73 @@
 +}
 +#[win32_derive::dllexport]
 +pub fn GetErrorMode(machine:&mut Machine)->u32 {machine.state.kernel32.error_mode}
+--- a/win32/src/winapi/kernel32/nls.rs
++++ b/win32/src/winapi/kernel32/nls.rs
+@@ -79,18 +79,53 @@
+     }
+ }
+ 
++/* SPDX-License-Identifier: LGPL-2.1-or-later (this adapted section)
++ * Wine dlls/kernelbase/locale.c:2965-3000,7426-7472
++ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1995 Martin von Loewis; 1998 David Lee Lambert;
++ * 2000 Julio César Gázquez; 2003 Jon Griffiths; 2005 Dmitry Timoshkov;
++ * 2002, 2019 Alexandre Julliard. See LICENSE.Wine.
++ * Reviewed subset: parameter/flag validation, CP1252 and UTF8, default char,
++ * query/length/terminator/error semantics. Rtl conversion -> checked owned Vecs.
++ * No other codepages or Wine's full best-fit/composition tables.
++ */
++fn wc_encode(code:u32,flags:u32,units:&[u16],default:u8)->Result<(Vec<u8>,bool),u32>{
++    if code==65001{
++        if flags & !0x80!=0{return Err(1004)}
++        let text=match String::from_utf16(units){Ok(t)=>t,Err(_)if flags&0x80!=0=>return Err(1113),Err(_)=>String::from_utf16_lossy(units)};
++        return Ok((text.into_bytes(),false))
++    }
++    if code!=0&&code!=1252{return Err(87)}
++    if flags & !0x400!=0{return Err(1004)}
++    let mut used=false;let mut out=Vec::new();
++    for &c in units{
++        let encoded=(0u16..=255).find(|&b|crate::str16::decode_cp1252(&[b as u8]).chars().next().map_or(false,|ch|ch as u32==c as u32));
++        if let Some(b)=encoded{out.push(b as u8)}else{used=true;out.push(default)}
++    }
++    Ok((out,used))
++}
+ #[win32_derive::dllexport]
+-pub fn WideCharToMultiByte(
+-    machine: &mut Machine,
+-    CodePage: Result<CP, u32>,
+-    dwFlags: u32,
+-    lpWideCharStr: u32,
+-    cchWideChar: i32,
+-    lpMultiByteStr: u32,
+-    cbMultiByte: i32,
+-    lpUsedDefaultChar: Option<&mut u32>,
+-) -> u32 {
+-    todo!()
++pub fn WideCharToMultiByte(machine:&mut Machine,CodePage:u32,dwFlags:u32,lpWideCharStr:u32,cchWideChar:i32,lpMultiByteStr:u32,cbMultiByte:i32,lpDefaultChar:u32,lpUsedDefaultChar:u32)->u32{
++    fn fail(m:&mut Machine,e:u32)->u32{super::teb_mut(m).LastErrorValue=e;0}
++    if lpWideCharStr==0||cchWideChar==0||cbMultiByte<0||(lpMultiByteStr==0&&cbMultiByte!=0){return fail(machine,87)}
++    if CodePage==65001&&(lpDefaultChar!=0||lpUsedDefaultChar!=0){return fail(machine,87)}
++    let input={let mem=machine.mem();let Some(b)=mem.as_slice().get(lpWideCharStr as usize..)else{return fail(machine,87)};
++        let count=if cchWideChar<0{let Some(n)=b.chunks_exact(2).take(1048576).position(|v|v==[0,0])else{return fail(machine,87)};n+1}else{cchWideChar as usize};
++        let Some(n)=count.checked_mul(2)else{return fail(machine,87)};let Some(b)=b.get(..n)else{return fail(machine,87)};
++        b.chunks_exact(2).map(|v|u16::from_le_bytes([v[0],v[1]])).collect::<Vec<_>>()};
++    let default=if lpDefaultChar==0{b'?'}else{let mem=machine.mem();let Some(&v)=mem.as_slice().get(lpDefaultChar as usize)else{return fail(machine,87)};v};
++    let (bytes,used)=match wc_encode(CodePage,dwFlags,&input,default){Ok(v)=>v,Err(e)=>return fail(machine,e)};
++    if lpUsedDefaultChar!=0{let mem=machine.mem();if (lpUsedDefaultChar as usize).checked_add(4).map_or(true,|e|e>mem.as_slice().len()){return fail(machine,87)}}
++    if cbMultiByte!=0&&bytes.len()>cbMultiByte as usize{return fail(machine,122)}
++    use memory::ExtensionsMut;
++    if cbMultiByte!=0{let mem=machine.mem();if (lpMultiByteStr as usize).checked_add(bytes.len()).map_or(true,|e|e>mem.as_slice().len()){return fail(machine,87)}mem.sub32_mut(lpMultiByteStr,bytes.len()as u32).copy_from_slice(&bytes);}
++    if lpUsedDefaultChar!=0{machine.mem().sub32_mut(lpUsedDefaultChar,4).copy_from_slice(&(if used{1u32}else{0}).to_le_bytes());}
++    bytes.len()as u32
++}
++#[cfg(test)]mod wc_tests{
++ use super::*;
++ #[test]fn cp1252_euro_and_default(){assert_eq!(wc_encode(1252,0,&[65,0x20ac,0],b'?').unwrap(),(vec![65,128,0],false));assert_eq!(wc_encode(0,0x400,&[0x4e2d],b'_').unwrap(),(vec![b'_'],true));}
++ #[test]fn utf8_surrogate_and_errors(){assert_eq!(wc_encode(65001,0,&[0xd83d,0xde00],0).unwrap().0,vec![240,159,152,128]);assert_eq!(wc_encode(65001,0x80,&[0xd800],0),Err(1113));assert_eq!(wc_encode(1252,1,&[65],0),Err(1004));assert_eq!(wc_encode(932,0,&[65],0),Err(87));}
+ }
+ 
+ #[win32_derive::dllexport]
 --- a/win32/src/winapi/kernel32/sync.rs
 +++ b/win32/src/winapi/kernel32/sync.rs
 @@ -1,47 +1,114 @@
@@ -1086,7 +1453,30 @@
 +}
 --- a/win32/src/winapi/kernel32/time.rs
 +++ b/win32/src/winapi/kernel32/time.rs
-@@ -153,7 +153,7 @@
+@@ -1,7 +1,7 @@
+ use super::{set_last_error, FILETIME};
+ use crate::{winapi::ERROR, Machine};
+ use chrono::{Datelike, Timelike};
+-use memory::{ExtensionsMut, Pod};
++use memory::{Extensions, ExtensionsMut, Pod};
+ 
+ const TRACE_CONTEXT: &'static str = "kernel32/time";
+ 
+@@ -137,8 +137,11 @@
+         set_last_error(machine, ERROR::INVALID_DATA);
+         return false;
+     };
+-    let nanos = lpFileTime.to_unix_nanos();
+-    let date_time = chrono::DateTime::from_timestamp_nanos(nanos);
++    // Avoid i64 nanoseconds overflow for the 1601 epoch / far future FILETIMEs.
++    let value=lpFileTime.to_u64();
++    if value>i64::MAX as u64{set_last_error(machine,ERROR::INVALID_PARAMETER);return false}
++    let seconds=(value/10_000_000)as i64-11_644_473_600;
++    let Some(date_time)=chrono::DateTime::from_timestamp(seconds,((value%10_000_000)*100)as u32)else{set_last_error(machine,ERROR::INVALID_PARAMETER);return false};
+     if let Some(time) = lpSystemTime {
+         *time = SYSTEMTIME::from_chrono(&date_time);
+     }
+@@ -153,7 +156,7 @@
  
      #[cfg(feature = "x86-emu")]
      {
@@ -1095,6 +1485,38 @@
          machine.emu.x86.cpu_mut().block(Some(until)).await;
      }
  
+@@ -220,3 +223,31 @@
+     *lpTimeZoneInformation.unwrap() = TIME_ZONE_INFORMATION::zeroed();
+     TIME_ZONE_ID_UNKNOWN
+ }
++
++/* SPDX-License-Identifier: LGPL-2.1-or-later (this derived section)
++ * Wine kernelbase/file.c:4150-4153 and ntdll/time.c:217-227,242-252
++ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * file.c: Copyright 1993 John Burton; 1996, 2004 Alexandre Julliard;
++ * 2008 Jeff Zaroyko. ntdll/time.c: Copyright 2002 Rex Jolliff,
++ * 1999 Juergen Schmied, 2007 Dmitry Timoshkov. Original ReactOS permission notice
++ * for RtlTimeFields portions is retained in corpus; those algorithms are not ported.
++ * NtQuerySystemInformation timezone bias -> existing host clock's current UTC
++ * offset. Checked guest offsets replace native FILETIME/LARGE_INTEGER pointers.
++ * Current bias follows Wine's API behavior, not historical per-date DST rules.
++ */
++fn local_ticks(ticks:u64,seconds:i32)->u64{ticks.wrapping_add((seconds as i64*10_000_000)as u64)}
++fn file_time_bias(machine:&mut Machine,input:u32,output:u32,inverse:bool)->bool{
++    let valid={let m=machine.mem();input!=0&&output!=0&&(input as usize).checked_add(8).map_or(false,|e|e<=m.as_slice().len())&&(output as usize).checked_add(8).map_or(false,|e|e<=m.as_slice().len())};
++    if !valid{set_last_error(machine,ERROR::INVALID_PARAMETER);return false}
++    let value=machine.mem().get_pod::<u64>(input);
++    let offset=machine.host.system_time().offset().local_minus_utc();
++    machine.mem().put_pod::<u64>(output,local_ticks(value,if inverse{-offset}else{offset}));true
++}
++#[win32_derive::dllexport]
++pub fn FileTimeToLocalFileTime(machine:&mut Machine,lpFileTime:u32,lpLocalFileTime:u32)->bool{file_time_bias(machine,lpFileTime,lpLocalFileTime,false)}
++#[win32_derive::dllexport]
++pub fn LocalFileTimeToFileTime(machine:&mut Machine,lpLocalFileTime:u32,lpFileTime:u32)->bool{file_time_bias(machine,lpLocalFileTime,lpFileTime,true)}
++#[cfg(test)]mod timezone_tests{
++ use super::*;
++ #[test]fn signed_bias_and_roundtrip(){let t=116_444_736_000_000_000u64;assert_eq!(local_ticks(t,-10800),t-10800*10_000_000);assert_eq!(local_ticks(local_ticks(t,-10800),10800),t);assert_eq!(local_ticks(t,19800),t+19800*10_000_000);}
++}
 --- a/win32/src/winapi/mod.rs
 +++ b/win32/src/winapi/mod.rs
 @@ -6,6 +6,7 @@
@@ -1168,7 +1590,7 @@
  use memory::Extensions;
  
  pub type WORD = u16;
---- a/win32/src/winapi/user32/control_font.rs
+--- /dev/null
 +++ b/win32/src/winapi/user32/control_font.rs
 @@ -0,0 +1,133 @@
 +// Public domain font by Daniel Hepper, based on Marcel Sondaar/IBM VGA fonts.
@@ -1304,9 +1726,9 @@
 +[0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 +[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 +];
---- a/win32/src/winapi/user32/controls.rs
+--- /dev/null
 +++ b/win32/src/winapi/user32/controls.rs
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,167 @@
 +//! Native, per-HWND controls. Guest pointers are checked offsets, never host pointers.
 +//! First implementation: basic Latin ANSI text, single-line edit/single-selection lists.
 +use super::{window::*, message::MSG};
@@ -1316,7 +1738,7 @@
 +
 +pub const NATIVE_PROC: u32 = 0xffff0010;
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub enum Kind { Button, Edit, Static, Listbox, Combo, Scroll, Progress, Tab }
++pub enum Kind { Button, Edit, Static, Listbox, Combo, Scroll, Progress, Tab, Updown }
 +#[derive(Clone)]
 +pub struct Control {
 +    pub kind: Kind, pub text: Vec<u8>, pub style: u32,
@@ -1324,10 +1746,10 @@
 +    pub start: usize, pub end: usize, pub limit: usize,
 +    pub items: Vec<Vec<u8>>, pub selected: i32,
 +    pub low: i32, pub high: i32, pub position: i32, pub step: i32,
-+    pub focus: bool, pub image:u32,
++    pub focus: bool, pub image:u32, pub updown: Option<super::updown::State>,
 +}
 +impl Control {
-+    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0}}
++    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0,updown:if kind==Kind::Updown{Some(super::updown::State::default())}else{None}}}
 +    fn replace(&mut self, bytes:&[u8]) {
 +        let a=self.start.min(self.end).min(self.text.len());let b=self.start.max(self.end).min(self.text.len());
 +        let n=bytes.len().min(self.limit.saturating_sub(self.text.len()-(b-a)));
@@ -1342,7 +1764,7 @@
 +pub fn standard(machine:&mut Machine) {
 +    for (name,kind) in [("BUTTON",Kind::Button),("EDIT",Kind::Edit),("STATIC",Kind::Static),("LISTBOX",Kind::Listbox),("COMBOBOX",Kind::Combo),("SCROLLBAR",Kind::Scroll)] {register(machine,name,kind);}
 +}
-+pub fn kind(name:&str)->Option<Kind> {Some(match name.to_ascii_uppercase().as_str(){"BUTTON"=>Kind::Button,"EDIT"=>Kind::Edit,"STATIC"=>Kind::Static,"LISTBOX"=>Kind::Listbox,"COMBOBOX"=>Kind::Combo,"SCROLLBAR"=>Kind::Scroll,"MSCTLS_PROGRESS32"=>Kind::Progress,"SYSTABCONTROL32"=>Kind::Tab,_=>return None})}
++pub fn kind(name:&str)->Option<Kind> {Some(match name.to_ascii_uppercase().as_str(){"BUTTON"=>Kind::Button,"EDIT"=>Kind::Edit,"STATIC"=>Kind::Static,"LISTBOX"=>Kind::Listbox,"COMBOBOX"=>Kind::Combo,"SCROLLBAR"=>Kind::Scroll,"MSCTLS_PROGRESS32"=>Kind::Progress,"MSCTLS_UPDOWN32"=>Kind::Updown,"SYSTABCONTROL32"=>Kind::Tab,_=>return None})}
 +fn error(machine:&mut Machine,code:u32)->u32{kernel32::teb_mut(machine).LastErrorValue=code;0}
 +fn string(machine:&Machine,ptr:u32)->Option<Vec<u8>> {
 +    if ptr==0{return Some(vec![])}
@@ -1368,7 +1790,7 @@
 +    let mut root=hwnd;let mut ox=0i32;let mut oy=0i32;
 +    for _ in 0..64 {let Some(w)=machine.state.user32.windows.get(root) else{return};if matches!(w.typ,WindowType::TopLevel(_)){break}ox=ox.saturating_add(w.x);oy=oy.saturating_add(w.y);root=w.parent;}
 +    let mut px=vec![[240,240,240,255];(width*height) as usize];
-+    let black=[20,20,20,255];let blue=[30,80,180,255];let white=[255,255,255,255];
++    let black=if c.style&0x08000000!=0{[128,128,128,255]}else{[20,20,20,255]};let blue=[30,80,180,255];let white=[255,255,255,255];
 +    let mut dot=|x:i32,y:i32,color:[u8;4]|{if x>=0&&y>=0&&(x as u32)<width&&(y as u32)<height {px[(y as u32*width+x as u32) as usize]=color;}};
 +    let mut texts:Vec<(i32,i32,Vec<u8>,[u8;4])>=vec![];
 +    if matches!(c.kind,Kind::Edit|Kind::Listbox|Kind::Combo){for y in 0..height as i32 {for x in 0..width as i32 {dot(x,y,white)}}}
@@ -1396,6 +1818,7 @@
 +            if c.kind==Kind::Progress {for y in 2..height as i32-2{for x in 2..p+2{dot(x,y,blue)}}}
 +            else {for y in 2..height as i32-2{for x in p..p+8{dot(x.min(width as i32-2),y,blue)}}}
 +        }
++        Kind::Updown=>{let mid=height as i32/2;for x in 1..width as i32-1{dot(x,mid,black);}for dy in 0..4{for dx in -dy..=dy{dot(width as i32/2+dx,mid/2-2+dy,black);dot(width as i32/2+dx,mid+mid/2+2-dy,black);}}}
 +        Kind::Tab=>{let mut x=2;for (i,text) in c.items.iter().enumerate(){texts.push((x,3,text.clone(),if i as i32==c.selected{blue}else{black}));x+=text.len() as i32*8+12;}}
 +        Kind::Static=>{
 +            if c.image==0 {texts.push((2,2,c.text.clone(),black));}
@@ -1418,6 +1841,7 @@
 +pub fn paint_children(machine:&mut Machine,parent:HWND){let mut children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.control.is_some()).map(|w|w.hwnd).collect();children.sort_by_key(|h|h.to_raw());for child in children {paint(machine,child)}}
 +
 +pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
++    if machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.control.as_ref()).map_or(false,|c|c.kind==Kind::Updown){return Box::pin(super::updown::dispatch(machine,msg)).await;}
 +    let (hwnd,m,wp,lp)=(msg.hwnd,msg.message,msg.wParam,msg.lParam);
 +    let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
 +    if m==0x172 && (wp!=0 || (lp!=0&&!matches!(machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(lp)),Some(crate::winapi::gdi32::Object::Bitmap(_))))){return error(machine,87)}
@@ -1426,6 +1850,7 @@
 +    let mut notify=None;let mut result=0u32;let mut redraw=true;let mut output=None;
 +    match m {
 +        1=>{}, 0xf=>{}, 7=>c.focus=true,8=>c.focus=false,
++        0xa=>{if wp==0{c.pressed=false;c.focus=false}},0x1f=>c.pressed=false,
 +        0xc=>{c.text=incoming;c.start=c.text.len();c.end=c.start;result=1},
 +        0xd=>{output=Some((lp,wp,c.text.clone()))},0xe=>{result=c.text.len() as u32;redraw=false},
 +        0x172 if c.kind==Kind::Static=>{result=c.image;c.image=lp},
@@ -1470,6 +1895,247 @@
 +    if redraw {paint(machine,hwnd)}
 +    if let Some(code)=notify {if !parent.is_null(){let notification=MSG{hwnd:parent,message:if code==0xffff{if vertical{0x115}else{0x114}}else{0x111},wParam:if code==0xffff{4|((scroll_position&0xffff)<<16)}else{(id&0xffff)|((code as u32)<<16)},lParam:hwnd.to_raw(),time:0,pt_x:0,pt_y:0};Box::pin(super::message::dispatch_message(machine,&notification)).await;}}
 +    result
++}
+--- a/win32/src/winapi/user32/dialog.rs
++++ b/win32/src/winapi/user32/dialog.rs
+@@ -122,15 +122,7 @@
+     -1 // error
+ }
+ 
+-#[win32_derive::dllexport]
+-pub fn SetDlgItemTextA(
+-    _machine: &mut Machine,
+-    hDlg: HWND,
+-    nIDDlgItem: i32,
+-    lpString: Option<&str>,
+-) -> bool {
+-    todo!();
+-}
++
+ 
+ #[win32_derive::dllexport]
+ pub fn SetDlgItemTextW(
+@@ -153,10 +145,7 @@
+     todo!();
+ }
+ 
+-#[win32_derive::dllexport]
+-pub fn GetDlgItem(machine: &mut Machine, hDlg: HWND, nIDDlgItem: i32) -> HWND {
+-    todo!();
+-}
++
+ 
+ #[win32_derive::dllexport]
+ pub fn GetDlgItemTextW(
+@@ -179,26 +168,11 @@
+     todo!();
+ }
+ 
+-#[win32_derive::dllexport]
+-pub fn CheckRadioButton(
+-    _machine: &mut Machine,
+-    hDlg: HWND,
+-    nIDFirstButton: i32,
+-    nIDLastButton: i32,
+-    nIDCheckButton: i32,
+-) -> bool {
+-    todo!();
+-}
+ 
+-#[win32_derive::dllexport]
+-pub fn CheckDlgButton(_machine: &mut Machine, hDlg: HWND, nIDButton: i32, uCheck: u32) -> bool {
+-    todo!();
+-}
+ 
+-#[win32_derive::dllexport]
+-pub fn IsDlgButtonChecked(_machine: &mut Machine, hDlg: HWND, nIDButton: i32) -> u32 {
+-    todo!();
+-}
++
++
++
+ 
+ #[win32_derive::dllexport]
+ pub fn EndDialog(_machine: &mut Machine, hDlg: HWND, nResult: Option<&mut u32>) -> bool {
+--- /dev/null
++++ b/win32/src/winapi/user32/dialog_helpers.rs
+@@ -0,0 +1,121 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Modeless dialog subset adapted from Wine dlls/user32/dialog.c:191-301,
++ * 443-713,719-774. wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1993, 1994, 1996 Alexandre Julliard
++ * Porthole adaptations: local HWND storage/Canvas, guest callback via call_x86,
++ * checked owned templates. NOT a full Wine user32 port. See LICENSE.Wine.
++ */
++use super::{dialog_template::{self,Name,Template},*};
++use crate::{Machine,winapi::{kernel32,types::*}};
++use memory::Extensions;
++use std::rc::Rc;
++const TRACE_CONTEXT:&str="user32/dialog_helpers";
++pub const DIALOG_PROC:u32=0xffff0020;
++pub struct DialogInfo {pub proc:u32,pub result:u32,pub default_id:u32}
++fn fail(machine:&mut Machine,code:u32)->HWND{kernel32::teb_mut(machine).LastErrorValue=code;HWND::null()}
++fn text(n:&Name)->Result<String,u32>{match n{Name::None=>Ok(String::new()),Name::Text(s)=>Ok(s.clone()),_=>Err(50)}}
++fn units(n:i16,base:i32,div:i32)->u32{let v=n as i32*base;((v+if v>=0{div/2}else{-div/2})/div)as u32}
++fn send_msg(h:HWND,m:u32,w:u32,l:u32)->MSG{MSG{hwnd:h,message:m,wParam:w,lParam:l,time:0,pt_x:0,pt_y:0}}
++fn tab_items(machine:&Machine,parent:HWND)->Vec<HWND>{let mut v:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.style.contains(WindowStyle::VISIBLE)&&!w.style.contains(WindowStyle::DISABLED)&&w.style.bits()&0x10000!=0).map(|w|w.hwnd).collect();v.sort_by_key(|h|h.to_raw());v}
++pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32{
++ let proc=machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.proc);
++ if proc!=0{let handled=machine.call_x86(proc,vec![msg.hwnd.to_raw(),msg.message,msg.wParam,msg.lParam]).await;if handled!=0{return if msg.message==0x110{handled}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.result)}}}
++ if machine.state.user32.windows.get(msg.hwnd).is_none(){return 0}
++ match msg.message{
++  0x400=>machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|if d.default_id==0{0}else{0x534b0000|d.default_id}),
++  0x401=>{if let Some(d)=machine.state.user32.windows.get_mut(msg.hwnd).and_then(|w|w.dialog.as_mut()){d.default_id=msg.wParam;}1},
++  0x28=>{let h=if msg.lParam!=0{HWND::from_raw(msg.wParam)}else{{let focus=GetFocus(machine);GetNextDlgTabItem(machine,msg.hwnd,focus,msg.wParam!=0)}};if !h.is_null(){SetFocus(machine,h);}0},
++  // Default close hides/destroys a modeless dialog; no fake modal result.
++  0x10=>{DestroyWindow(machine,msg.hwnd);0},
++  _=>Box::pin(DefWindowProcA(machine,msg.hwnd,WM::try_from(msg.message),msg.wParam,msg.lParam)).await,
++ }
++}
++async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:Template)->HWND{
++ // Menus, custom dialog classes and resource image captions need unported APIs.
++ if t.menu!=Name::None||!matches!(&t.class,Name::None|Name::Id(32770)){return fail(machine,50)}
++ let title=match text(&t.title){Ok(t)=>t,Err(e)=>return fail(machine,e)};
++ if !machine.state.user32.wndclasses.iter().any(|c|c.name=="#32770") {machine.state.user32.wndclasses.push(Rc::new(WndClass{name:"#32770".into(),wndproc:DIALOG_PROC,background:HBRUSH::null()}));}
++ // Base units match the existing fixed 8x8 raster font, not Wine's GDI fonts.
++ if let Some(font)=&t.font{log::warn!("DIALOG_FONT_FALLBACK requested={font:?}, fixed 8x8 raster");}
++ let title=String16::from(title.as_str());let class=String16::from("#32770");
++ let width=units(t.cx,8,4);let height=units(t.cy,8,8);
++ let mut rect=RECT{left:0,top:0,right:width as i32,bottom:height as i32};
++ AdjustWindowRectEx(machine,Some(&mut rect),Ok(WindowStyle::from_bits_truncate(t.style)),false,Ok(WindowStyleEx::from_bits_truncate(t.ex)));
++ let hwnd=Box::pin(CreateWindowExW(machine,Err(t.ex),CreateWindowClassName::Name(class.as_str16()),Some(title.as_str16()),Err(t.style&!0x10000000),units(t.x,8,4),units(t.y,8,8),(rect.right-rect.left)as u32,(rect.bottom-rect.top)as u32,parent,0,inst,0)).await;
++ if hwnd.is_null(){return hwnd}
++ machine.state.user32.windows.get_mut(hwnd).unwrap().dialog=Some(DialogInfo{proc,result:0,default_id:0});
++ for item in t.items{
++  let cls=match dialog_template::class_name(&item.class){Ok(c)=>c,Err(e)=>{DestroyWindow(machine,hwnd);return fail(machine,e)}};
++  let caption=match text(&item.title){Ok(t)=>t,Err(e)=>{DestroyWindow(machine,hwnd);return fail(machine,e)}};
++  if !item.data.is_empty(){DestroyWindow(machine,hwnd);return fail(machine,50)}
++  let cls=String16::from(cls.as_str());let caption=String16::from(caption.as_str());
++  let child=Box::pin(CreateWindowExW(machine,Err(item.ex|4),CreateWindowClassName::Name(cls.as_str16()),Some(caption.as_str16()),Err((item.style&!0x80000000)|0x40000000),units(item.x,8,4),units(item.y,8,8),units(item.cx,8,4),units(item.cy,8,8),hwnd,item.id,inst,0)).await;
++  if child.is_null(){if t.style&0x10!=0{continue}DestroyWindow(machine,hwnd);return HWND::null()}
++  if item.style&0xf==1 {machine.state.user32.windows.get_mut(hwnd).unwrap().dialog.as_mut().unwrap().default_id=item.id;}
++ }
++ let focus=GetNextDlgTabItem(machine,hwnd,HWND::null(),false);
++ let handled=Box::pin(dispatch(machine,&send_msg(hwnd,0x110,focus.to_raw(),param))).await;
++ if machine.state.user32.windows.get(hwnd).is_some(){
++  if handled!=0{let focus=GetNextDlgTabItem(machine,hwnd,HWND::null(),false);if !focus.is_null(){SetFocus(machine,focus);}}
++  if t.style&0x10000000!=0{Box::pin(ShowWindow(machine,hwnd,Ok(SW::NORMAL))).await;}
++ }
++ hwnd
++}
++pub async fn indirect(machine:&mut Machine,inst:u32,ptr:u32,len:Option<usize>,parent:HWND,proc:u32,param:u32)->HWND{
++ if ptr==0{return fail(machine,87)}
++ let parsed={let mem=machine.mem();let b=mem.as_slice();match b.get(ptr as usize..){Some(b)=>dialog_template::parse(&b[..len.unwrap_or(b.len()).min(b.len()).min(1048576)]),None=>Err(87)}};
++ match parsed{Ok(t)=>Box::pin(create(machine,inst,parent,proc,param,t)).await,Err(e)=>fail(machine,e)}
++}
++#[win32_derive::dllexport]
++pub async fn CreateDialogParamA(machine:&mut Machine,hInstance:u32,lpTemplateName:u32,hWndParent:HWND,lpDialogFunc:u32,dwInitParam:u32)->HWND{
++ let instance=if hInstance==0{machine.state.kernel32.image_base}else{hInstance};
++ let name=if lpTemplateName>>16==0{ResourceKey::Id(lpTemplateName)}else{
++  let name={let mem=machine.mem();let Some(bytes)=mem.as_slice().get(lpTemplateName as usize..)else{return fail(machine,87)};let Some(n)=bytes.iter().take(65536).position(|&b|b==0)else{return fail(machine,87)};crate::str16::decode_cp1252(&bytes[..n])};ResourceKey::Name(String16::from(name.as_str()))
++ };
++ // Use range directly: retrowin32 LoadResource returns a handle, not Wine's pointer.
++ let range=kernel32::find_resource(&machine.state.kernel32,machine.mem(),instance,ResourceKey::Id(5),name.as_ref());
++ let Some(range)=range else{return fail(machine,1814)};
++ log::debug!("Wine-derived CreateDialogParamA template={range:?}");
++ indirect(machine,instance,range.start,Some(range.len()),hWndParent,lpDialogFunc,dwInitParam).await
++}
++#[win32_derive::dllexport]
++pub async fn CreateDialogIndirectParamA(machine:&mut Machine,hInstance:u32,lpTemplate:u32,hWndParent:HWND,lpDialogFunc:u32,dwInitParam:u32)->HWND{indirect(machine,hInstance,lpTemplate,None,hWndParent,lpDialogFunc,dwInitParam).await}
++#[win32_derive::dllexport]
++pub fn GetDialogBaseUnits(_machine:&mut Machine)->u32{8|(8<<16)}
++#[win32_derive::dllexport]
++pub fn MapDialogRect(machine:&mut Machine,hDlg:HWND,lpRect:Option<&mut RECT>)->bool{if machine.state.user32.windows.get(hDlg).and_then(|w|w.dialog.as_ref()).is_none(){fail(machine,1400);return false}let Some(r)=lpRect else{fail(machine,87);return false};r.left=r.left*2;r.right=r.right*2;true}
++#[win32_derive::dllexport]
++pub fn GetNextDlgTabItem(machine:&mut Machine,hDlg:HWND,hCtl:HWND,bPrevious:bool)->HWND{
++ let v=tab_items(machine,hDlg);if v.is_empty(){return HWND::null()}let pos=v.iter().position(|&h|h==hCtl);let i=match pos{Some(i)=>if bPrevious{(i+v.len()-1)%v.len()}else{(i+1)%v.len()},None=>if bPrevious{v.len()-1}else{0}};v[i]
++}
++#[win32_derive::dllexport]
++pub async fn IsDialogMessageA(machine:&mut Machine,hDlg:HWND,lpMsg:Option<&MSG>)->bool{
++ let Some(m)=lpMsg else{return false};let mut h=m.hwnd;let mut found=false;
++ for _ in 0..64{if h==hDlg{found=true;break}let Some(w)=machine.state.user32.windows.get(h)else{break};if w.parent.is_null(){break}h=w.parent;}
++ if !found{return false}
++ if m.message==0x100&&m.wParam==9{let next=GetNextDlgTabItem(machine,hDlg,m.hwnd,false);SetFocus(machine,next);return true}
++ if m.message==0x100&&(m.wParam==13||m.wParam==27){let id=if m.wParam==27{2}else{machine.state.user32.windows.get(hDlg).and_then(|w|w.dialog.as_ref()).map_or(1,|d|if d.default_id==0{1}else{d.default_id})};let child=GetDlgItem(machine,hDlg,id as i32);Box::pin(dispatch(machine,&send_msg(hDlg,0x111,id,child.to_raw()))).await;return true}
++ false
++}
++#[win32_derive::dllexport]
++pub async fn SendDlgItemMessageA(machine:&mut Machine,hDlg:HWND,nIDDlgItem:i32,Msg:u32,wParam:u32,lParam:u32)->u32{let child=GetDlgItem(machine,hDlg,nIDDlgItem);if child.is_null(){return 0}Box::pin(dispatch_message(machine,&send_msg(child,Msg,wParam,lParam))).await}
++// Wine dialog.c:1310-1380,1434-1492; local HWND lookup replaces server traversal.
++#[win32_derive::dllexport]
++pub fn GetDlgItem(machine:&mut Machine,hDlg:HWND,nIDDlgItem:i32)->HWND{machine.state.user32.windows.iter().filter(|w|w.parent==hDlg&&w.id==nIDDlgItem as u32).min_by_key(|w|w.hwnd.to_raw()).map_or(HWND::null(),|w|w.hwnd)}
++#[win32_derive::dllexport]
++pub async fn SetDlgItemTextA(machine:&mut Machine,hDlg:HWND,nIDDlgItem:i32,lpString:u32)->bool{SendDlgItemMessageA(machine,hDlg,nIDDlgItem,0xc,0,lpString).await!=0}
++#[win32_derive::dllexport]
++pub async fn GetDlgItemTextA(machine:&mut Machine,hDlg:HWND,nIDDlgItem:i32,lpString:u32,cchMax:i32)->u32{
++ if cchMax<=0{return 0}let valid={let mem=machine.mem();lpString!=0&&(lpString as usize).checked_add(cchMax as usize).map_or(false,|end|end<=mem.as_slice().len())};
++ if !valid{fail(machine,87);return 0}use memory::ExtensionsMut;machine.mem().sub32_mut(lpString,1)[0]=0;
++ SendDlgItemMessageA(machine,hDlg,nIDDlgItem,0xd,cchMax as u32,lpString).await
++}
++#[win32_derive::dllexport]
++pub async fn CheckDlgButton(machine:&mut Machine,hDlg:HWND,nIDButton:i32,uCheck:u32)->bool{SendDlgItemMessageA(machine,hDlg,nIDButton,0xf1,uCheck,0).await;true}
++#[win32_derive::dllexport]
++pub async fn IsDlgButtonChecked(machine:&mut Machine,hDlg:HWND,nIDButton:i32)->u32{SendDlgItemMessageA(machine,hDlg,nIDButton,0xf0,0,0).await}
++#[win32_derive::dllexport]
++pub async fn CheckRadioButton(machine:&mut Machine,hDlg:HWND,nIDFirstButton:i32,nIDLastButton:i32,nIDCheckButton:i32)->bool{
++ let children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==hDlg&&(w.id as i32)>=nIDFirstButton&&(w.id as i32)<=nIDLastButton).map(|w|(w.hwnd,w.id)).collect();
++ for (h,id) in children{Box::pin(dispatch_message(machine,&send_msg(h,0xf1,if id==nIDCheckButton as u32{1}else{0},0))).await;}true
++}
+--- /dev/null
++++ b/win32/src/winapi/user32/dialog_template.rs
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Adapted from Wine dlls/user32/dialog.c:87-181,310-432
++ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1993, 1994, 1996 Alexandre Julliard
++ * Rust/Wasm adaptations: checked byte cursor, owned UTF-16 strings, bounded
++ * resources instead of unbounded native pointers. See LICENSE.Wine.
++ */
++#[derive(Debug, Clone, PartialEq)]
++pub enum Name { None, Id(u16), Text(String) }
++#[derive(Debug)]
++pub struct Item { pub style:u32, pub ex:u32, pub id:u32, pub x:i16, pub y:i16, pub cx:i16, pub cy:i16, pub class:Name, pub title:Name, pub data:Vec<u8> }
++#[derive(Debug)]
++pub struct Template { pub style:u32, pub ex:u32, pub x:i16, pub y:i16, pub cx:i16, pub cy:i16, pub menu:Name, pub class:Name, pub title:Name, pub font:Option<(u16,String)>, pub items:Vec<Item> }
++struct Cursor<'a> { b:&'a[u8], p:usize }
++impl<'a> Cursor<'a> {
++ fn take(&mut self,n:usize)->Result<&'a[u8],u32>{let end=self.p.checked_add(n).ok_or(13u32)?;let s=self.b.get(self.p..end).ok_or(13u32)?;self.p=end;Ok(s)}
++ fn w(&mut self)->Result<u16,u32>{let b=self.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]]))}
++ fn d(&mut self)->Result<u32,u32>{let b=self.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]]))}
++ fn align(&mut self)->Result<(),u32>{let n=(4-self.p%4)%4;self.take(n)?;Ok(())}
++ fn text(&mut self,first:u16)->Result<String,u32>{let mut chars=vec![first];loop{let c=self.w()?;if c==0{break}chars.push(c);if chars.len()>32767{return Err(13)}}Ok(String::from_utf16_lossy(&chars))}
++ fn name(&mut self)->Result<Name,u32>{Ok(match self.w()?{0=>Name::None,0xffff=>Name::Id(self.w()?),c=>Name::Text(self.text(c)?)})}
++}
++pub fn parse(bytes:&[u8])->Result<Template,u32>{
++ let mut c=Cursor{b:bytes,p:0};let a=c.w()?;let b=c.w()?;let extended=a==1&&b==0xffff;
++ let (style,ex)=if extended {c.d()?;let ex=c.d()?;let style=c.d()?;(style,ex)}else{((a as u32)|((b as u32)<<16),c.d()?)};
++ let count=c.w()?;if count>4096{return Err(13)}
++ let (x,y,cx,cy)=(c.w()? as i16,c.w()? as i16,c.w()? as i16,c.w()? as i16);
++ let menu=c.name()?;let class=c.name()?;let title=c.name()?;
++ let font=if style&0x40!=0{let size=c.w()?;if size==0x7fff{Some((size,String::new()))}else{if extended{c.w()?;c.w()?;}let name=c.name()?;Some((size,match name{Name::Text(t)=>t,Name::None=>String::new(),_=>return Err(13)}))}}else{None};
++ let mut items=Vec::new();
++ for _ in 0..count{
++  c.align()?;
++  let (style,ex)=if extended{c.d()?;let ex=c.d()?;(c.d()?,ex)}else{let s=c.d()?;(s,c.d()?)};
++  let (x,y,cx,cy)=(c.w()? as i16,c.w()? as i16,c.w()? as i16,c.w()? as i16);
++  let id=if extended{c.d()?}else{c.w()? as u32};
++  let class=c.name()?;let title=c.name()?;
++  // Wine advances past count WORD plus count bytes of creation data.
++  let n=c.w()? as usize;let data=c.take(n/2*2)?.to_vec();
++  if cx<0||cy<0{return Err(13)}
++  items.push(Item{style,ex,id,x,y,cx,cy,class,title,data});
++ }
++ if cx<0||cy<0{return Err(13)}
++ Ok(Template{style,ex,x,y,cx,cy,menu,class,title,font,items})
++}
++pub fn class_name(n:&Name)->Result<String,u32>{match n{Name::Text(s)=>Ok(s.clone()),Name::Id(v)=>{let id=if *v>=0x80{*v-0x80}else{*v};Ok(["BUTTON","EDIT","STATIC","LISTBOX","SCROLLBAR","COMBOBOX"].get(id as usize).ok_or(1407u32)?.to_string())},_=>Err(1407)}}
++#[cfg(test)]mod tests{
++ use super::*;
++ fn normal()->Vec<u8>{let mut b=vec![0u8;18];b.extend_from_slice(&[0,0,0,0,0,0]);b}
++ #[test]fn empty_and_truncated(){let b=normal();assert!(parse(&b).is_ok());for n in 0..b.len(){assert!(parse(&b[..n]).is_err());}}
++ #[test]fn extended_empty(){let mut b=vec![0u8;26];b[0]=1;b[2]=255;b[3]=255;b.extend_from_slice(&[0;6]);assert!(parse(&b).is_ok());}
++ #[test]fn atom_aliases(){assert_eq!(class_name(&Name::Id(0x81)).unwrap(),"EDIT");assert_eq!(class_name(&Name::Id(1)).unwrap(),"EDIT");assert!(class_name(&Name::Id(0x86)).is_err());}
++ #[test]fn font_special_case(){let mut b=normal();b[0]=0x40;b.extend_from_slice(&[255,127]);assert_eq!(parse(&b).unwrap().font.unwrap().0,0x7fff);}
 +}
 --- a/win32/src/winapi/user32/message.rs
 +++ b/win32/src/winapi/user32/message.rs
@@ -1528,7 +2194,7 @@
      let _ = fill_message_queue(machine, hWnd);
  
      if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
-@@ -318,15 +326,11 @@
+@@ -318,15 +326,12 @@
  }
  
  pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
@@ -1545,11 +2211,12 @@
 +        Some(window) if !msg.hwnd.is_null() => window.wndclass.wndproc,
 +        _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}
 +    };
++    if wndproc == super::dialog_helpers::DIALOG_PROC {return Box::pin(super::dialog_helpers::dispatch(machine,msg)).await;}
 +    if wndproc == super::controls::NATIVE_PROC {return Box::pin(super::controls::dispatch(machine,msg)).await;}
      if wndproc == 0 {
          log::error!("window has no wndproc, skipping message dispatch");
          return 0;
-@@ -342,9 +346,7 @@
+@@ -342,9 +347,7 @@
                  msg.lParam,
              ],
          )
@@ -1560,7 +2227,7 @@
  }
  
  #[win32_derive::dllexport]
-@@ -416,7 +418,7 @@
+@@ -416,7 +419,7 @@
  ) -> u32 {
      let msg = MSG {
          hwnd: hWnd,
@@ -1569,7 +2236,7 @@
          wParam,
          lParam,
          time: 0,
-@@ -449,3 +451,14 @@
+@@ -449,3 +452,14 @@
      // TODO: implement me
      258 // WAIT_TIMEOUT
  }
@@ -1611,12 +2278,16 @@
 +}
 --- a/win32/src/winapi/user32/mod.rs
 +++ b/win32/src/winapi/user32/mod.rs
-@@ -1,11 +1,15 @@
+@@ -1,11 +1,19 @@
  #![allow(non_snake_case)]
  
 +pub(crate) mod controls;
 +mod control_font;
  mod dialog;
++mod dialog_template;
++mod dialog_helpers;
++mod updown;
++pub use dialog_helpers::*;
  mod menu;
  mod message;
  mod misc;
@@ -1627,7 +2298,7 @@
  mod resource;
  mod timer;
  mod window;
-@@ -27,6 +31,11 @@
+@@ -27,6 +35,11 @@
  
  #[derive(Default)]
  pub struct State {
@@ -1649,7 +2320,7 @@
      let window = machine.state.user32.windows.get_mut(hWnd).unwrap();
      match &mut window.typ {
          WindowType::TopLevel(toplevel) => {
---- a/win32/src/winapi/user32/raw_input.rs
+--- /dev/null
 +++ b/win32/src/winapi/user32/raw_input.rs
 @@ -0,0 +1,46 @@
 +//! x86 RAWINPUT mouse subset. Host injection is synthetic, not physical input.
@@ -1698,6 +2369,71 @@
 +    if required==40 {mem.put_pod::<i32>(data+28,dx);mem.put_pod::<i32>(data+32,dy);machine.state.user32.raw_packets.remove(&handle);}
 +    required
 +}
+--- /dev/null
++++ b/win32/src/winapi/user32/updown.rs
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Subset adapted from Wine dlls/comctl32/updown.c:275-359,571-635,
++ * 797-840,980-1257; wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++ * Copyright 1997, 2002 Dimitrie O. Paun
++ * Local HWND/buddy state; guest NM_UPDOWN buffers replace C stack pointers.
++ * No themes, acceleration timers, subclassing, listbox buddies or locale grouping.
++ * See LICENSE.Wine. This is not a full UpDownWindowProc port.
++ */
++use super::*;
++use crate::{Machine,winapi::{kernel32,types::*}};
++use memory::{Extensions,ExtensionsMut};
++#[derive(Clone)]pub struct State{pub min:i32,pub max:i32,pub pos:i32,pub base:u32,pub buddy:HWND}
++impl Default for State{fn default()->Self{Self{min:100,max:0,pos:0,base:10,buddy:HWND::null()}}}
++fn clamp(s:&State,p:i32)->i32{p.clamp(s.min.min(s.max),s.min.max(s.max))}
++fn put(machine:&mut Machine,p:u32,v:i32)->bool{if p==0{return true}let mem=machine.mem();if (p as usize).checked_add(4).map_or(true,|e|e>mem.as_slice().len()){kernel32::teb_mut(machine).LastErrorValue=87;return false}mem.sub32_mut(p,4).copy_from_slice(&v.to_le_bytes());true}
++fn get(machine:&Machine,h:HWND)->Option<(State,u32,HWND,u32,u32)>{let w=machine.state.user32.windows.get(h)?;let c=w.control.as_ref()?;Some((c.updown.clone()?,c.style,w.parent,w.id,w.height))}
++fn save(machine:&mut Machine,h:HWND,s:&State){if let Some(c)=machine.state.user32.windows.get_mut(h).and_then(|w|w.control.as_mut()){c.updown=Some(s.clone());}}
++async fn buddy_text(machine:&mut Machine,s:&State,style:u32){
++ if style&2==0||s.buddy.is_null(){return}
++ let text=if s.base==16{format!("0x{:04X}",s.pos)}else{s.pos.to_string()};
++ let heap=kernel32::GetProcessHeap(machine);let ptr=kernel32::HeapAlloc(machine,heap,Ok(kernel32::HeapAllocFlags::empty()),text.len()as u32+1);if ptr==0{return}
++ machine.mem().sub32_mut(ptr,text.len()as u32).copy_from_slice(text.as_bytes());machine.mem().sub32_mut(ptr+text.len()as u32,1)[0]=0;
++ Box::pin(SendMessageA(machine,s.buddy,Err(0xc),0,ptr)).await;kernel32::HeapFree(machine,heap,0,ptr);
++}
++pub async fn dispatch(machine:&mut Machine,m:&MSG)->u32{
++ let h=m.hwnd;let Some((mut s,style,parent,id,height))=get(machine,h)else{return 0};let mut result=0;let mut sync=false;
++ match m.message{
++  1=>{if style&0x10!=0{s.buddy=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.hwnd.to_raw()<h.to_raw()).max_by_key(|w|w.hwnd.to_raw()).map_or(HWND::null(),|w|w.hwnd);}sync=true},
++  0x465=>{s.max=m.lParam as u16 as i16 as i32;s.min=(m.lParam>>16)as u16 as i16 as i32},
++  0x466=>result=(s.max as u32&0xffff)|((s.min as u32)<<16),
++  0x46f=>{s.min=m.wParam as i32;s.max=m.lParam as i32},
++  0x470=>{if !put(machine,m.wParam,s.min)||!put(machine,m.lParam,s.max){return 0}},
++  0x467|0x471=>{result=clamp(&s,s.pos)as u32;s.pos=clamp(&s,if m.message==0x467{m.lParam as u16 as i16 as i32}else{m.lParam as i32});sync=true},
++  0x468|0x472=>{
++   let mut invalid=true;
++   if style&2!=0{if let Some(c)=machine.state.user32.windows.get(s.buddy).and_then(|w|w.control.as_ref()){
++    let text=String::from_utf8_lossy(&c.text);let text=text.trim();let parsed=if text.is_empty(){Ok(0)}else{i32::from_str_radix(if s.base==16{text.trim_start_matches("0x")}else{text},s.base)};
++    if let Ok(v)=parsed{if clamp(&s,v)==v{s.pos=v;invalid=false}}
++   }}
++   let v=clamp(&s,s.pos);if m.message==0x468{result=(v as u32&0xffff)|if invalid{0x10000}else{0}}else{if !put(machine,m.lParam,if invalid{1}else{0}){return 0}result=v as u32}
++  },
++  0x469=>{result=s.buddy.to_raw();let b=HWND::from_raw(m.wParam);if !b.is_null()&&machine.state.user32.windows.get(b).is_none(){return result}s.buddy=b;sync=true},
++  0x46a=>result=s.buddy.to_raw(),
++  0x46d=>{if m.wParam!=10&&m.wParam!=16{return 0}result=s.base;s.base=m.wParam;sync=true},
++  0x46e=>result=s.base,
++  0x201|0x100 if m.message==0x201||(style&0x20!=0&&(m.wParam==0x26||m.wParam==0x28))=>{
++   let up=if m.message==0x201{(m.lParam>>16)<height/2}else{m.wParam==0x26};
++   let delta=(if up{1}else{-1})*(if s.max<s.min{-1}else{1});
++   let heap=kernel32::GetProcessHeap(machine);let ptr=kernel32::HeapAlloc(machine,heap,Ok(kernel32::HeapAllocFlags::empty()),20);if ptr==0{return 0}
++   for (i,v) in [h.to_raw(),id,(-722i32)as u32,s.pos as u32,delta as u32].iter().enumerate(){machine.mem().sub32_mut(ptr+i as u32*4,4).copy_from_slice(&v.to_le_bytes());}
++   save(machine,h,&s);
++   let deny=Box::pin(SendMessageA(machine,parent,Err(0x4e),id,ptr)).await;
++   let delta=machine.mem().get_pod::<i32>(ptr+16);kernel32::HeapFree(machine,heap,0,ptr);
++   let Some((current,_,_,_,_))=get(machine,h)else{return 0};s=current;
++   if deny==0{let p=s.pos as i64+delta as i64;let low=s.min.min(s.max)as i64;let high=s.min.max(s.max)as i64;s.pos=if style&1!=0&&p<low{high as i32}else if style&1!=0&&p>high{low as i32}else{p.clamp(low,high)as i32};sync=true;}
++   save(machine,h,&s);if sync{Box::pin(buddy_text(machine,&s,style)).await;sync=false;}
++   Box::pin(SendMessageA(machine,parent,Err(if style&0x40!=0{0x114}else{0x115}),4|((s.pos as u32&0xffff)<<16),h.to_raw())).await;
++  },
++  0xf=>{},_=>return 0,
++ }
++ save(machine,h,&s);if sync{Box::pin(buddy_text(machine,&s,style)).await;}controls::paint(machine,h);result
++}
 --- a/win32/src/winapi/user32/window.rs
 +++ b/win32/src/winapi/user32/window.rs
 @@ -1,13 +1,12 @@
@@ -1715,10 +2451,11 @@
      },
      Host, Machine, SurfaceOptions,
  };
-@@ -73,6 +72,12 @@
+@@ -73,6 +72,13 @@
  }
  
  pub struct Window {
++    pub dialog: Option<super::dialog_helpers::DialogInfo>,
 +    pub title: String,
 +    pub parent: HWND,
 +    pub id: u32,
@@ -1728,7 +2465,7 @@
      pub hwnd: HWND,
      pub typ: WindowType,
      /// Client area width (not total window width).
-@@ -265,7 +270,7 @@
+@@ -265,7 +271,7 @@
  #[win32_derive::dllexport]
  pub fn RegisterClassExA(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXA>) -> u32 {
      let lpWndClassEx = lpWndClassEx.unwrap();
@@ -1737,7 +2474,7 @@
      let wndclass = WndClass {
          name,
          wndproc: lpWndClassEx.lpfnWndProc,
-@@ -292,6 +297,9 @@
+@@ -292,6 +298,9 @@
  
  bitflags! {
      pub struct WindowStyle: u32 {
@@ -1747,7 +2484,7 @@
          const POPUP           = 0x80000000;
          const CHILD           = 0x40000000;
          const MINIMIZE        = 0x20000000;
-@@ -347,6 +355,11 @@
+@@ -347,6 +356,11 @@
          }
      }
  }
@@ -1759,7 +2496,7 @@
  impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassName<'a, Str16> {
      unsafe fn from_arg(mem: memory::Mem<'a>, arg: u32) -> Self {
          if arg <= 0xFFFF {
-@@ -361,8 +374,8 @@
+@@ -361,8 +375,8 @@
  pub async fn CreateWindowExA(
      machine: &mut Machine,
      dwExStyle: Result<WindowStyleEx, u32>,
@@ -1770,7 +2507,7 @@
      dwStyle: Result<WindowStyle, u32>,
      X: u32,
      Y: u32,
-@@ -375,13 +388,13 @@
+@@ -375,13 +389,13 @@
  ) -> HWND {
      let class_name_wide: String16;
      let class_name = match lpClassName {
@@ -1789,7 +2526,7 @@
      CreateWindowExW(
          machine,
          dwExStyle,
-@@ -417,28 +430,27 @@
+@@ -417,28 +431,27 @@
      lpParam: u32,
  ) -> HWND {
      let class_name = match lpClassName {
@@ -1829,7 +2566,7 @@
      const CW_USEDEFAULT: u32 = 0x8000_0000;
  
      // hInstance is only relevant when multiple DLLs register classes:
-@@ -452,9 +464,11 @@
+@@ -452,9 +465,11 @@
          nHeight
      };
  
@@ -1843,18 +2580,19 @@
  
      let typ = if style.contains(WindowStyle::CHILD) {
          WindowType::Child
-@@ -480,7 +494,10 @@
+@@ -480,7 +495,11 @@
          })
      };
  
 +    let raw_style = match dwStyle {Ok(value)=>value.bits(),Err(value)=>value};
 +    let control = if wndclass.wndproc==super::controls::NATIVE_PROC {super::controls::kind(&class_name).map(|kind|super::controls::Control::new(kind,&lpWindowName.map(|s|s.to_string()).unwrap_or_default(),raw_style))}else{None};
      let window = Window {
++        dialog: None,
 +        title:lpWindowName.map(|s|s.to_string()).unwrap_or_default(),parent:hWndParent,id:hMenu,x:X as i32,y:Y as i32,control,
          hwnd,
          typ,
          width,
-@@ -506,13 +523,17 @@
+@@ -506,13 +525,17 @@
  }
  
  #[win32_derive::dllexport]
@@ -1875,7 +2613,7 @@
  }
  
  #[win32_derive::dllexport]
-@@ -542,22 +563,13 @@
+@@ -542,22 +565,13 @@
  }
  
  #[win32_derive::dllexport]
@@ -1901,7 +2639,7 @@
      let window = machine.state.user32.windows.get(hWnd).unwrap();
      match &window.typ {
          WindowType::TopLevel(top) => {
-@@ -673,15 +685,19 @@
+@@ -673,15 +687,19 @@
  }
  
  #[win32_derive::dllexport]
@@ -1930,7 +2668,7 @@
  
  async fn def_window_proc(
      machine: &mut Machine,
-@@ -941,8 +957,9 @@
+@@ -941,8 +959,9 @@
  
  #[win32_derive::dllexport]
  pub fn GetClientRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
@@ -1942,7 +2680,7 @@
      *rect = RECT {
          left: 0,
          top: 0,
-@@ -954,7 +971,12 @@
+@@ -954,7 +973,12 @@
  
  #[win32_derive::dllexport]
  pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
@@ -1956,7 +2694,7 @@
  
      let mut result = RECT {
          left: 0,
-@@ -976,7 +998,6 @@
+@@ -976,7 +1000,6 @@
      result.top += offset_y;
      result.bottom += offset_y;
  
@@ -1964,7 +2702,7 @@
      *rect = result;
      true
  }
-@@ -1021,16 +1042,9 @@
+@@ -1021,16 +1044,9 @@
  }
  
  #[win32_derive::dllexport]
@@ -1984,7 +2722,7 @@
  }
  
  #[win32_derive::dllexport]
-@@ -1077,7 +1091,10 @@
+@@ -1077,7 +1093,10 @@
  }
  
  #[win32_derive::dllexport]
@@ -1996,10 +2734,40 @@
      match machine.state.user32.windows.get_mut(hWnd) {
          Some(window) => {
              window
-@@ -1109,3 +1126,19 @@
- pub fn EnableWindow(_machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
+@@ -1105,7 +1124,45 @@
      todo!();
  }
+ 
+-#[win32_derive::dllexport]
+-pub fn EnableWindow(_machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
+-    todo!();
+-}
++/* Wine win32u/window.c:1133-1171,1189-1198; SHA
++ * 0738d528db522f52d9d75f2aec712688dd31d1d2. LGPL-2.1-or-later.
++ * Copyright 1993, 1994 Alexandre Julliard. Native server style updates ->
++ * per-machine HWND state; synchronous messages still call real guest wndprocs.
++ * WinEvent accessibility notifications are not implemented in this profile.
++ */
++#[win32_derive::dllexport]
++pub async fn EnableWindow(machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
++    if hWnd.to_raw()==0xffff {winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false}
++    if machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false}
++    if !bEnable {Box::pin(super::message::SendMessageA(machine,hWnd,Err(0x1f),0,0)).await;}
++    // WM_CANCELMODE may destroy/re-enter the HWND: do not hold a Rust borrow across it.
++    let Some(w)=machine.state.user32.windows.get_mut(hWnd)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false};
++    let was_disabled=w.style.contains(WindowStyle::DISABLED);
++    w.style.set(WindowStyle::DISABLED,!bEnable);
++    if let Some(c)=w.control.as_mut(){c.style=(c.style&!0x08000000)|if bEnable{0}else{0x08000000};}
++    if was_disabled==bEnable {
++        if !bEnable&&machine.state.user32.focused==hWnd {SetFocus(machine,HWND::null());Box::pin(super::message::SendMessageA(machine,hWnd,Err(8),0,0)).await;}
++        Box::pin(super::message::SendMessageA(machine,hWnd,Err(0xa),bEnable as u32,0)).await;
++    }
++    was_disabled
++}
++#[win32_derive::dllexport]
++pub fn IsWindowEnabled(machine:&mut Machine,hWnd:HWND)->bool{
++    match machine.state.user32.windows.get(hWnd){Some(w)=>!w.style.contains(WindowStyle::DISABLED),None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;false}}
++}
 +
 +#[cfg(test)]
 +mod porthole_style_tests {
@@ -2016,7 +2784,7 @@
 +pub fn IsWindow(machine: &mut Machine, hwnd: HWND) -> bool {
 +    hwnd.to_raw()==0xffff0001 || (!hwnd.is_null() && machine.state.user32.windows.get(hwnd).is_some())
 +}
---- a/win32/src/winapi/ws2_32.rs
+--- /dev/null
 +++ b/win32/src/winapi/ws2_32.rs
 @@ -0,0 +1,126 @@
 +//! Guest WinSock2 TCP/IPv4 subset, backed by a real authorized host transport.

@@ -33,3 +33,12 @@ Known remaining scope: modal loops/EndDialog, full DefDlgProc message semantics,
 Unicode A/W dispatch, nested control-parent/tab ordering and Shift+Tab, group
 navigation, accelerator/mnemonic handling, complete font/menu/context help and
 DPI/monitor positioning. These are implementation gaps, not fundamental limits.
+
+### Distribuição do candidato experimental
+
+O rebuild inclui LICENSE.Wine, ATTRIBUTION.md, SOURCE_COMMIT e um arquivo de
+fontes tracked correspondentes no diretório do candidato. O tar contém Rust,
+scripts, manifests/lockfiles, testes e workflows; dependências públicas são
+resolvidas pelas versões fixadas. Não contém binários de jogos baixados.
+Preserve esses notices e a oferta de fontes ao redistribuir o Wasm modificado;
+verifique também todas as licenças upstream. Isto não promove o candidato.

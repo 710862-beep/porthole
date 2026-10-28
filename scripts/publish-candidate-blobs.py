@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 
 paths = [Path('artifacts/wasm-candidate') / name for name in
-         ('retrowin32.wasm', 'glue.mjs', 'SHA256SUMS', 'integrity.json')]
+         ('retrowin32.wasm', 'glue.mjs', 'SHA256SUMS', 'integrity.json', 'LICENSE.Wine', 'ATTRIBUTION.md', 'SOURCE_COMMIT', 'corresponding-source.tar.gz')]
 paths += sorted(Path('artifacts').glob('*.json'))
 paths += [Path('artifacts/rebuild-wasm.log')]
 manifest = {'sourceSha': os.environ['GITHUB_SHA'], 'runId': os.environ['GITHUB_RUN_ID'], 'files': []}
