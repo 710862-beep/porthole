@@ -1,13 +1,12 @@
 use super::*;
 use crate::{
     host,
-    str16::expect_ascii,
     winapi::{
         self,
         bitmap::{self, BitmapRGBA32},
         gdi32::HDC,
         stack_args::{ArrayWithSize, FromArg},
-        types::{Str16, String16, HWND, POINT, RECT},
+        types::{AnsiString, Str16, String16, HWND, POINT, RECT},
     },
     Host, Machine, SurfaceOptions,
 };
