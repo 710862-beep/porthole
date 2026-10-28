@@ -1164,3 +1164,32 @@ mod tests {
 pub fn FlushFileBuffers(machine: &mut Machine, hFile: HFILE) -> bool {
     todo!();
 }
+
+/// ASCII virtual-profile search. Only authorized, preloaded readable files exist
+/// here; the virtual environment has no PATH entries beyond the explicit dirs.
+#[win32_derive::dllexport]
+pub fn SearchPathA(machine: &mut Machine, path: Option<&str>, file: Option<&str>, extension: Option<&str>, capacity: u32, buffer: u32, part: Option<&mut u32>) -> u32 {
+    let file=match file {Some(name) if !name.is_empty() && name.is_ascii()=>name,_=>{set_last_error(machine,ERROR::INVALID_PARAMETER);return 0;}};
+    let mut name=file.to_string();
+    if !file.rsplit(|c|c=='\\'||c=='/').next().unwrap_or(file).contains('.') {if let Some(ext)=extension {if !ext.is_ascii(){set_last_error(machine,ERROR::NOT_SUPPORTED);return 0;}name.push_str(ext);}}
+    let cwd=match machine.host.current_dir(){Ok(path)=>path,Err(error)=>{set_last_error(machine,error);return 0;}};
+    let mut dirs=Vec::new();
+    if let Some(path)=path {for dir in path.split(';'){dirs.push(cwd.join(dir));}}
+    else {
+        let exe=machine.exe_path.to_string_lossy();
+        if let Some(parent)=WindowsPath::new(exe.as_ref()).parent(){dirs.push(parent.to_path_buf());}
+        dirs.push(cwd.clone());
+        for dir in ["C:\\Windows\\System32","C:\\Windows\\System","C:\\Windows"] {dirs.push(WindowsPath::new(dir).to_path_buf());}
+    }
+    for dir in dirs {
+        let candidate=dir.join(&name).normalize();
+        if machine.host.open(&candidate,FileOptions::read()).is_err(){continue;}
+        let bytes=candidate.as_bytes();let needed=bytes.len() as u32+1;
+        if capacity<needed {return needed;}
+        if buffer==0 || buffer.checked_add(capacity).map_or(true,|end|end as usize>machine.mem().as_slice().len()) {set_last_error(machine,ERROR::INVALID_PARAMETER);return 0;}
+        let mem=machine.mem();let output=mem.sub32_mut(buffer,needed);output[..bytes.len()].copy_from_slice(bytes);output[bytes.len()]=0;
+        if let Some(part)=part {*part=buffer+bytes.iter().rposition(|b|*b==b'\\').map_or(0,|index|index as u32+1);}
+        set_last_error(machine,ERROR::SUCCESS);return needed-1;
+    }
+    set_last_error(machine,ERROR::FILE_NOT_FOUND);0
+}

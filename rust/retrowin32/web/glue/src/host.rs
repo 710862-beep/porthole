@@ -262,6 +262,8 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn api_trace(this: &JsHost, entry: &str);
     #[wasm_bindgen(method)]
+    fn current_dir(this: &JsHost) -> String;
+    #[wasm_bindgen(method)]
     fn key_state(this: &JsHost, key: u32) -> u32;
     #[wasm_bindgen(method)]
     fn raw_input_events(this: &JsHost) -> String;
@@ -359,7 +361,7 @@ impl win32::Host for JsHost {
     }
 
     fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
-        todo!()
+        Ok(win32::WindowsPathBuf::from(JsHost::current_dir(self)))
     }
 
     fn create_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {

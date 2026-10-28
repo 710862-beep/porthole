@@ -271,6 +271,7 @@
     // Candidate Rust Host ABI: pointers are decoded in Rust, not by reentrant
     // calls to Emulator.memory() while the emulator is borrowed.
     ticks() { return now() >>> 0; }
+    current_dir() {return this.currentDirectory.win32;}
     api_trace(entry) {this.guestApiTail.push(String(entry).slice(0,512));if(this.guestApiTail.length>20)this.guestApiTail.shift();}
     injectKey(key, down) {
       if (!Number.isInteger(key) || key<0 || key>255 || typeof down!=='boolean') throw new RangeError('Invalid virtual key');

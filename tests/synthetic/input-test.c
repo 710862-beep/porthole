@@ -10,6 +10,9 @@ void mainCRTStartup(void) {
     REQUIRE(IsWindow(desktop) && !IsWindow(0) && !IsWindow((HWND)0xdeadbeef));
     RECT workArea;REQUIRE(SystemParametersInfoA(SPI_GETWORKAREA,0,&workArea,0));REQUIRE(workArea.left==0 && workArea.top==0 && workArea.right==desktopRect.right && workArea.bottom==desktopRect.bottom);
     REQUIRE(!SystemParametersInfoA(0xffff,0,0,0));REQUIRE(GetLastError()==ERROR_NOT_SUPPORTED);
+    char found[256];char *filePart=0;DWORD foundSize=SearchPathA(0,"input-test",".exe",sizeof(found),found,&filePart);REQUIRE(foundSize>0 && foundSize<sizeof(found) && filePart && filePart[0]=='i');
+    REQUIRE(SearchPathA(0,"input-test.exe",0,0,0,0)==foundSize+1);
+    REQUIRE(SearchPathA(0,"definitely-missing-porthole-file",0,sizeof(found),found,0)==0);REQUIRE(GetLastError()==ERROR_FILE_NOT_FOUND);
     RAWINPUTDEVICE dev={1,2,0,0};
     REQUIRE(RegisterRawInputDevices(&dev,1,sizeof(dev)));
     const LONG dx[3]={10,-5,20}, dy[3]={5,15,-10};
