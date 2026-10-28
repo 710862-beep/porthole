@@ -25,6 +25,7 @@ mod vcruntime140;
 mod version;
 mod wininet;
 mod winmm;
+mod ws2_32;
 
 pub use error::ERROR;
 
@@ -42,7 +43,7 @@ impl<'a> std::fmt::Display for ImportSymbol<'a> {
     }
 }
 
-pub const DLLS: [builtin::BuiltinDLL; 16] = [
+pub const DLLS: [builtin::BuiltinDLL; 17] = [
     builtin::advapi32::DLL,
     builtin::bass::DLL,
     builtin::ddraw::DLL,
@@ -58,6 +59,7 @@ pub const DLLS: [builtin::BuiltinDLL; 16] = [
     builtin::version::DLL,
     builtin::wininet::DLL,
     builtin::winmm::DLL,
+    builtin::ws2_32::DLL,
     builtin::retrowin32_test::DLL,
 ];
 
@@ -89,6 +91,7 @@ pub struct State {
     pub gdi32: gdi32::State,
     pub kernel32: kernel32::State,
     pub user32: user32::State,
+    pub ws2_32: ws2_32::State,
 }
 
 impl State {
@@ -102,6 +105,7 @@ impl State {
             gdi32: gdi32::State::default(),
             kernel32,
             user32: user32::State::default(),
+            ws2_32: ws2_32::State::default(),
         }
     }
 }

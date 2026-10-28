@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import { GuestNetwork } from './guest-network.mjs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
@@ -11,7 +13,7 @@ if(process.argv[2]==='--worker') {
   const name=process.argv[3]; if(!names.includes(name)) throw new Error('Unknown fixture');
   const bytes=fs.readFileSync(`tests/synthetic/${name}.exe`);
   const item={name,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),logs:[]};
-  let disk;
+  let disk,server,networkBridge;let requestSeen=false;let port;
   try {
     const require=createRequire(import.meta.url); require('../js/vfs.js'); require('../js/porthole-linker.js'); require('../js/retrowin32-backend.js'); require('../shims/registry.js'); require('../shims/guest-registry.js');
     const wasmBytes=fs.readFileSync(process.env.PORTHOLE_WASM || 'vendor/retrowin32/retrowin32.wasm');
@@ -19,17 +21,23 @@ if(process.argv[2]==='--worker') {
     const backend=new globalThis.Porthole.Retrowin32Backend({wasmBytes, ...(process.env.PORTHOLE_GLUE?{moduleURL:pathToFileURL(path.resolve(process.env.PORTHOLE_GLUE)).href}:{}),tracer:{log(scope,message,kind){if(item.logs.length<100)item.logs.push({scope,kind,message:sanitizeEvidence(String(message))});}}});
     disk=await createSyntheticDisk(globalThis.Porthole.VFSUtils.normalizePath);
     const registryBridge=new globalThis.Porthole.GuestRegistryBridge(new globalThis.Porthole.Registry.RegistryStore({vfs:disk.vfs}));
-    const proc=await backend.createProcess({vfs:disk.vfs,registryBridge,path:`C:\\Synthetic\\${name}.exe`,bytes,preload:false});
+    if(name==='network-test') {
+      server=http.createServer((req,res)=>{requestSeen=req.method==='GET'&&req.url==='/'&&req.headers.host==='localhost';res.writeHead(200,{'Content-Type':'text/plain'});res.end('PORTHOLE_NETWORK_OK');});
+      await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});port=server.address().port;
+      networkBridge=new GuestNetwork({allowedAddresses:['127.0.0.1']});
+    }
+    const proc=await backend.createProcess({vfs:disk.vfs,registryBridge,networkBridge,...(port?{commandLine:`network-test.exe ${port}`} :{}),path:`C:\\Synthetic\\${name}.exe`,bytes,preload:false});
     if(name==='input-test')for(const [dx,dy] of [[10,5],[-5,15],[20,-10]])proc.injectRawInput(dx,dy);
     proc.start(); const result=await proc.done;
     item.result={status:result.status,exitCode:result.exitCode,error:result.error,instructions:result.instructions,stdout:sanitizeEvidence(proc.output),volatileWrites:result.volatileWrites,flushError:result.flushError};
     item.status=result.status==='exited' && result.exitCode===0 && !result.flushError && proc.output.includes('SUCCESS')?'PASS':'GUEST_FAILURE';
     if(name==='thread-validation' && result.status==='exited' && proc.output.split('WORKER_DONE').length-1!==3) item.status='INCOMPLETE_THREAD_EXECUTION';
     if(item.status==='PASS') item.hostEvidence=await verifySyntheticOutputs(name,disk,globalThis.Porthole.Registry.RegistryStore);
+    if(name==='network-test' && item.status==='PASS') {if(!requestSeen || networkBridge.evidence.connections!==1 || !proc.output.includes('PORTHOLE_NETWORK_OK'))item.status='NETWORK_NOT_VALIDATED';else item.guestContract={kind:'real-node-loopback-http',requestSeen,...networkBridge.evidence};}
     if(name==='thread-validation' && item.status==='PASS') item.guestContract={workers:3,loopsPerWorker:10,tlsAssertions:30,completedMarkers:3};
     if(name==='input-test' && item.status==='PASS') {if(proc.output.split('RAW_DELTA_VERIFIED').length-1!==3)item.status='INPUT_NOT_VALIDATED';else item.guestContract={kind:'synthetic-injected-raw-input',events:3,deltas:[[10,5],[-5,15],[20,-10]],physicalInputValidated:false};} // Never credit a headless run as physical input.
   }catch(e){item.status='LOAD_OR_BACKEND_FAILURE';item.error=sanitizeEvidence(e.message);}
-  finally {if(disk)await disk.close();}
+  finally {if(networkBridge)networkBridge.close();if(server)await new Promise(resolve=>server.close(resolve));if(disk)await disk.close();}
   console.log(JSON.stringify(item));
 } else {
   const selected=process.argv.slice(2); const tests=selected.length?selected:names;
