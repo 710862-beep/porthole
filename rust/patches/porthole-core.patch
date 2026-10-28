@@ -697,7 +697,7 @@
 +//! Enumerates registry metadata, NOT functioning network transports. No session
 +//! object is fabricated: DirectPlayCreate explicitly reports unavailable.
 +use crate::{Machine,winapi::kernel32};
-+use memory::ExtensionsMut;
++use memory::{Extensions,ExtensionsMut};
 +use serde_json::{Value,json};
 +const TRACE_CONTEXT:&str="dplay";
 +const INVALID:u32=0x80070057;const UNAVAILABLE:u32=0x887700fa;
@@ -723,7 +723,7 @@
 + if callback==0{return INVALID}let list=match providers(machine){Ok(v)=>v,Err(e)=>return e};
 + log::debug!("DIRECTPLAY_ENUM registered={} transports=unavailable",list.len());
 + for p in list{let mut bytes=p.guid.to_vec();if wide{for c in p.name_w.encode_utf16().chain(Some(0)){bytes.extend(c.to_le_bytes());}}else{bytes.extend(p.name_a.bytes());bytes.push(0);}
-+  let heap=kernel32::GetProcessHeap(machine);let ptr=kernel32::HeapAlloc(machine,heap,0,bytes.len()as u32);if ptr==0{return 0x8007000e}
++  let heap=kernel32::GetProcessHeap(machine);let ptr=kernel32::HeapAlloc(machine,heap,Ok(kernel32::HeapAllocFlags::empty()),bytes.len()as u32);if ptr==0{return 0x8007000e}
 +  machine.mem().sub32_mut(ptr,bytes.len()as u32).copy_from_slice(&bytes);
 +  let keep=machine.call_x86(callback,vec![ptr,ptr+16,6,0,context]).await;
 +  kernel32::HeapFree(machine,heap,0,ptr);if keep==0{break}

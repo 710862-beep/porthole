@@ -312,3 +312,8 @@ case-insensitive ASCII, exact miss, seleção e índice inválido. Owner-draw,
 collation por locale e dropdown interativo completo continuam pendentes.
 Extrações são inventários/limites, não declaração de closure integral validada.
 Novo build/execução remoto ainda necessário para este candidato.
+
+Run 40760294171 (45e2bf7) detectou dois erros de integração Rust antes de
+produzir Wasm: HeapAlloc recebe Result<HeapAllocFlags,u32>, não um inteiro C;
+e Mem::as_slice requer o trait Extensions no escopo. Corrigidos seguindo as
+chamadas já existentes em updown/env; testes não foram pulados/relaxados.
