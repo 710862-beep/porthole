@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  checks: read
 
 concurrency:
   group: porthole-${{ github.ref }}
@@ -54,6 +56,11 @@ jobs:
       - name: Probe acquired PE executables
         if: always()
         run: node scripts/probe-test-assets.mjs
+      - name: Enforce same-source candidate gameplay promotion gates
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-promotion.mjs --remote
       - name: Execute all declared checks without hiding later results
         if: always()
         shell: bash
