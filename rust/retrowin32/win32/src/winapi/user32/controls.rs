@@ -156,8 +156,9 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         0xe2|0xe6 if c.kind==Kind::Scroll=>{if wp as i32>lp as i32{return error(machine,87)}c.low=wp as i32;c.high=lp as i32;c.position=c.position.clamp(c.low,c.high)},
         _=>{redraw=false;log::debug!("unsupported control message {:?} {m:x}",c.kind);}
     }
+    let scroll_position=c.position as u32;let vertical=c.style&1!=0;
     if let Some((ptr,cap,text))=output {result=copy_text(machine,ptr,cap,&text);}
     if redraw {paint(machine,hwnd)}
-    if let Some(code)=notify {if !parent.is_null(){let notification=MSG{hwnd:parent,message:if code==0xffff{0x114}else{0x111},wParam:(id&0xffff)|((code as u32)<<16),lParam:hwnd.to_raw(),time:0,pt_x:0,pt_y:0};Box::pin(super::message::dispatch_message(machine,&notification)).await;}}
+    if let Some(code)=notify {if !parent.is_null(){let notification=MSG{hwnd:parent,message:if code==0xffff{if vertical{0x115}else{0x114}}else{0x111},wParam:if code==0xffff{4|((scroll_position&0xffff)<<16)}else{(id&0xffff)|((code as u32)<<16)},lParam:hwnd.to_raw(),time:0,pt_x:0,pt_y:0};Box::pin(super::message::dispatch_message(machine,&notification)).await;}}
     result
 }
