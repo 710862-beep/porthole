@@ -7,7 +7,7 @@ const run=spawnSync(process.execPath,['scripts/probe-test-assets.mjs'],{env:{...
 process.stdout.write(run.stdout||'');process.stderr.write(run.stderr||'');
 const probe=JSON.parse(fs.readFileSync('artifacts/doom95-candidate.json'));const item=probe.tests[0];
 const logger=new globalThis.Porthole.ApiLogger();const diagnostic=logger.ingestCrash(item?.error||run.error?.message||'No DOOM95 PE in manifest');
-if(!diagnostic.last20.length && item?.apiTrace){for(const entry of item.apiTrace)logger.log(entry,[]);diagnostic.last20=logger.getLog();diagnostic.lastApi=logger.getLastCall();}
+if(!diagnostic.last20.length && item?.apiTrace){logger.ingestTail(item.apiTrace);diagnostic.last20=logger.getLog();diagnostic.lastApi=logger.getLastCall();}
 console.log('[CRASH]',item?.error||'none');console.log('[CAUSAL_IMPORT]',diagnostic.causalImport);console.log('[LAST20_API]',JSON.stringify(diagnostic.last20));
 fs.writeFileSync('artifacts/doom95-diagnostics.json',JSON.stringify({status:item?.status||'ACQUISITION_FAILED',sha256:item?.sha256,exitCode:item?.exitCode??null,executionAttempted:item?.executionAttempted===true,windows:item?.windows??0,presents:item?.presents??0,...diagnostic},null,2)+'\n');
 process.exitCode=run.status===0 && item?.status==='PASS'?0:1;

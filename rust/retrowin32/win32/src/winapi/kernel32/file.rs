@@ -12,7 +12,7 @@ use crate::{
     FileOptions, ReadDir, ReadDirEntry, Stat, StatKind,
 };
 use bitflags::bitflags;
-use memory::ExtensionsMut;
+use memory::{Extensions, ExtensionsMut};
 use typed_path::WindowsPath;
 
 const TRACE_CONTEXT: &'static str = "kernel32/file";
