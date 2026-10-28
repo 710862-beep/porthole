@@ -22,7 +22,7 @@ out="$PWD/artifacts/wasm-candidate"
 mkdir -p "$out"
 wasm-bindgen "$source/target/wasm32-unknown-unknown/release/glue.wasm" --out-dir "$out" --target web
 mv "$out/glue.js" "$out/glue.mjs"
-printf '\nexport { default as initRetrowin32, new_emulator as createRetrowin32Emulator, Status as Retrowin32Status };\n' >> "$out/glue.mjs"
+printf '\nexport { __wbg_init as initRetrowin32, new_emulator as createRetrowin32Emulator, Status as Retrowin32Status };\n' >> "$out/glue.mjs"
 cp "$out/glue_bg.wasm" "$out/retrowin32.wasm"
 sha256sum "$out/retrowin32.wasm" "$out/glue.mjs" > "$out/SHA256SUMS"
 echo "BUILD_COMPLETE: candidate artifacts only; guest validation still required."

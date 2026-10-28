@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 const dir=path.resolve(process.argv[2]||'artifacts/wasm-candidate');
 const wasm=fs.readFileSync(path.join(dir,'retrowin32.wasm'));
 const glue=fs.readFileSync(path.join(dir,'glue.mjs'));
@@ -12,6 +13,10 @@ const sums=new Map(fs.readFileSync(path.join(dir,'SHA256SUMS'),'utf8').trim().sp
 }));
 if(sums.get('retrowin32.wasm')!==hash(wasm)||sums.get('glue.mjs')!==hash(glue))throw Error('Wasm/glue checksum mismatch');
 const module=await WebAssembly.compile(wasm);
-const report={status:'INTEGRITY_VALIDATED_NOT_COMPATIBILITY',bytes:wasm.length,wasmSha256:hash(wasm),glueSha256:hash(glue),exports:WebAssembly.Module.exports(module).length,imports:WebAssembly.Module.imports(module).length};
+const binding=await import(pathToFileURL(path.join(dir,'glue.mjs')).href);
+for(const name of ['initRetrowin32','createRetrowin32Emulator'])if(typeof binding[name]!=='function')throw Error(`Missing binding export: ${name}`);
+if(!binding.Retrowin32Status)throw Error('Missing binding Status export');
+await binding.initRetrowin32(module);
+const report={bindingInitialized:true,status:'INTEGRITY_VALIDATED_NOT_COMPATIBILITY',bytes:wasm.length,wasmSha256:hash(wasm),glueSha256:hash(glue),exports:WebAssembly.Module.exports(module).length,imports:WebAssembly.Module.imports(module).length};
 console.log(JSON.stringify(report,null,2));
 fs.writeFileSync(path.join(dir,'integrity.json'),JSON.stringify(report,null,2)+'\n');

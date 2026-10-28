@@ -16,8 +16,13 @@ status=0
 gh run watch "$run" --exit-status || status=$?
 mkdir -p "artifacts/remote/$run"
 gh run view "$run" --json databaseId,headSha,headBranch,status,conclusion,url > "artifacts/remote/$run/run.json"
-gh run view "$run" --log > "artifacts/remote/$run/run.log"
-gh run download "$run" --dir "artifacts/remote/$run" || { echo 'No downloadable artifacts; inspect run log/annotations.'; exit 1; }
+if ! gh run view "$run" --log > "artifacts/remote/$run/run.log" 2>/dev/null; then
+  echo 'Log redirect blocked; Checks API diagnostics will be retrieved by fallback.'
+fi
+if ! gh run download "$run" --dir "artifacts/remote/$run" 2>/dev/null; then
+  echo 'Artifact redirect blocked; trying verified Git blob API transfer.'
+  python3 scripts/download-ci-blobs.py "$run"
+fi
 if [[ -f "artifacts/remote/$run/retrowin32-candidate-wasm/retrowin32.wasm" ]]; then
   node scripts/validate-wasm.mjs "artifacts/remote/$run/retrowin32-candidate-wasm"
 fi

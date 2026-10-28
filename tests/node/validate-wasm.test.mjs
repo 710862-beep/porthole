@@ -24,3 +24,7 @@ test('integrity validation rejects truncated files and invalid magic',t=>{
 test('integrity validation compiles the module, not only its magic bytes',t=>{
  const c=setup(t),bytes=Buffer.alloc(1048577,255);Buffer.from([0,97,115,109,1,0,0,0]).copy(bytes);fs.writeFileSync(path.join(c.dir,'retrowin32.wasm'),bytes);c.sums();const r=c.run();assert.notEqual(r.status,0);assert.match(r.stderr,/CompileError/);
 });
+
+test('integrity validation rejects checksummed but syntactically invalid generated glue',t=>{
+ const c=setup(t);fs.appendFileSync(path.join(c.dir,'glue.mjs'),'\nexport { default as invalid };\n');c.sums();const r=c.run();assert.notEqual(r.status,0);assert.match(r.stderr,/SyntaxError/);
+});
