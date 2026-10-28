@@ -25,6 +25,7 @@ pub enum Handler {
 #[derive(Debug)]
 pub struct Shim {
     pub name: &'static str,
+    pub stack_bytes: u32,
     pub func: Handler,
 }
 

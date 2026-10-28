@@ -29,6 +29,8 @@ jobs:
           python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
           echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
       - name: fetch-with-fallbacks
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p artifacts
           node scripts/fetch-with-fallbacks.mjs 2>&1 | tee artifacts/fetch-fallbacks.log
@@ -74,7 +76,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Rust/Wasm candidate build lives in rust-wasm-candidate.yml.
+  # Rust/Wasm candidate build and mandatory five-PE + DOOM95 aggregate gates
+  # live in rust-wasm-candidate.yml. Never copy an unvalidated candidate to vendor.
+  # This workflow continues to exercise the preserved stable backend separately.
 
   autofix:
     name: Reviewed-recipe autofix and conditional commit

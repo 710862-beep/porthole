@@ -71,6 +71,7 @@ pub fn fn_wrapper(module: TokenStream, dllexport: &DllExport) -> (TokenStream, T
         defn,
         quote!(Shim {
             name: #name_str,
+            stack_bytes: #stack_offset,
             func: #func,
         }),
     )

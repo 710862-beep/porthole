@@ -86,6 +86,7 @@
       this.vfs = opts.vfs || null;
       this.registryBridge = opts.registryBridge || null;
       this.networkBridge = opts.networkBridge || null;
+      this.guestApiTail = [];
       this.rawInputQueue = [];
       this.heldKeys = new Set();
       this.pressedKeys = new Set();
@@ -270,6 +271,7 @@
     // Candidate Rust Host ABI: pointers are decoded in Rust, not by reentrant
     // calls to Emulator.memory() while the emulator is borrowed.
     ticks() { return now() >>> 0; }
+    api_trace(entry) {this.guestApiTail.push(String(entry).slice(0,512));if(this.guestApiTail.length>20)this.guestApiTail.shift();}
     injectKey(key, down) {
       if (!Number.isInteger(key) || key<0 || key>255 || typeof down!=='boolean') throw new RangeError('Invalid virtual key');
       if(down){if(!this.heldKeys.has(key))this.pressedKeys.add(key);this.heldKeys.add(key);}else this.heldKeys.delete(key);
@@ -675,6 +677,7 @@
     getStats() {
       return {
         backend: 'retrowin32-wasm-x86',
+        apiTrace: this.guestApiTail.slice(),
         name: this.name,
         path: this.path.win32,
         status: this.status,

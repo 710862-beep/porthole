@@ -214,8 +214,9 @@ impl MachineX<Emulator> {
         };
 
         let stack_args = esp + 8;
-        let entry=format!("{} args={:08x?}",shim.name,(0..4).map(|i|diagnostic_mem.get_pod::<u32>(stack_args+i*4)).collect::<Vec<_>>());
+        let entry=format!("{} args={:08x?}",shim.name,(0..(shim.stack_bytes.min(16)/4)).map(|i|diagnostic_mem.get_pod::<u32>(stack_args+i*4)).collect::<Vec<_>>());
         if self.emu.api_tail.len()==20 {self.emu.api_tail.pop_front();}
+        self.host.api_trace(&entry);
         self.emu.api_tail.push_back(entry);
         match shim.func {
             Handler::Sync(func) => {

@@ -88,9 +88,28 @@ jobs:
           PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
           PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
         run: node tests/run-doom95.mjs 2>&1 | tee artifacts/doom95-logs.log
+      - name: Install real headless Chromium for original game probe
+        if: always() && steps.rebuild.outcome == 'success'
+        run: npx playwright install --with-deps chromium
+      - name: Probe DOOM95 with real DOM and Canvas (not gameplay credit)
+        if: always() && steps.rebuild.outcome == 'success'
+        env:
+          PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
+          PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
+        run: node tests/run-doom95-browser.mjs 2>&1 | tee artifacts/doom95-browser.log
       - name: Validate candidate Wasm integrity
         if: always() && steps.rebuild.outcome == 'success'
         run: node scripts/validate-wasm.mjs artifacts/wasm-candidate
+      - name: Candidate JS DOM and syntax regressions
+        id: regressions
+        if: always() && steps.rebuild.outcome == 'success'
+        run: |
+          npm test 2>&1 | tee artifacts/candidate-regressions.log
+          npm run check:syntax
+          echo '{"passed":true}' > artifacts/candidate-regressions.json
+      - name: Validate all compatibility gates (documented failure is not promotion)
+        if: always() && steps.rebuild.outcome == 'success'
+        run: node scripts/validate-all-tests.mjs
       - name: Mirror candidate and test results through Git blob API
         if: always()
         env:
