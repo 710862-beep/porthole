@@ -86,7 +86,7 @@ jobs:
         if: always() && steps.rebuild.outcome == 'success'
         run: node scripts/validate-wasm.mjs artifacts/wasm-candidate
       - name: Mirror candidate and test results through Git blob API
-        if: always() && steps.rebuild.outcome == 'success'
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/publish-candidate-blobs.py

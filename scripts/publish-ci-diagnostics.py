@@ -14,7 +14,7 @@ for path in (Path('artifacts/toolchain-install.log'), Path('artifacts/rebuild-wa
     limit = 240000
     if len(text) > limit:
         text = '[TRUNCATED: last 240000 characters; full log in artifact]\n' + text[-limit:]
-    chunks = [text[i:i+12000] for i in range(0, len(text), 12000)]
+    chunks = [text[i:i+3000] for i in range(0, len(text), 3000)]
     for index, chunk in enumerate(chunks):
         escaped = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print(f'::notice title=Porthole {path.name} {index+1}/{len(chunks)}::{escaped}')
