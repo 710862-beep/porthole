@@ -1,5 +1,10 @@
 #include "common.h"
 void mainCRTStartup(void) {
+    FILETIME original={0,0},local,back;SYSTEMTIME oldEpoch;
+    REQUIRE(FileTimeToSystemTime(&original,&oldEpoch)&&oldEpoch.wYear==1601&&oldEpoch.wMonth==1&&oldEpoch.wDay==1);
+    original.dwLowDateTime=0xd53e8000;original.dwHighDateTime=0x019db1de;
+    REQUIRE(FileTimeToLocalFileTime(&original,&local));REQUIRE(LocalFileTimeToFileTime(&local,&back));REQUIRE(back.dwLowDateTime==original.dwLowDateTime&&back.dwHighDateTime==original.dwHighDateTime);
+    REQUIRE(!FileTimeToLocalFileTime(0,&local)&&GetLastError()==ERROR_INVALID_PARAMETER);
     WCHAR converted[]={L'A',0x20ac,0};char encoded[16];BOOL used=TRUE;
     REQUIRE(WideCharToMultiByte(1252,0,converted,-1,0,0,0,0)==3);
     REQUIRE(WideCharToMultiByte(1252,0,converted,-1,encoded,sizeof(encoded),0,&used)==3&&!used&&(BYTE)encoded[1]==0x80&&encoded[2]==0);

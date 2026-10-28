@@ -34,6 +34,7 @@ jobs:
           node scripts/extract-wine-api.mjs kernelbase WideCharToMultiByte
           node scripts/extract-wine-api.mjs kernelbase SetCurrentDirectoryA
           node scripts/extract-wine-api.mjs kernelbase FindFirstFileA
+          node scripts/extract-wine-api.mjs kernelbase FileTimeToLocalFileTime
           node --test tests/node/wine-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.81.0
         with:

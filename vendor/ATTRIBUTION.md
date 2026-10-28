@@ -64,3 +64,13 @@ The marked section in kernel32/file.rs derives from Wine
 Nt/Rtl current-directory access becomes a local authorized VFS host operation
 shared by relative file opens/stat and GetCurrentDirectoryA. No host OS chdir,
 UNC/device paths, or independent per-drive current directories are implemented.
+
+### Wine-derived file time / local bias subset
+
+The marked section in kernel32/time.rs adapts
+`dlls/kernelbase/file.c:4150-4153` and `dlls/ntdll/time.c:217-252`, under the
+same pinned Wine SHA and LGPL-2.1-or-later. The former file's copyrights are
+listed above; ntdll/time.c lists Copyright 2002 Rex Jolliff (RtlTimeFields portions adapted from ReactOS
+with special permission), 1999 Juergen Schmied and 2007 Dmitry Timoshkov (see original header in pinned source). Current UTC offset
+comes from the existing host clock, replacing the NT shared time-of-day query;
+this is not a no-op UTC-copy stub or a historical timezone database port.

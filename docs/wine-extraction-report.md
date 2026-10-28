@@ -201,3 +201,25 @@ As revisões foram semânticas/manuais com referência ao C real. `translate-c-t
   Timestamps virtuais continuam desconhecidos/zero, sem inventar metadados reais.
 - Novo ensaio remoto ainda necessário; não marcar cinco PEs novamente aprovados
   até ele terminar.
+
+## Sétimo resultado remoto: 40755132096
+
+Fonte `faf0fb8ab63b0a1a0727fe7022ba8db06151a4c0`:
+https://github.com/710862-beep/porthole/actions/runs/40755132096
+
+- Build, 20 testes Rust, **5/5 PEs novamente PASS**, controles/diálogo/updown PASS.
+  Input inclui agora flush e releitura reais do cwd-probe/marker, além dos deltas.
+- DOOM95 enumerou o WAD no cache autorizado e avançou para
+  **kernel32!FileTimeToLocalFileTime**, IAT direta, ip=0x3a7f1.
+  Ainda 48 presents/45 mudanças, sem input/loop comprovados; vermelho.
+- Extraída a wrapper Wine kernelbase/file.c:4150-4153 e lido o auxiliar real
+  ntdll/time.c:242-252: aplica o bias atual da informação de timezone. Adaptação
+  usa offset atual do relógio Host existente, com ponteiros guest checked e
+  aritmética de ticks; não retorna simplesmente sucesso copiando UTC.
+- Helper inverso LocalFileTimeToFileTime incluído; teste verifica ida/volta,
+  offsets positivos/negativos e ponteiros inválidos. FileTimeToSystemTime
+  preexistente também foi corrigido para não transbordar nanos i64 em 1601:
+  usa segundos + nanos via Chrono, sem portar RtlTimeToTimeFields/ReactOS.
+- Epoch 1601 é metadado virtual desconhecido/zero; a conversão correta não o
+  transforma em timestamp histórico verdadeiro do arquivo DOOM.
+- Próximo candidato ainda deve executar remotamente. Não promover.

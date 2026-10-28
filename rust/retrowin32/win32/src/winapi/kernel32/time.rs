@@ -1,7 +1,7 @@
 use super::{set_last_error, FILETIME};
 use crate::{winapi::ERROR, Machine};
 use chrono::{Datelike, Timelike};
-use memory::{ExtensionsMut, Pod};
+use memory::{Extensions, ExtensionsMut, Pod};
 
 const TRACE_CONTEXT: &'static str = "kernel32/time";
 
@@ -137,8 +137,11 @@ pub fn FileTimeToSystemTime(
         set_last_error(machine, ERROR::INVALID_DATA);
         return false;
     };
-    let nanos = lpFileTime.to_unix_nanos();
-    let date_time = chrono::DateTime::from_timestamp_nanos(nanos);
+    // Avoid i64 nanoseconds overflow for the 1601 epoch / far future FILETIMEs.
+    let value=lpFileTime.to_u64();
+    if value>i64::MAX as u64{set_last_error(machine,ERROR::INVALID_PARAMETER);return false}
+    let seconds=(value/10_000_000)as i64-11_644_473_600;
+    let Some(date_time)=chrono::DateTime::from_timestamp(seconds,((value%10_000_000)*100)as u32)else{set_last_error(machine,ERROR::INVALID_PARAMETER);return false};
     if let Some(time) = lpSystemTime {
         *time = SYSTEMTIME::from_chrono(&date_time);
     }
@@ -219,4 +222,32 @@ pub fn GetTimeZoneInformation(
     // while TIME_ZONE_ID_UNKNOWN says there's no daylight savings time.
     *lpTimeZoneInformation.unwrap() = TIME_ZONE_INFORMATION::zeroed();
     TIME_ZONE_ID_UNKNOWN
+}
+
+/* SPDX-License-Identifier: LGPL-2.1-or-later (this derived section)
+ * Wine kernelbase/file.c:4150-4153 and ntdll/time.c:217-227,242-252
+ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
+ * file.c: Copyright 1993 John Burton; 1996, 2004 Alexandre Julliard;
+ * 2008 Jeff Zaroyko. ntdll/time.c: Copyright 2002 Rex Jolliff,
+ * 1999 Juergen Schmied, 2007 Dmitry Timoshkov. Original ReactOS permission notice
+ * for RtlTimeFields portions is retained in corpus; those algorithms are not ported.
+ * NtQuerySystemInformation timezone bias -> existing host clock's current UTC
+ * offset. Checked guest offsets replace native FILETIME/LARGE_INTEGER pointers.
+ * Current bias follows Wine's API behavior, not historical per-date DST rules.
+ */
+fn local_ticks(ticks:u64,seconds:i32)->u64{ticks.wrapping_add((seconds as i64*10_000_000)as u64)}
+fn file_time_bias(machine:&mut Machine,input:u32,output:u32,inverse:bool)->bool{
+    let valid={let m=machine.mem();input!=0&&output!=0&&(input as usize).checked_add(8).map_or(false,|e|e<=m.as_slice().len())&&(output as usize).checked_add(8).map_or(false,|e|e<=m.as_slice().len())};
+    if !valid{set_last_error(machine,ERROR::INVALID_PARAMETER);return false}
+    let value=machine.mem().get_pod::<u64>(input);
+    let offset=machine.host.system_time().offset().local_minus_utc();
+    machine.mem().put_pod::<u64>(output,local_ticks(value,if inverse{-offset}else{offset}));true
+}
+#[win32_derive::dllexport]
+pub fn FileTimeToLocalFileTime(machine:&mut Machine,lpFileTime:u32,lpLocalFileTime:u32)->bool{file_time_bias(machine,lpFileTime,lpLocalFileTime,false)}
+#[win32_derive::dllexport]
+pub fn LocalFileTimeToFileTime(machine:&mut Machine,lpLocalFileTime:u32,lpFileTime:u32)->bool{file_time_bias(machine,lpLocalFileTime,lpFileTime,true)}
+#[cfg(test)]mod timezone_tests{
+ use super::*;
+ #[test]fn signed_bias_and_roundtrip(){let t=116_444_736_000_000_000u64;assert_eq!(local_ticks(t,-10800),t-10800*10_000_000);assert_eq!(local_ticks(local_ticks(t,-10800),10800),t);assert_eq!(local_ticks(t,19800),t+19800*10_000_000);}
 }
