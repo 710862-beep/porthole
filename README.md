@@ -1,182 +1,248 @@
-# Porthole WebOS
+# Porthole Runtime
 
-Um "sistema operacional" web que reproduz a interface do **Windows 10** no
-navegador — desktop, taskbar, menu Iniciar e um gerenciador de janelas
-completo em **Vanilla JS** — e que executa o **DOOM clássico compilado para
-WebAssembly** dentro de uma janela arrastável, com o `DOOM1.WAD` baixado via
-`fetch` e copiado para a memória linear do Wasm. Inclui suíte de
-diagnósticos, benchmarks e validação visual E2E.
+Camada experimental de compatibilidade **Win32 → Web** em Vanilla JS: dynamic linker com SHIMs de DLL, Virtual Filesystem mapeado como `C:\`, parser PE/COFF, Graphics Translation Layer Direct3D para WebGL/CPU e um backend **retrowin32/Wasm** para executar PE32 x86 em user mode.
 
-> Sem frameworks, sem bundlers, sem `npm install` para rodar o app.
-> Todos os binários e bibliotecas estão vendoreados em `vendor/` — funciona
-> **offline e same-origin**.
+> **Escopo sem marketing:** o workload D3D9 integrado produz frames/FPS reais. PEs podem ser apenas inspecionados ou executados pelo backend local; estados, stdout, instruções e exit codes são medidos separadamente. DOOM95, .kkrieger, Adobe e Roblox não são apresentados como rodando. Nenhum kernel Windows, BIOS ou imagem de sistema operacional é emulado. Compatibilidade total e suporte a anti-cheat não são alegados; evasão de VM/Wine/anti-cheat não faz parte do projeto.
 
----
+## Executar
 
-## Como executar
-
-Qualquer servidor HTTP estático na raiz do projeto (o `fetch` de Wasm/WAD não
-funciona de forma confiável via `file://`):
+Não há build nem dependências de runtime. Sirva a raiz por HTTP:
 
 ```bash
-# opção 1 — Python (nada para instalar)
-python3 -m http.server 8000
-# abra http://localhost:8000
-
-# opção 2 — npm script (apenas atalho, o app não depende de Node)
-npm run serve
+python3 -m http.server 8000 --bind 0.0.0.0
+# ou: npm run serve
 ```
 
-Duplo clique no ícone **DOOM** da área de trabalho (ou use o Menu Iniciar).
-O primeiro carregamento busca ~9 MB de assets locais; depois disso tudo roda
-no navegador.
+Abra `http://localhost:8000` (ou o preview HTTPS da Arena). O seletor nativo de pastas exige contexto seguro (`localhost` ou HTTPS). Todos os recursos do caminho feliz, incluindo Wasm, glue, fixtures e html2canvas, são locais.
 
----
+## Fluxo na interface
 
-## Mapa do projeto
+1. **Mapear pasta:** escolha uma pasta do host para ser `C:\`.
+2. **Iniciar runtime:** carrega os SHIMs JavaScript do workload integrado e inicia o pipeline D3D9.
+3. **Benchmark 5 s:** mede somente `Present()` concluídos nessa janela, usando `performance.now()`.
+4. **Inspecionar PE:** informe, por exemplo, `C:\Games\Doom\DOOM95.exe`. O Porthole lê os bytes, valida PE/COFF e resolve os imports que seus SHIMs JavaScript conhecem. Isso não executa o entry point.
+5. **Executar x86:** relê o mesmo arquivo e o entrega ao retrowin32. O botão aceita somente PE32 x86 executável; PE64 e DLLs são rejeitados explicitamente. A pasta do PE é pré-carregada antes do primeiro lote para adaptar o host de arquivos síncrono ao VFS assíncrono.
+6. **Parar convidado:** interrompe o processo e aguarda a fila de escritas. Iniciar o workload integrado também encerra um convidado ativo, evitando misturar frames e FPS das duas origens.
+7. **PE real / retrowin32:** execute `hello.exe` ou `callback.exe`, fixtures Apache-2.0 locais, sem mapear uma pasta. O resultado verifica stdout, instruções e exit code; não é um vídeo ou uma simulação de Windows.
+8. **Capture Runtime State:** captura a superfície ativa e a UI. Um programa de console não ganha um framebuffer fictício: os metadados continuam distinguindo o canvas integrado da ausência de janela do convidado.
+9. No workload integrado, clique no canvas e use **WASD/setas/mouse** para alterar a cena por mensagens do SHIM `user32`.
 
-```
-porthole/
-├── index.html               # Shell: boot, desktop, taskbar, menu Iniciar
-├── styles.css               # Tema Windows 10 (janelas, taskbar, apps)
-├── js/
-│   ├── window-manager.js    # WM: drag, 8 alças de resize, z-index, min/max/close
-│   ├── gpu.js               # Probe WebGL + WEBGL_debug_renderer_info, fallback SW
-│   ├── doom-runtime.js      # Host da ABI Wasm (10 imports/4 exports), input, loop
-│   ├── diagnostics.js       # 5 testes + benchmarks + captura E2E
-│   └── webos.js             # Registro de apps, ícones, relógio, busca, energia
-├── assets/
-│   └── wallpaper.jpg        # Papel de parede em estilo Win10 (gerado)
-├── vendor/
-│   ├── doom/
-│   │   ├── doom.wasm        # Motor DOOM (jacobenget/doom.wasm v0.1.0, GPL-2)
-│   │   ├── DOOM1.WAD        # WAD shareware (magic IWAD, 4.196.020 bytes)
-│   │   ├── ATTRIBUTION.md   # Procedência e licenças
-│   │   └── LICENSE.jacobenget
-│   └── html2canvas/         # html2canvas 1.4.1 (MIT) para a captura E2E
-├── tests/node/
-│   ├── smoke-wasm.mjs       # Motor real no Node: WAD embutido e WAD injetado
-│   ├── inline-wasm-test.mjs# Valida o módulo Wasm artesanal do diagnóstico (a)
-│   └── dom-integration.mjs  # Integração DOM completa com jsdom (21 verificações)
-├── agents.md / plan.md      # Documentação viva do agente e da arquitetura
-└── package.json             # Só devDeps de teste (jsdom); zero dependências de runtime
-```
+Durante a execução de um PE, o painel mostra `retrowin32-wasm-x86`, instruções, stdout e estado (`EXECUTANDO`, `BLOQUEADO`, `ENCERRADO`, `ERRO`). FPS não é calculado a partir de stdout nem atribuído a um PE de console.
 
----
+## Duas camadas de compatibilidade, sem confundir autoria
 
-## Arquitetura
+### SHIMs JavaScript do Porthole
 
-### 1. Window Manager (`js/window-manager.js`)
+- **`porthole-linker.js`:** registro case-insensitive, `LoadLibrary`, `GetProcAddress`, `FreeLibrary`, refcounts, resolução da import table e ring buffer de chamadas.
+- **`kernel32.dll`:** `VirtualAlloc/Free/Protect`, memória endereçável, handles e I/O assíncrona pelo VFS, `GetFileAttributesExW/W`, `LoadLibraryA/W`, `GetProcAddress`, `GetTickCount[64]` e QPC/QPF monotônicos.
+- **`advapi32.dll`:** HKCU/HKLM/HKU/HKCR, handles, criação/abertura, enumeração, valores SZ/EXPAND_SZ/MULTI_SZ/DWORD/QWORD/BINARY e snapshot persistente em `C:\Porthole\Registry\hives.json`. Valores não são enviados ao tracer.
+- **`user32.dll`:** `CreateWindowExA/W` → `<div>`, janelas, `WndProc` JS, fila `Post/Peek/Get/DispatchMessage`, teclado, pointer/mouse, `RegisterRawInputDevices`, `ClipCursor`, `SetCapture` e `WM_INPUT` com Pointer Lock.
+- **`gdi32.dll`:** DCs Canvas 2D, `BitBlt(SRCCOPY)`, `FillRect`, `SetPixel` e objetos básicos.
+- **`d3d9.dll`:** dispositivo, vertex/index buffers, `Lock/Unlock`, FVF `XYZ/XYZRHW + DIFFUSE`, streams, `Clear`, draws, shaders triviais e `Present`.
+- **`d3d11.dll`:** subconjunto de vertex/index/constant buffers, `UpdateSubresource`, slots VS/PS, topology, draws, clear e swap chain sobre o GTL compartilhado. Constant buffers possuem storage/estado reais; upload arbitrário de uniforms para qualquer shader ainda não é alegado.
 
-- API `WebOS.wm.create({ title, glyph, mount, onFocus, onBlur, onClose })`.
-- Pointer Events com `setPointerCapture` (mouse e toque), 8 alças de resize
-  (N/S/E/W + diagonais), arrasto pela titlebar com limites do desktop.
-- `z-index` monotônico: focar sempre põe a janela no topo; janelas inativas
-  perdem destaque e o botão correspondente da taskbar é atualizado.
-- Minimizar preserva estado; maximizar guarda o retângulo anterior; duplo
-  clique na titlebar alterna maximização.
+Esses SHIMs são usados pelo workload integrado e pelo relatório de imports. Métodos fora do subconjunto falham com `NOT_IMPLEMENTED` ou mensagem equivalente; não há stubs que retornam sucesso para pipelines inteiros inexistentes. Raw Input foi validado na fila desse `user32` JS, não em um jogo retrowin32. `GetRawInputData` devolve objetos JS; o layout binário completo de `RAWINPUT` ainda não está implementado.
 
-### 2. Runtime WebAssembly (`js/doom-runtime.js`)
+### Backend retrowin32
 
-Motor [`jacobenget/doom.wasm`](https://github.com/jacobenget/doom.wasm),
-escolhido pela ABI mínima (10 imports, 4 exports) e, principalmente, por
-**aceitar injeção de WAD em memória** — o port clássico do diekmann não
-aceita.
+`js/retrowin32-backend.js` é um adaptador Vanilla JS para o núcleo Apache-2.0 em `vendor/retrowin32/`. O núcleo executa instruções x86, relocations, IAT, memória, stack, calling conventions e seus próprios módulos Win32 HLE. O adaptador fornece:
 
-**Imports implementados pelo host:**
+- cache de arquivos e paths Win32 relativos ao diretório do PE;
+- `open/read/seek/write` síncronos sobre esse cache, com criação/truncamento e overlay coerente para reaberturas;
+- fila de persistência assíncrona no VFS e `flushWrites()` com erros reais;
+- stdout UTF-8, timers, bloqueio/desbloqueio e eventos de mouse;
+- janelas e superfícies Canvas 2D em um canvas separado do canvas WebGL integrado;
+- lotes de `emu.run()` que cedem ao event loop, contagem de instruções e estados de processo;
+- uma instância Wasm nova por processo, pois o artefato possui logger/host globais que não podem ser reinicializados na mesma instância.
 
-| Import | Papel |
+As chamadas internas do retrowin32 **não são atribuídas aos SHIMs JavaScript do Porthole**. A UI e os metadados identificam qual caminho produziu cada evidência. Se uma exceção Rust deixar o getter `instr_count` indisponível, o painel preserva somente o último contador válido e informa essa limitação; stdout/janelas/exit permanecem evidências separadas, sem inventar instruções.
+
+O artefato Wasm foi obtido do branch `pages` do upstream; o `web/wasm.wasm` do branch principal é apenas um placeholder e não é usado. A UI Preact/depurador upstream não foi incluída. Consulte `vendor/retrowin32/README.md` para commits, hashes e escopo.
+
+## VFS multiplataforma
+
+A detecção combina `navigator.userAgentData.platform`, `navigator.userAgent` e `navigator.platform`. ChromeOS é verificado antes de Linux. O caminho do host é apenas uma sugestão: o navegador nunca abre `Documents` automaticamente.
+
+| Plataforma | Caminho sugerido | Método de acesso |
+|---|---|---|
+| Linux | `~/Documents` ou pasta escolhida | FS Access quando disponível; fallback caso contrário |
+| Windows | `C:\Users\<usuário>\Documents` ou pasta escolhida | Capacidades do browser; não há acesso automático ao disco |
+| ChromeOS | `/home/chronos/u-<hash>/MyFiles/Downloads` ou pasta escolhida | Mesmo modelo de handles/fallback |
+
+| Navegador/capacidade | Leitura | Escrita |
+|---|---|---|
+| Chrome/Edge com File System Access API | Handles da pasta real | `createWritable()` na pasta real, após permissão |
+| Firefox | `<input type="file" webkitdirectory>` + referências `Blob` | Overlay em memória, não persistente |
+| Safari | `<input type="file" webkitdirectory>` + referências `Blob` | Overlay em memória, não persistente |
+
+Paths Win32 são case-insensitive. `C:\Games\..\Save\config.ini` é normalizado; `..` não pode escapar da raiz, e UNC/outros drives são rejeitados. Nenhum arquivo é enviado pela rede.
+
+### Persistência e edge cases
+
+`vfs-persist.js` adiciona overlay imediato, ordem last-write-wins por arquivo, filas independentes para paths diferentes, estado dirty e `flush()` com erros de durabilidade. No FS Access, o Promise da escrita só termina após `createWritable/close`; no fallback, durabilidade continua `false`. Estatísticas expõem escritas pendentes e falhas sem incluir o conteúdo dos arquivos.
+
+- Prefixo `\\?\C:\...` é aceito para long paths e canonicalizado para a mesma chave de `C:\`; `\\?\UNC\...`, outros drives e escapes continuam bloqueados.
+- Links simbólicos relativos/absolutos existem somente como objetos virtuais do fallback, com limite de 16 resoluções e `ELOOP` para ciclos. Nenhum symlink é criado no host; FS Access retorna `NOT_IMPLEMENTED` para essa operação.
+- `stat` fornece tipo, tamanho e `lastModified` quando o backend os possui. `GetFileAttributesExW` devolve esses dados e marca creation/access time como indisponíveis, em vez de inventá-los.
+- ACLs NTFS, atomicidade completa e `fsync` durable não são simulados como se existissem na API web. Instaladores Inno/NSIS reais ainda não foram validados.
+
+### Por que existe pré-carregamento?
+
+`Blob.arrayBuffer()` e File System Access API são assíncronos, enquanto o host retrowin32 chama `open/read/write` durante a execução síncrona do núcleo. Por isso, o PE e sua árvore são lidos antes de `run()`. Há limites de quantidade/bytes para não copiar uma pasta inteira sem controle; itens omitidos são reportados e podem causar erro de arquivo no convidado, nunca sucesso fingido.
+
+Escritas alteram primeiro o overlay visível ao convidado. A persistência no VFS entra numa fila e é aguardada no término/captura. No fallback, a escrita é somente em memória; no FS Access, falhas de permissão são exibidas.
+
+## Graphics Translation Layer
+
+| D3D9 | WebGL |
 |---|---|
-| `loading.onGameInit(w,h)` | Dimensiona o canvas (640×400) e cria o `ImageData` |
-| `loading.wadSizes(ptrN, ptrTotal)` | Escreve `1, tamanho` em i32-LE (ou `0,0` → WAD embutido) |
-| `loading.readWads(dstPtr, sizesPtr)` | Copia o `ArrayBuffer` do WAD para a memória linear do Wasm |
-| `ui.drawFrame(fbPtr)` | Converte BGRA→RGBA e `putImageData` no canvas |
-| `runtimeControl.timeInMilliseconds()` | `BigInt(performance.now())`, monotônico |
-| `console.onInfo/ErrorMessage` | Strings UTF-8 lidas da memória → console do jogo |
-| `gameSaving.*` | Stubs (savegames desabilitados) |
+| `CreateVertexBuffer` | `gl.createBuffer()` |
+| `Unlock` | `gl.bufferData()` |
+| `SetStreamSource` / `SetFVF` | `gl.vertexAttribPointer()` |
+| `DrawPrimitive` | `gl.drawArrays()` |
+| `DrawIndexedPrimitive` | `gl.drawElements()` |
+| `Present` | swap chain simulada: superfície WebGL → canvas visível |
 
-**Exports consumidos:** `initGame`, `tickGame` (35 Hz via acumulador dentro de
-`requestAnimationFrame`), `reportKeyDown/Up`, `memory` e os globais `KEY_*`.
+`Present()` não serializa PNG a cada frame. `canvas.toDataURL()` é usado somente na captura. O benchmark usa mapeamento manual GLSL do pipeline fixo. Além dos shaders triviais originais, `shims/d3d_translate.js` implementa packing de constant buffers, vertex declarations multi-stream e parser de expressões com swizzles, precedence e funções conhecidas. Não é um compilador HLSL completo: texturas, statements e gramática desconhecida são rejeitados até haver backend equivalente.
 
-**Ponte de input DOM → Wasm:** teclas nomeadas (setas, Enter, Esc, Ctrl,
-Espaço…) e WASD mapeiam para os códigos DOOM; o mouse traduz clique
-esquerdo→`KEY_FIRE` e direito→`KEY_USE`. A ABI mínima não expõe eixos de
-mouse, então o movimento do cursor não gira a visão (limitação honesta da
-interface de 14 símbolos). O jogo **só recebe entrada quando a janela do
-WebOS está ativa**; perder o foco solta todas as teclas pressionadas.
+### Detecção e fallback
 
-### 3. WAD: fetch → ArrayBuffer → memória Wasm
+`WEBGL_debug_renderer_info` identifica vendor/renderer quando permitido. SwiftShader, llvmpipe, lavapipe, softpipe e Microsoft Basic Render são classificados como software.
 
-1. `fetch('vendor/doom/DOOM1.WAD')` (same-origin) → valida HTTP 200, tamanho
-   e magic `IWAD`.
-2. `wadSizes` informa contagem e bytes; `readWads` faz
-   `new Uint8Array(memory.buffer).set(wadBytes, dstPtr)`.
-3. Se tudo falhar, `wadSizes` devolve `0/0` e o módulo usa o shareware
-   embutido no próprio `.wasm` — fallback duplo.
-4. `WebAssembly.instantiate(arrayBuffer)` (não `instantiateStreaming`) para
-   não depender do MIME `application/wasm` do servidor.
+- **Hardware WebGL (GPU detectada):** contexto WebGL e renderer não classificado como software.
+- **WebGL software:** WebGL funciona, mas o renderer é SwiftShader/llvmpipe etc.
+- **Software llvmpipe-style:** fallback próprio em JS/CPU com framebuffer RGBA, barycentric fill, interpolação de cor e `putImageData()`.
 
-### 4. GPU vs. software (`js/gpu.js`)
+O fallback CPU **não é o LLVMpipe do Mesa**. Falha de contexto, shader ou draw WebGL aciona recuperação para CPU; a opção “Forçar rasterizador CPU” permite validá-lo manualmente. O GTL D3D9/D3D11 do Porthole não deve ser interpretado como prova de que um PE externo possui suporte completo a Direct3D.
 
-- Probe WebGL2/WebGL + extensão `WEBGL_debug_renderer_info`, com regex de
-  rasterizadores software (SwiftShader, llvmpipe, lavapipe, Basic Render…).
-- Um shader mínimo é compilado e linkado como teste de sanidade.
-- O DOOM rasteriza **por CPU por design** (framebuffer na memória Wasm →
-  Canvas 2D): é o análogo navegador do **LLVMpipe**, e funciona mesmo com a
-  GPU totalmente bloqueada. O "Device Status" na janela mostra o estado real
-  do host e inclui um botão **"Simular bloqueio de GPU"**.
+## PE/COFF, execução e limites
 
-### 5. Diagnostics & Benchmarks (`js/diagnostics.js`)
+`pe-loader.js` valida MZ, NT headers, PE32/PE32+, machine, seções, RVAs, entry point e import directory com limites contra arquivos malformados. O linker resolve DLLs/funções disponíveis e lista imports pendentes.
 
-Acesso pelo Menu Iniciar → seção **Modo Desenvolvedor**.
+**Carregar bytes ≠ executar instruções.** A ação de inspeção termina em `INSPECIONADO / NÃO EXECUTADO`. Somente o backend retrowin32, depois de `emu.run()` e evidência de instruções/saída/estado, pode mudar o resultado para executando/encerrado.
 
-| Teste | Verificação |
+Os fixtures locais têm evidências reproduzíveis no artefato pinned:
+
+| Fixture | Resultado verificado |
 |---|---|
-| a | Instancia módulo Wasm artesanal (41 bytes) e confere `add(2,3)=5` |
-| b | Cria contextos Canvas 2D/WebGL dentro da janela, com readback de pixel |
-| c | Download do WAD: status 200, tamanho e magic `IWAD` |
-| d | 100k ops matemáticas JS + 100k chamadas Wasm (ms e ops/s) |
-| e | Instância real do DOOM por 5 s: FPS médio/min/máx (meta ≥ 15) |
-| ⊕ | **Capture UI State**: `html2canvas` gera PNG Base64 do desktop; fallback `canvas.toDataURL()` |
+| `hello.exe` | `Hello, world!\n`, 57 instruções, exit code 0 |
+| `callback.exe` | `callback0 invoked: 1234` e `retrowin32_callback1 returned: 1`, 477 instruções, exit code 0 |
 
----
+O callback usa a DLL especial `retrowin32_test.dll` do upstream. O retorno `1` é o comportamento intencional desse SHIM de teste, que não propaga o valor `0x4567` retornado pela função callback. Esses testes não provam compatibilidade geral.
 
-## Testes automatizados
+Para DOOM95/.kkrieger ainda podem faltar APIs, arquivos, GDI/DirectDraw, Direct3D 9.0c, texturas, render states e shaders. O usuário pode fornecer os binários e observar a tentativa real, mas qualquer falha será mostrada como falha. O artefato de execução é x86; PE64 não é executado.
+
+Sondagens com outros PEs upstream confirmaram o limite: `cmdline.exe` retorna `TODO.exe` em `GetModuleFileNameA`, `gdi.exe` falha em `GetStockObject`, e `ddraw.exe` chega a criar uma janela antes de outra falha. `thread.exe` imprimiu somente sua primeira linha e terminou em `RuntimeError: unreachable`; portanto threads Win32 continuam pendentes. Esses programas não foram promovidos a fixtures de sucesso.
+
+O host de input do artifact pinned expõe eventos de mouse no glue. Teclado e mensagens `user32` são validados no workload Porthole; suporte de teclado para um convidado retrowin32 não é declarado sem um artifact/adapter que o forneça.
+
+O **v86 não foi integrado**: é um emulador de máquina x86, não um loader PE user-mode, e inicializar Windows nele contrariaria o requisito de não emular o kernel Windows.
+
+## Estrutura
+
+```text
+index.html
+styles.css
+js/
+  platform-detector.js
+  porthole-linker.js / pe-loader.js
+  vfs.js / vfs-fs-access.js / vfs-fallback.js
+  shim-kernel32.js / shim-user32.js / shim-gdi32.js
+  shim-d3d9.js / shim-d3d11.js
+  graphics-device.js / graphics-webgl.js / graphics-fallback.js
+  hlsl-translator.js
+  retrowin32-backend.js       # host Vanilla JS do executor x86
+  runtime.js / app.js
+vendor/
+  html2canvas/                # MIT, vendoreado
+  retrowin32/                 # Apache-2.0, Wasm + glue + fixtures
+shims/registry.js             # advapi32 + hives persistentes
+shims/d3d_translate.js        # cbuffer, vertex declarations e expressões
+vfs-persist.js                # overlay, filas e flush
+input-raw.js                  # Raw Input/Pointer Lock do SHIM JS
+spoof-hardware.js             # identidade virtual não enganosa + clocks
+.github/workflows/            # CI de push e autofix opt-in
+ci-autofix.sh / ci/           # classificador, receitas e relatórios
+tests/node/                   # testes unitários, contrato WebGL, Wasm, estresse e DOM
+tests/wine/                   # manifesto/adaptador PE e referências
+agents.md / plan.md           # regras e arquitetura vivas
+```
+
+## Testes e CI
 
 ```bash
-# Requer Node 18+ (WebAssembly nativo). O jsdom é devDependency:
-npm install
+npm ci
+npm run check:syntax
 npm test
+npm run test:wine
 ```
 
-- `smoke-wasm.mjs` (zero dependências): sobe o motor real duas vezes — com o
-  WAD embutido e com o `DOOM1.WAD` injetado via `readWads` — e valida frames
-  desenhados e framebuffer não vazio.
-- `dom-integration.mjs` (jsdom): 21 verificações do shell, Window Manager,
-  runtime DOOM real (via servidor HTTP), gate de foco, suíte de diagnóstico
-  (5/5 PASS) e captura E2E. Resultado medido na sandbox: **DOOM ≈ 35–47 FPS**.
+A execução final desta revisão concluiu **97 verificações**: **86 unitárias/contrato/estresse** e **11 DOM**, além de 41 scripts aprovados por `node --check`. O benchmark CPU mediu **302 frames em 5,009 s (60,29 FPS)** nesta sandbox; não é uma promessa de desempenho em outros dispositivos.
 
----
+A suíte cobre:
 
-## Estratégia de CORS e offline
+- plataforma, VFS nativo/fallback, long paths, links, `stat`, concorrência, dirty state e recuperação de persistência;
+- PE32, imports, linker, memória, arquivos, janelas, GDI e atributos Win32;
+- hives/tipos de registro e recarga por nova instância sem registrar valores no tracer;
+- Raw Input de mouse/teclado, deltas relativos, grant/loss/negação de Pointer Lock em mocks;
+- pixels CPU, draws D3D9/D3D11, constant buffers, layouts de vértices e expressões HLSL;
+- contrato WebGL com mock rigoroso, **não apresentado como teste de GPU**;
+- benchmark de 5 segundos e execução Wasm real dos fixtures, incluindo quatro processos independentes;
+- classificador/sanitizador de CI e a regressão gerada pela receita de autofix;
+- integração com `index.html` via jsdom, incluindo clique no fixture com stdout/exit code reais.
 
-- O caminho feliz é **100% same-origin**: nenhum recurso externo é exigido.
-- Espelhos remotos (jsDelivr/raw.githubusercontent, ambos com
-  `Access-Control-Allow-Origin: *`) existem apenas como fallback de emergência
-  e nunca bloqueiam o caminho local.
-- A captura E2E usa biblioteca vendoreada; se ela falhar, a API nativa de
-  canvas assume.
+### Adaptador Wine
 
-## Limitações conhecidas
+`tests/wine/run-winetests.mjs` aceita um manifesto com binários PE32/x86, SHA-256, timeout e expectativas, gerando JSON + JUnit. Nesta revisão o manifesto está vazio e o resultado é **NOT_RUN**. As regressões JS relacionadas às referências Wine não são chamadas de `winetest.exe`. Consulte `tests/wine/REFERENCES.md` para commits e a sondagem de threads.
 
-- Sem áudio (a ABI mínima do módulo não cobre som).
-- Savegames desabilitados (stubs da ABI).
-- Movimento do mouse não gira a visão (só botões); teclado/WASD completos.
-- `html2canvas` pode divergir em efeitos modernos de CSS em navegadores
-  específicos; o fallback nativo cobre a falha.
+### Auto-correção
 
-## Licenças de terceiros
+`.github/workflows/porthole-ci.yml` executa os comandos em todo push e publica relatórios. `ci-autofix.sh` isola `dll!API`, sanitiza evidências e consulta `ci/shim-recipes.json`. APIs desconhecidas ficam `Upstream Missing`; não é gerado um stub de sucesso.
 
-Ver [`vendor/doom/ATTRIBUTION.md`](vendor/doom/ATTRIBUTION.md). Resumo:
-`doom.wasm` GPL-2.0, `DOOM1.WAD` shareware da id Software, `html2canvas` MIT.
-O código próprio deste repositório é GPL-3.0 (`LICENSE`).
+Uma receita real para `kernel32!GetTickCount64` foi exercitada localmente: implementação + regressão foram geradas, o teste isolado passou e `npm test` inteiro passou. Nenhum `--commit` local foi feito. Em GitHub, o auto-commit exige a variável de repositório `PORTHOLE_AUTOFIX=true`, worktree limpo, branch `arena/6a52f3cb-porthole`, receita verde e contexto não bot/fork. O workflow ainda não foi executado em um runner hospedado.
+
+### Limites da validação nesta sandbox
+
+Não há Chromium/Firefox instalado nem acesso a Windows/ChromeOS físicos. A execução Wasm foi validada em Node e no DOM jsdom, não em um navegador físico. Ainda são necessários testes manuais para File System Access API persistente, WebGL em GPU, html2canvas, Pointer Lock real, input do convidado e matriz visual cross-browser. Os testes de plataforma usam UAs controlados; não equivalem a executar nesses sistemas. Nenhum binário DOOM95/.kkrieger, Adobe, Roblox ou instalador Inno/NSIS foi fornecido/testado. ICM, GDI+ complexo, DirectWrite, networking completo, ACLs NTFS e threads Win32 permanecem lacunas. O projeto não implementa spoofing de PC físico, ocultação de Wine/VM ou bypass de anti-cheat.
+
+## Captura E2E
+
+“Capture Runtime State” retorna:
+
+- framebuffer da superfície ativa via `canvas.toDataURL('image/png')`;
+- UI via `vendor/html2canvas/html2canvas.min.js`;
+- timestamp, plataforma, VFS, renderer, backend, instruções, resultado do benchmark e origem dos frames.
+
+Se html2canvas falhar, o framebuffer continua disponível e o erro da UI é mostrado separadamente. Não é gerada uma captura de substituição fingindo ser a interface.
+
+## Licenças
+
+Código do projeto: GPL-3.0 (`LICENSE`). html2canvas: MIT (`vendor/html2canvas/LICENSE`). retrowin32, seu glue e fixtures: Apache-2.0 (`vendor/retrowin32/LICENSE`), com procedência em `vendor/retrowin32/README.md`. Nenhum jogo, WAD ou executável proprietário acompanha esta versão.
+
+### Aquisição ativa e probes PE
+
+`npm run fetch:assets` tenta aquisição pública, valida MZ/PE e gera hashes/procedência em `tests/assets/MANIFEST.json`. Requer curl e unzip; os downloads não são redistribuídos pelo Git. Falhas obrigatórias retornam exit 1 e preservam URLs/códigos/erros em `artifacts/asset-acquisition.json`. `npm run test:assets` executa os PEs retrowin32 adquiridos, separadamente de Wine.
+
+Nesta revisão: **105 verificações locais**, **45 scripts** com sintaxe válida; 12 PEs adquiridos/provados, dos quais 5 encerram normalmente, 6 falham e threads termina prematuramente. O panic inicial de threads foi localizado no relógio dependente de Window e corrigido para Node; o término individual de threads continua incorreto no núcleo. Aquisição Wine/jogos/apps falhou com diagnósticos de rede/404; `test:wine` agora falha explicitamente em vez de permitir CI verde sem fixtures. Detalhes e limites: [relatório de aquisição](docs/asset-validation-2026-10-27.md).
+
+### Alternativas, PEs sintéticos e estado atual
+
+Veja [COMPATIBILITY_REPORT.md](COMPATIBILITY_REPORT.md) e [análise de threads](docs/threading-analysis.md).
+
+- `npm run fetch:fallbacks`: tentativas normais + Release Asset API + buscas/árvores/blobs GitHub e compilação de substitutos. Mantém falha explícita para originais obrigatórios ausentes.
+- `npm run build:synthetic`: compila cinco fontes C em PE32 com Zig **0.13.0**; configure `PORTHOLE_ZIG` conforme [instruções](tests/synthetic/README.md).
+- `npm run test:synthetic`: executa os cinco PEs no Wasm em processos Node separados com timeout externo.
+
+Estado atual: **126 verificações locais**, **53 scripts** com sintaxe válida. Foi adquirido DOOM95 de um mirror público e houve tentativa real, mas falhou no backend. Todos os cinco PEs sintéticos falham seus contratos guest. O early exit de thread foi localizado em machine.exit(0) no trampoline de worker; o scheduler Wasm ainda não foi corrigido. Novos módulos thread-sync/ws2_32 são modelos JS testados, não uma ponte de ABI para essas DLLs no Wasm. HTTP TCP loopback e IO físico Node validados não equivalem a rede/input/File System Access do navegador.
+
+### Candidato Rust/Wasm (2026-10-28)
+
+A fonte histórica foi integrada em `rust/retrowin32`, com alterações candidatas
+no scheduler, waits, TEB/handles e pontes de registro ANSI/diretórios. Veja
+[rust/README.md](rust/README.md) e [estado da integração](docs/rust-wasm-integration.md).
+`npm run build:wasm` regenera as DLLs de SHIM, executa testes Rust e produz um
+candidato fora de vendor. O build local **não concluiu**: cargo ausente, e a
+instalação ativa da toolchain falhou em static.rust-lang.org. O Wasm estável está
+intacto. Nenhum 5/5 guest é alegado; Raw Input e WinSock guest ainda não foram
+integrados. Estado local: **133 verificações JS/DOM**, **55 scripts** sintaticamente
+válidos; isso não valida compilação nem execução do Rust candidato.

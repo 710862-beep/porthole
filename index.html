@@ -1,115 +1,258 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Porthole WebOS — Windows 10 no navegador com WebAssembly + DOOM</title>
-  <!-- Favicon inline (nenhum recurso externo) -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='7' height='7' x='1' y='1' fill='%2355b7ff'/%3E%3Crect width='7' height='7' x='9' y='1' fill='%231a86d9'/%3E%3Crect width='7' height='7' x='1' y='9' fill='%231a86d9'/%3E%3Crect width='7' height='7' x='9' y='9' fill='%230b6fce'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Porthole Runtime — camada experimental de SHIMs Win32, VFS e tradução Direct3D para WebGL/CPU no navegador.">
+  <title>Porthole Runtime · Win32 → Web</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%230b1522' stroke='%235eead4' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%235eead4'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-
-  <!-- ================================================================== -->
-  <!-- Tela de boot (splash), idêntica à experiência de um SO "real"      -->
-  <!-- ================================================================== -->
-  <div id="boot-screen" aria-hidden="true">
-    <div class="boot-logo" aria-hidden="true">
-      <span></span><span></span><span></span><span></span>
+<div id="app" class="app-shell">
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Porthole Runtime — início">
+      <span class="brand-mark" aria-hidden="true"><span></span></span>
+      <span class="brand-copy">
+        <strong>porthole<span class="brand-dot">.</span></strong>
+        <small>WIN32 COMPATIBILITY RUNTIME</small>
+      </span>
+    </a>
+    <div class="topbar-right">
+      <span class="platform-pill"><span class="status-dot"></span><span id="platform-badge">Detectando plataforma…</span></span>
+      <span class="version-pill">EXPERIMENTAL / 0.3</span>
     </div>
-    <p class="boot-text">Porthole WebOS</p>
-    <div class="boot-spinner"></div>
-  </div>
+  </header>
 
-  <!-- ================================================================== -->
-  <!-- Área de trabalho: ícones + camada onde o Window Manager injeta     -->
-  <!-- as janelas.                                                         -->
-  <!-- ================================================================== -->
-  <main id="desktop" aria-label="Área de trabalho">
+  <section class="status-grid" aria-label="Estado do runtime">
+    <article class="status-card">
+      <span class="status-label">PLATAFORMA</span>
+      <strong id="status-platform">—</strong>
+      <small id="status-browser">User-Agent + Client Hints</small>
+    </article>
+    <article class="status-card">
+      <span class="status-label">VIRTUAL FILESYSTEM</span>
+      <strong id="status-vfs">Não mapeado</strong>
+      <small id="status-vfs-detail">Selecione uma pasta para C:\</small>
+    </article>
+    <article class="status-card">
+      <span class="status-label">RENDERIZADOR</span>
+      <strong id="status-renderer">Não inicializado</strong>
+      <small id="status-renderer-detail">WebGL → fallback CPU</small>
+    </article>
+    <article class="status-card">
+      <span class="status-label">RUNTIME</span>
+      <strong id="status-runtime">Em espera</strong>
+      <small id="status-runtime-detail">Nenhum frame apresentado</small>
+    </article>
+  </section>
 
-    <!-- Ícones do desktop (preenchidos por webos.js a partir do registro de apps) -->
-    <section id="desktop-icons" aria-label="Ícones da área de trabalho"></section>
+  <aside class="capability-note" aria-label="Capacidades e limites de execução de PE">
+    <span class="note-icon" aria-hidden="true">i</span>
+    <p><strong>Win32 user-mode, não Windows emulado.</strong> O workload D3D9 integrado mede frames reais. “Inspecionar” somente lê PE/imports; “Executar x86” usa o backend local retrowin32 para PE32, com stdout, instruções e exit code medidos. Compatibilidade com jogos completos não é presumida.</p>
+    <a href="plan.md" target="_blank" rel="noopener">Ver arquitetura ↗</a>
+  </aside>
 
-    <!-- Camada única de janelas: todo Window Manager opera aqui dentro -->
-    <section id="window-layer" aria-label="Janelas do sistema"></section>
+  <main class="workspace">
+    <section class="panel viewport-panel" aria-labelledby="viewport-title">
+      <header class="panel-header viewport-header">
+        <div>
+          <span class="eyebrow">RENDER TARGET / 01</span>
+          <h1 id="viewport-title">Direct3D swap chain</h1>
+        </div>
+        <div class="viewport-metrics">
+          <span id="resolution-counter">800 × 450</span>
+          <strong id="fps-counter">0 <small>FPS</small></strong>
+        </div>
+      </header>
+      <div id="canvas-shell" class="canvas-shell">
+        <canvas id="render-canvas" width="800" height="450" tabindex="0" aria-label="Framebuffer do workload Direct3D 9 integrado. Clique e use WASD, setas ou mouse."></canvas>
+        <canvas id="guest-canvas" class="guest-canvas" width="640" height="480" tabindex="0" hidden aria-label="Superfície Canvas 2D de uma janela do processo retrowin32"></canvas>
+        <div id="window-layer" class="win32-window-layer" aria-label="Janelas criadas pelo SHIM user32 ou pelo convidado retrowin32"></div>
+        <div class="canvas-topline" aria-hidden="true">
+          <span><i class="live-dot"></i> LIVE SURFACE</span>
+          <span id="frame-origin">IDLE CANVAS</span>
+        </div>
+        <div id="canvas-idle" class="canvas-idle">
+          <span class="idle-port" aria-hidden="true"></span>
+          <strong>Render target em espera</strong>
+          <p>Inicie o runtime para atravessar D3D9 → WebGL/CPU.</p>
+        </div>
+        <div id="benchmark-overlay" class="benchmark-overlay" hidden>
+          <div><span>BENCHMARK INTEGRADO</span><strong id="benchmark-remaining">5.0 s</strong></div>
+          <div class="progress-track"><span id="benchmark-progress"></span></div>
+        </div>
+        <div class="canvas-input-hint" aria-hidden="true">CLICK TO FOCUS <span>·</span> WASD / SETAS <span>·</span> MOUSE</div>
+      </div>
+      <footer class="viewport-footer">
+        <span id="pipeline-status"><i class="status-dot muted"></i> Pipeline aguardando inicialização</span>
+        <span id="draw-counter">0 DRAWS</span>
+      </footer>
+    </section>
+
+    <aside class="control-column" aria-label="Controles do runtime">
+      <section class="panel control-panel">
+        <header class="section-header">
+          <div><span class="eyebrow">RUNTIME CONTROL</span><h2>Pipeline</h2></div>
+          <span id="runtime-state" class="state-badge" data-state="idle">IDLE</span>
+        </header>
+        <div class="button-row">
+          <button id="start-button" class="button primary" type="button"><span class="play-icon" aria-hidden="true"></span><span>Iniciar runtime</span></button>
+          <button id="benchmark-button" class="button secondary" type="button" disabled>Benchmark 5 s</button>
+        </div>
+        <label class="toggle-row" for="force-software">
+          <span><strong>Forçar rasterizador CPU</strong><small>Valida o fallback llvmpipe-style</small></span>
+          <input id="force-software" type="checkbox" role="switch">
+        </label>
+      </section>
+
+      <section class="panel drive-panel">
+        <header class="section-header">
+          <div><span class="eyebrow">VIRTUAL FILESYSTEM</span><h2>Drive C:\</h2></div>
+          <span id="vfs-mode" class="mini-badge">UNMAPPED</span>
+        </header>
+        <p class="section-copy">A pasta escolhida torna-se a raiz do convidado. Nenhum arquivo é enviado.</p>
+        <div class="host-path"><span>HOST SUGERIDO</span><code id="host-path">—</code></div>
+        <div class="button-row compact">
+          <button id="map-directory" class="button secondary" type="button">Mapear pasta</button>
+          <button id="fallback-directory" class="button ghost" type="button" hidden>Usar fallback</button>
+        </div>
+        <div id="mapping-info" class="mapping-info" hidden>
+          <span class="mapping-icon" aria-hidden="true">C:</span>
+          <div><strong id="mapping-root">—</strong><small id="mapping-detail">—</small></div>
+        </div>
+      </section>
+
+      <section class="panel executable-panel">
+        <header class="section-header">
+          <div><span class="eyebrow">WINDOWS PE / COFF</span><h2>Carregar executável</h2></div>
+          <span class="mini-badge">PE32 / x86</span>
+        </header>
+        <label class="field-label" for="exe-path">Caminho no VFS</label>
+        <div class="path-field">
+          <span aria-hidden="true">›_</span>
+          <input id="exe-path" type="text" value="C:\Games\Doom\DOOM95.exe" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="button-row compact">
+          <button id="load-pe" class="button secondary" type="button" disabled>Inspecionar PE</button>
+          <button id="execute-pe" class="button primary" type="button" disabled>Executar x86</button>
+        </div>
+        <button id="stop-pe" class="button ghost full" type="button" hidden>Parar convidado</button>
+        <p class="field-help">Inspecionar não executa. Executar relê o arquivo e inicia o retrowin32; a pasta do PE é pré-carregada para I/O síncrono.</p>
+        <p id="pe-error" class="inline-error" role="alert" hidden></p>
+        <div id="pe-result" class="pe-result" hidden>
+          <div class="pe-title-row"><strong id="pe-name">—</strong><span id="pe-architecture">—</span></div>
+          <dl class="pe-facts">
+            <div><dt>Estado</dt><dd id="pe-execution">INSPECIONADO / NÃO EXECUTADO</dd></div>
+            <div><dt>Backend</dt><dd id="pe-backend">Somente inspeção</dd></div>
+            <div><dt>Instruções</dt><dd id="pe-instructions">0</dd></div>
+            <div><dt>Imports</dt><dd id="pe-imports">—</dd></div>
+            <div><dt>SHA-256</dt><dd id="pe-hash">—</dd></div>
+          </dl>
+          <p id="pe-reason" class="pe-reason"></p>
+          <pre id="guest-output" class="guest-output" aria-label="Saída do processo convidado" hidden></pre>
+        </div>
+      </section>
+
+      <section class="panel modules-panel">
+        <header class="section-header">
+          <div><span class="eyebrow">DYNAMIC LINKER</span><h2>SHIMs ativos</h2></div>
+          <span id="dll-count" class="count-badge">0</span>
+        </header>
+        <div id="dll-list" class="dll-list"><span class="empty-inline">Nenhuma DLL carregada</span></div>
+      </section>
+    </aside>
   </main>
 
-  <!-- ================================================================== -->
-  <!-- Menu Iniciar (toggle pelo botão da taskbar)                        -->
-  <!-- ================================================================== -->
-  <div id="start-menu" class="hidden" role="menu" aria-label="Menu Iniciar">
-    <nav class="start-sidebar" aria-label="Atalhos rápidos">
-      <button class="start-user" title="Usuário Porthole">
-        <span class="user-avatar">P</span>
-      </button>
-      <div class="start-sidebar-spacer"></div>
-      <button class="start-side-btn" id="dev-mode-badge" title="Developer Mode ativado">
-        <span class="side-ico">⌘</span>
-      </button>
-      <button class="start-side-btn" id="power-button" title="Energia">
-        <span class="side-ico">⏻</span>
-      </button>
-    </nav>
-    <div class="start-apps">
-      <p class="start-section-title">Aplicativos</p>
-      <div id="start-app-list"><!-- apps populares --></div>
-      <p class="start-section-title">Modo Desenvolvedor</p>
-      <div id="start-dev-list"><!-- diagnósticos/benchmarks --></div>
+  <section class="lower-grid">
+    <section class="panel logs-panel" aria-labelledby="logs-title">
+      <header class="section-header log-header">
+        <div><span class="eyebrow">INTERPOSITION TRACE</span><h2 id="logs-title">API calls / Win32 → Web</h2></div>
+        <div class="log-actions"><span><i class="live-dot"></i> LIVE</span><button id="clear-logs" class="text-button" type="button">Limpar</button></div>
+      </header>
+      <div class="log-columns" aria-hidden="true"><span>TIME</span><span>SOURCE</span><span>CALL / EVENT</span><span>MS</span></div>
+      <div id="api-log" class="api-log" role="log" aria-label="Chamadas de API interceptadas"></div>
+    </section>
+
+    <section class="panel validation-panel" aria-labelledby="validation-title">
+      <header class="section-header">
+        <div><span class="eyebrow">E2E VALIDATION</span><h2 id="validation-title">Evidence matrix</h2></div>
+      </header>
+      <div class="test-list">
+        <article class="test-row" id="test-integrated">
+          <div class="test-icon d3d">D9</div>
+          <div class="test-copy"><strong>Benchmark D3D9 integrado</strong><small id="benchmark-detail">Pronto para medir 5 segundos</small></div>
+          <span id="benchmark-status" class="test-status">READY</span>
+        </article>
+        <article class="test-row" id="test-doom95">
+          <div class="test-icon">95</div>
+          <div class="test-copy"><strong>DOOM95.exe</strong><small>Forneça o PE em C:\Games\Doom</small></div>
+          <span id="doom95-status" class="test-status neutral">AWAITING PE</span>
+        </article>
+        <article class="test-row" id="test-kkrieger">
+          <div class="test-icon">KK</div>
+          <div class="test-copy"><strong>.kkrieger</strong><small>Imports D3D9 serão verificados</small></div>
+          <span id="kkrieger-status" class="test-status neutral">AWAITING PE</span>
+        </article>
+        <article class="test-row" id="test-retrowin32">
+          <div class="test-icon">x86</div>
+          <div class="test-copy"><strong>PE real / retrowin32</strong><small id="retro-detail">Execute hello.exe ou callback.exe local</small><div class="fixture-actions"><button id="run-hello" class="text-button" type="button">hello.exe</button><button id="run-callback" class="text-button" type="button">callback.exe</button></div></div>
+          <span id="retro-status" class="test-status neutral">READY</span>
+        </article>
+      </div>
+      <div class="capture-action">
+        <div><strong>Capture Runtime State</strong><small>Framebuffer PNG + UI via html2canvas</small></div>
+        <button id="capture-button" class="button secondary" type="button">Capturar</button>
+      </div>
+    </section>
+  </section>
+
+  <section id="capture-panel" class="panel capture-panel" aria-labelledby="capture-title" hidden>
+    <header class="section-header">
+      <div><span class="eyebrow">RUNTIME EVIDENCE</span><h2 id="capture-title">Captured state</h2></div>
+      <span id="capture-time" class="mini-badge">—</span>
+    </header>
+    <div class="capture-grid">
+      <figure><div class="capture-image-wrap"><img id="framebuffer-capture" alt="Framebuffer capturado do canvas"></div><figcaption><strong>01 / Framebuffer</strong><span>canvas.toDataURL()</span></figcaption></figure>
+      <figure><div class="capture-image-wrap"><img id="ui-capture" alt="Interface de controle capturada"><p id="ui-capture-error" class="capture-error" hidden></p></div><figcaption><strong>02 / Control UI</strong><span>html2canvas</span></figcaption></figure>
     </div>
-  </div>
+    <details class="capture-metadata"><summary>Metadados da captura</summary><pre id="capture-metadata"></pre></details>
+  </section>
 
-  <!-- Overlay de "energia" (sono/desligar simulados) -->
-  <div id="power-overlay" class="hidden">
-    <div class="power-card">
-      <p id="power-message">O sistema foi suspenso.</p>
-      <button id="power-wake" class="win10-btn">Clique para acordar</button>
-    </div>
-  </div>
-
-  <!-- ================================================================== -->
-  <!-- Taskbar estilo Windows 10                                          -->
-  <!-- ================================================================== -->
-  <footer id="taskbar" aria-label="Barra de tarefas">
-    <button id="start-button" aria-label="Iniciar" title="Iniciar">
-      <!-- Logo de 4 quadrados, desenhado em CSS puro (sem imagem externa) -->
-      <span class="win-logo"><i></i><i></i><i></i><i></i></span>
-    </button>
-
-    <!-- Campo de busca decorativo (funcional: filtra apps do Menu Iniciar) -->
-    <div id="taskbar-search">
-      <span class="search-ico">🔍</span>
-      <input id="search-input" type="text" placeholder="Pesquisar apps do WebOS" aria-label="Pesquisar" />
-    </div>
-
-    <!-- Botões das janelas abertas, gerenciados pelo Window Manager -->
-    <div id="taskbar-windows" aria-label="Janelas abertas"></div>
-
-    <!-- Área de notificação + relógio em tempo real -->
-    <div id="system-tray">
-      <span class="tray-icon" title="Rede WebAssembly">▲</span>
-      <span class="tray-icon" title="Áudio">🔊</span>
-      <span class="tray-icon" title="Bateria 100%">🔋</span>
-      <button id="clock" title="Data e hora">
-        <span id="clock-time">--:--</span>
-        <span id="clock-date">--/--/----</span>
-      </button>
-    </div>
+  <footer class="app-footer">
+    <span><i class="status-dot"></i> LOCAL-ONLY FILE ACCESS</span>
+    <span>Vanilla JS · sem kernel Windows · <a href="README.md" target="_blank" rel="noopener">documentação</a></span>
   </footer>
+</div>
 
-  <!-- Dica flutuante de notificação do sistema -->
-  <div id="toast" class="toast hidden" role="status"></div>
+<div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+<noscript><div class="noscript">O Porthole Runtime precisa de JavaScript para fornecer os SHIMs e o VFS.</div></noscript>
 
-  <!-- ================================================================== -->
-  <!-- Scripts em ordem de dependência. Vanilla JS clássico (sem bundler, -->
-  <!-- sem ES modules): cada arquivo apenas amplia o namespace global     -->
-  <!-- window.WebOS. Funciona até via file:// e com qualquer servidor     -->
-  <!-- HTTP estático, sem npm install.                                    -->
-  <!-- ================================================================== -->
-  <script src="vendor/html2canvas/html2canvas.min.js"></script>
-  <script src="js/window-manager.js"></script>
-  <script src="js/gpu.js"></script>
-  <script src="js/doom-runtime.js"></script>
-  <script src="js/diagnostics.js"></script>
-  <script src="js/webos.js"></script>
+<script src="vendor/html2canvas/html2canvas.min.js"></script>
+<script src="js/platform-detector.js"></script>
+<script src="js/vfs.js"></script>
+<script src="js/vfs-fs-access.js"></script>
+<script src="js/vfs-fallback.js"></script>
+<script src="vfs-persist.js"></script>
+<script src="js/porthole-linker.js"></script>
+<script src="shims/registry.js"></script>
+<script src="shims/guest-registry.js"></script>
+<script src="js/pe-loader.js"></script>
+<script src="spoof-hardware.js"></script>
+<script src="js/shim-kernel32.js"></script>
+<script src="input-raw.js"></script>
+<script src="js/shim-user32.js"></script>
+<script src="js/shim-gdi32.js"></script>
+<script src="js/graphics-webgl.js"></script>
+<script src="js/graphics-fallback.js"></script>
+<script src="js/graphics-device.js"></script>
+<script src="js/hlsl-translator.js"></script>
+<script src="shims/d3d_translate.js"></script>
+<script src="js/shim-d3d9.js"></script>
+<script src="js/shim-d3d11.js"></script>
+<script src="js/retrowin32-backend.js"></script>
+<script src="js/runtime.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

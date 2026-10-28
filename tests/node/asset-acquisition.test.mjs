@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { validatePE } from '../../scripts/fetch-test-assets.mjs';
+const bytes = Buffer.alloc(128);
+bytes.write('MZ'); bytes.writeUInt32LE(64, 60); bytes.writeUInt32LE(0x4550, 64); bytes.writeUInt16LE(0x14c, 68);
+assert.equal(validatePE(bytes).machine, 0x14c);
+assert.throws(() => validatePE(Buffer.from('<html>')), /Size/);
+assert.throws(() => validatePE(Buffer.alloc(128)), /MZ/);
+const broken = Buffer.from(bytes); broken.writeUInt32LE(0xffffffff, 60);
+assert.throws(() => validatePE(broken), /PE/);
+assert.throws(() => validatePE(bytes, 1048577), /Size/);
+assert.equal(validatePE(bytes).size, 128);
+console.log('asset-acquisition: 6 verificações concluídas.');

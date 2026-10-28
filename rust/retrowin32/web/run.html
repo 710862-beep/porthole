@@ -1,0 +1,40 @@
+<!doctype html>
+<title>retrowin32</title>
+<link rel='stylesheet' href='win2k.css'>
+<style>
+    html {
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+    }
+
+    body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+    }
+
+    main {
+        flex: 1;
+    }
+
+    header {
+        padding: 8px;
+        display: flex;
+        align-items: baseline;
+    }
+
+    .stdout {
+        min-width: 80ex;
+        padding: 1ex;
+        color: grey;
+        background: black;
+    }
+</style>
+
+<body></body>
+
+<script type='module'>
+    import { runMain } from './bundle.js';
+    runMain();
+</script>

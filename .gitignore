@@ -1,1 +1,13 @@
 node_modules/
+artifacts/
+*.log
+
+# Acquired executables and local reports: reproducible, not redistributed
+tests/assets/
+tests/reports/
+
+# Compiled synthetic fixtures are rebuilt from versioned sources
+tests/synthetic/*.exe
+tests/synthetic/*.pdb
+tests/synthetic/*.lib
+tests/synthetic/BUILD.json

@@ -1,13 +1,21 @@
 {
-  "name": "porthole-webos",
-  "version": "1.0.0",
+  "name": "porthole-runtime",
+  "version": "0.4.0",
   "private": true,
-  "description": "WebOS estilo Windows 10 no navegador, com DOOM em WebAssembly. O app roda sem npm; estas dependencias existem apenas para os testes headless.",
+  "description": "Camada experimental de SHIMs Win32, VFS persistente, Raw Input, CI de conformidade e Direct3D-to-WebGL/CPU em Vanilla JS.",
   "scripts": {
-    "test": "node tests/node/smoke-wasm.mjs && node tests/node/inline-wasm-test.mjs && node tests/node/dom-integration.mjs",
-    "test:wasm": "node tests/node/smoke-wasm.mjs",
+    "check:syntax": "node ci/check-syntax.mjs",
+    "test": "npm run test:unit && npm run test:dom",
+    "test:unit": "node tests/node/platform-vfs.test.mjs && node tests/node/linker-pe.test.mjs && node tests/node/ci-autofix.test.mjs && node tests/node/maturity.test.mjs && node tests/node/d3d-translate.test.mjs && node tests/node/shims-graphics.test.mjs && node tests/node/webgl-backend.test.mjs && node tests/node/runtime.test.mjs && node tests/node/retrowin32-backend.test.mjs && node tests/node/stress.test.mjs && node tests/node/autofix.test.mjs && node tests/node/asset-acquisition.test.mjs && node tests/node/headless-clock.test.mjs && node --test tests/node/thread-sync.test.mjs tests/node/ws2-32.test.mjs && node --test tests/node/disk-persistence.test.mjs && node --test tests/node/guest-host-bridge.test.mjs",
     "test:dom": "node tests/node/dom-integration.mjs",
-    "serve": "python3 -m http.server 8000 --bind 0.0.0.0"
+    "test:wine": "node tests/wine/run-winetests.mjs --report artifacts/wine-report.json",
+    "serve": "python3 -m http.server 8000 --bind 0.0.0.0",
+    "fetch:assets": "node scripts/fetch-test-assets.mjs",
+    "test:assets": "node scripts/probe-test-assets.mjs",
+    "fetch:fallbacks": "node scripts/fetch-with-fallbacks.mjs",
+    "build:synthetic": "node scripts/build-synthetic.mjs",
+    "test:synthetic": "node scripts/run-synthetic.mjs",
+    "build:wasm": "bash scripts/rebuild-wasm.sh"
   },
   "devDependencies": {
     "jsdom": "^24.1.3"

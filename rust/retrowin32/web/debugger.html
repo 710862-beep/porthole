@@ -1,0 +1,74 @@
+<!doctype html>
+<title>retrowin32</title>
+<link rel='stylesheet' href='win2k.css'>
+<style>
+    a.stealth {
+        color: inherit;
+        text-decoration: none;
+    }
+
+    code {
+        white-space: pre-wrap;
+    }
+
+    html {
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+    }
+
+    body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    section.panel {
+        padding: 1ex;
+    }
+
+    .clicky {
+        cursor: pointer;
+    }
+
+    .highlight {
+        background: white;
+        outline: solid 1px red;
+    }
+
+    .error {
+        color: red;
+    }
+
+    .code {
+        padding: 1ex;
+        background: white;
+        width: 80ex;
+    }
+
+    table {
+        border-spacing: 0;
+    }
+
+    td {
+        vertical-align: top;
+        padding: 0;
+    }
+
+    .tabs-strip {
+        padding-bottom: 1ex;
+    }
+
+    button.x {
+        padding: 1px 3px;
+        font-size: 80%;
+    }
+</style>
+
+<body>
+</body>
+<script type='module'>
+    import { debuggerMain } from './bundle.js';
+    debuggerMain();
+</script>

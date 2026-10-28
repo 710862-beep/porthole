@@ -1,0 +1,3 @@
+    GetTickCount64() {
+      return this.clock ? this.clock.getTickCount64() : Math.floor(global.performance ? performance.now() : Date.now());
+    }

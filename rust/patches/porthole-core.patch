@@ -1,0 +1,704 @@
+--- a/.gitignore
++++ b/.gitignore
+@@ -9,7 +9,7 @@
+ # ghidra
+ *.gpr
+ *.rep
+-*.lock*
++*.gpr.lock*
+ 
+ # Visual Studio (for use in profiling)
+ /.vs
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -546,6 +546,7 @@
+  "num-derive",
+  "num-traits",
+  "serde",
++ "serde_json",
+  "tsify",
+  "typed-path",
+  "unicorn-engine",
+--- /dev/null
++++ b/rust-toolchain.toml
+@@ -0,0 +1,5 @@
++[toolchain]
++channel = "1.81.0"
++components = ["rustfmt"]
++targets = ["wasm32-unknown-unknown"]
++profile = "minimal"
+--- a/web/glue/src/host.rs
++++ b/web/glue/src/host.rs
+@@ -253,6 +253,13 @@
+     pub type JsHost;
+ 
+     #[wasm_bindgen(method)]
++    fn ticks(this: &JsHost) -> u32;
++    #[wasm_bindgen(method)]
++    fn create_dir(this: &JsHost, path: &str) -> u32;
++    #[wasm_bindgen(method)]
++    fn registry_call(this: &JsHost, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String;
++
++    #[wasm_bindgen(method)]
+     fn log(this: &JsHost, level: u8, msg: String);
+ 
+     #[wasm_bindgen(method)]
+@@ -274,8 +281,11 @@
+ }
+ 
+ impl win32::Host for JsHost {
++    fn registry_call(&self, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String {
++        JsHost::registry_call(self, op, handle, name, ty, data)
++    }
+     fn ticks(&self) -> u32 {
+-        web_sys::window().unwrap().performance().unwrap().now() as u32
++        JsHost::ticks(self)
+     }
+ 
+     fn system_time(&self) -> chrono::DateTime<chrono::Local> {
+@@ -341,7 +351,10 @@
+     }
+ 
+     fn create_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
+-        todo!("create_dir {path}")
++        match JsHost::create_dir(self, &path.to_string_lossy()) {
++            0 => Ok(()),
++            code => Err(ERROR::try_from(code).unwrap_or(ERROR::ACCESS_DENIED)),
++        }
+     }
+ 
+     fn remove_file(&self, path: &WindowsPath) -> Result<(), ERROR> {
+--- a/win32/Cargo.toml
++++ b/win32/Cargo.toml
+@@ -11,6 +11,7 @@
+ 
+ anyhow = "1.0"
+ bincode = "1.3.3"
++serde_json = "1.0"
+ bitflags = "1.3.2"
+ chrono = "0.4.38"
+ num-derive = "0.3"
+--- a/win32/src/host.rs
++++ b/win32/src/host.rs
+@@ -129,6 +129,10 @@
+ pub trait Host {
+     /// Get an arbitrary time counter, measured in milliseconds.
+     fn ticks(&self) -> u32;
++    /// Porthole synchronous overlay bridge. Missing hosts fail, never succeed silently.
++    fn registry_call(&self, _op: &str, _handle: u32, _name: &str, _ty: u32, _data: &[u8]) -> String {
++        "{\"status\":50}".into()
++    }
+     fn system_time(&self) -> chrono::DateTime<chrono::Local>;
+ 
+     /// Get the next pending message, or None if no message waiting.
+--- a/win32/src/machine_emu.rs
++++ b/win32/src/machine_emu.rs
+@@ -151,7 +151,20 @@
+         }
+     }
+ 
++    pub fn terminate_current_thread(&mut self, code: u32) {
++        let id = self.emu.x86.cur_cpu;
++        log::debug!("Porthole ExitThread cpu={id} code={code}");
++        self.emu.x86.cpu_mut().state = x86::CPUState::Terminated(code);
++    }
++
+     pub fn run(&mut self) -> bool {
++        // Returning from an entry point ends that CPU, not the whole process.
++        // Explicit ExitProcess still uses Machine::exit and is immediate.
++        if self.emu.x86.cpus.iter().all(|cpu| matches!(cpu.state, x86::CPUState::Terminated(_))) {
++            let code = match self.emu.x86.cpus[0].state { x86::CPUState::Terminated(code) => code, _ => 0 };
++            self.exit(code);
++            return false;
++        }
+         self.emu.x86.schedule();
+         match &self.emu.x86.cpu().state {
+             x86::CPUState::Running => self.execute_block(),
+--- a/win32/src/shims.rs
++++ b/win32/src/shims.rs
+@@ -50,7 +50,10 @@
+ /// Synchronously evaluate a Future, under the assumption that it is always immediately Ready.
+ #[allow(deref_nullptr)]
+ pub fn call_sync<T>(future: std::pin::Pin<&mut impl std::future::Future<Output = T>>) -> T {
+-    let context: &mut std::task::Context = unsafe { &mut *std::ptr::null_mut() };
++    struct NoopWake;
++        impl std::task::Wake for NoopWake { fn wake(self: std::sync::Arc<Self>) {} }
++        let waker = std::task::Waker::from(std::sync::Arc::new(NoopWake));
++        let context = &mut std::task::Context::from_waker(&waker);
+     match future.poll(context) {
+         std::task::Poll::Pending => unreachable!(),
+         std::task::Poll::Ready(t) => t,
+--- a/win32/src/winapi/advapi32.rs
++++ b/win32/src/winapi/advapi32.rs
+@@ -1,20 +1,62 @@
++//! Porthole ANSI registry subset routed to the JS registry store overlay.
+ #![allow(non_snake_case)]
+-
++use crate::machine::Machine;
+ use super::types::Str16;
+-use crate::machine::Machine;
+-
++use memory::{Extensions, ExtensionsMut};
++use serde_json::{json, Value};
+ const TRACE_CONTEXT: &'static str = "advapi32";
+-
+ pub type HKEY = u32;
+-
++fn call(machine: &Machine, op: &str, key: u32, name: &str, ty: u32, data: &[u8]) -> Value {
++    serde_json::from_str(&machine.host.registry_call(op, key, name, ty, data)).unwrap_or(json!({"status": 13}))
++}
++fn status(value: &Value) -> u32 { value["status"].as_u64().unwrap_or(13) as u32 }
+ #[win32_derive::dllexport]
+-pub fn RegCreateKeyA(
+-    _machine: &mut Machine,
+-    hKey: HKEY,
+-    lpSubKey: Option<&str>,
+-    phkResult: Option<&mut u32>,
+-) -> u32 {
+-    0
++pub fn RegCreateKeyExA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>, Reserved: u32, lpClass: Option<&str>, dwOptions: u32, samDesired: u32, lpSecurityAttributes: u32, phkResult: Option<&mut u32>, lpdwDisposition: Option<&mut u32>) -> u32 {
++    if Reserved != 0 || dwOptions != 0 || lpSecurityAttributes != 0 || lpClass.is_some() { return 50; }
++    let result = match phkResult { Some(p) => p, None => return 87 };
++    let value = call(machine, "create", hKey, lpSubKey.unwrap_or(""), 0, &[]);
++    let code = status(&value);
++    if code == 0 {
++        *result = value["handle"].as_u64().unwrap_or(0) as u32;
++        if let Some(p) = lpdwDisposition { *p = value["disposition"].as_u64().unwrap_or(2) as u32; }
++    }
++    code
++}
++#[win32_derive::dllexport]
++pub fn RegCreateKeyA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>, phkResult: Option<&mut u32>) -> u32 {
++    RegCreateKeyExA(machine, hKey, lpSubKey, 0, None, 0, 0, 0, phkResult, None)
++}
++#[win32_derive::dllexport]
++pub fn RegOpenKeyExA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>, ulOptions: u32, samDesired: u32, phkResult: Option<&mut HKEY>) -> u32 {
++    if ulOptions != 0 { return 87; }
++    let result = match phkResult { Some(p) => p, None => return 87 };
++    let value = call(machine, "open", hKey, lpSubKey.unwrap_or(""), 0, &[]);
++    let code = status(&value); if code == 0 { *result = value["handle"].as_u64().unwrap_or(0) as u32; } code
++}
++#[win32_derive::dllexport]
++pub fn RegCloseKey(machine: &mut Machine, hKey: HKEY) -> u32 { status(&call(machine, "close", hKey, "", 0, &[])) }
++#[win32_derive::dllexport]
++pub fn RegSetValueExA(machine: &mut Machine, hKey: HKEY, lpValueName: Option<&str>, Reserved: u32, dwType: u32, lpData: u32, cbData: u32) -> u32 {
++    let mem = machine.mem();
++    if Reserved != 0 || cbData > 1048576 || (cbData != 0 && lpData == 0) || lpData.checked_add(cbData).map_or(true, |end| end as usize > mem.as_slice().len()) { return 87; }
++    status(&call(machine, "set", hKey, lpValueName.unwrap_or(""), dwType, mem.sub32(lpData, cbData)))
++}
++#[win32_derive::dllexport]
++pub fn RegQueryValueExA(machine: &mut Machine, hKey: HKEY, lpValueName: Option<&str>, lpReserved: u32, lpType: Option<&mut u32>, lpData: u32, lpcbData: Option<&mut u32>) -> u32 {
++    if lpReserved != 0 { return 87; }
++    let size = match lpcbData { Some(p) => p, None => return 87 };
++    let value = call(machine, "query", hKey, lpValueName.unwrap_or(""), 0, &[]);
++    let code = status(&value); if code != 0 { return code; }
++    let values = match value["data"].as_array() { Some(a) if a.len() <= 1048576 => a, _ => return 13 };
++    let bytes: Option<Vec<u8>> = values.iter().map(|v| v.as_u64().filter(|n| *n < 256).map(|n| n as u8)).collect();
++    let bytes = match bytes { Some(b) => b, None => return 13 };
++    if let Some(ty) = lpType { *ty = value["type"].as_u64().unwrap_or(0) as u32; }
++    let capacity = *size; *size = bytes.len() as u32;
++    if lpData == 0 { return 0; }
++    if capacity < bytes.len() as u32 { return 234; }
++    let mem = machine.mem();
++    if lpData.checked_add(bytes.len() as u32).map_or(true, |end| end as usize > mem.as_slice().len()) { return 87; }
++    mem.sub32_mut(lpData, bytes.len() as u32).copy_from_slice(&bytes); 0
+ }
+ 
+ #[win32_derive::dllexport]
+@@ -30,37 +72,7 @@
+     phkResult: Option<&mut u32>,
+     lpdwDisposition: Option<&mut u32>,
+ ) -> u32 {
+-    0 // success
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn RegOpenKeyExA(
+-    _machine: &mut Machine,
+-    hKey: HKEY,
+-    lpSubKey: Option<&str>,
+-    ulOptions: u32,
+-    samDesired: u32,
+-    phkResult: Option<&mut HKEY>,
+-) -> u32 {
+-    todo!();
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn RegCloseKey(_machine: &mut Machine, hKey: HKEY) -> u32 {
+-    0 // success
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn RegQueryValueExA(
+-    _machine: &mut Machine,
+-    hKey: HKEY,
+-    lpValueName: Option<&str>,
+-    lpReserved: u32,
+-    lpType: Option<&mut u32>,
+-    lpData: u32,
+-    lpcbData: Option<&mut u32>,
+-) -> u32 {
+-    2 // ERROR_FILE_NOT_FOUND
++    50 // Wide value marshaling is not implemented by this candidate.
+ }
+ 
+ #[win32_derive::dllexport]
+@@ -73,20 +85,7 @@
+     lpData: u32,
+     lpcbData: Option<&mut u32>,
+ ) -> u32 {
+-    2 // ERROR_FILE_NOT_FOUND
+-}
+-
+-#[win32_derive::dllexport]
+-pub fn RegSetValueExA(
+-    _machine: &mut Machine,
+-    hKey: HKEY,
+-    lpValueName: Option<&str>,
+-    Reserved: u32,
+-    dwType: u32,
+-    lpData: u32,
+-    cbData: u32,
+-) -> u32 {
+-    0 // success
++    50 // Wide value marshaling is not implemented by this candidate.
+ }
+ 
+ #[win32_derive::dllexport]
+@@ -99,5 +98,5 @@
+     lpData: u32,
+     cbData: u32,
+ ) -> u32 {
+-    0 // success
++    50 // Wide value marshaling is not implemented by this candidate.
+ }
+--- a/win32/src/winapi/error.rs
++++ b/win32/src/winapi/error.rs
+@@ -6,6 +6,9 @@
+ pub enum ERROR {
+     SUCCESS = 0,
+     FILE_NOT_FOUND = 2,
++    PATH_NOT_FOUND = 3,
++    NOT_SUPPORTED = 50,
++    INVALID_PARAMETER = 87,
+     ACCESS_DENIED = 5,
+     INVALID_HANDLE = 6,
+     INVALID_ACCESS = 12,
+--- a/win32/src/winapi/kernel32/init.rs
++++ b/win32/src/winapi/kernel32/init.rs
+@@ -214,6 +214,8 @@
+     pub resource_handles: Handles<HRSRC, ResourceHandle>,
+ 
+     pub event_handles: Handles<HEVENT, EventObject>,
++    /// Porthole thread handles occupy a disjoint namespace from files/events.
++    pub thread_handles: HashMap<u32, usize>,
+ 
+     pub files: Handles<HFILE, Box<dyn crate::host::File>>,
+ 
+@@ -270,7 +272,8 @@
+             mappings,
+             heaps: HashMap::new(),
+             dlls,
+-            event_handles: Default::default(),
++            event_handles: Handles::new(0x2000_0000),
++            thread_handles: Default::default(),
+             files: Default::default(),
+             find_handles: Default::default(),
+             env: env_addr,
+@@ -385,11 +388,16 @@
+     }
+ }
+ 
++fn current_teb(machine: &Machine) -> u32 {
++    #[cfg(feature = "x86-emu")]
++    { let addr = machine.emu.x86.cpu().regs.fs_addr; if addr != 0 { return addr; } }
++    machine.state.kernel32.teb
++}
+ pub fn teb(machine: &Machine) -> &TEB {
+-    machine.mem().view::<TEB>(machine.state.kernel32.teb)
++    machine.mem().view::<TEB>(current_teb(machine))
+ }
+ pub fn teb_mut(machine: &mut Machine) -> &mut TEB {
+-    machine.mem().view_mut::<TEB>(machine.state.kernel32.teb)
++    machine.mem().view_mut::<TEB>(current_teb(machine))
+ }
+ pub fn peb_mut(machine: &mut Machine) -> &mut PEB {
+     let peb_addr = teb(machine).Peb;
+@@ -495,14 +503,25 @@
+     }
+ 
+     machine.call_x86(entry_point, vec![]).await;
+-    // TODO: if the entry point returns, the Windows behavior is to wait for any
+-    // spawned threads before exiting.
++    #[cfg(feature = "x86-emu")]
++    machine.terminate_current_thread(0);
++    #[cfg(not(feature = "x86-emu"))]
+     machine.exit(0);
+ }
+ 
+ #[win32_derive::dllexport]
+ pub async fn retrowin32_thread_main(machine: &mut Machine, entry_point: u32, param: u32) {
+-    machine.call_x86(entry_point, vec![param]).await;
+-    log::warn!("TODO: thread exiting, but we don't have a way to stop a single thread yet");
+-    machine.exit(0);
+-}
++    let code = machine.call_x86(entry_point, vec![param]).await;
++    #[cfg(feature = "x86-emu")]
++    machine.terminate_current_thread(code);
++    #[cfg(not(feature = "x86-emu"))]
++    machine.exit(code);
++}
++
++/// Initialize a separately allocated TEB; stack/SEH metadata is still a subset.
++pub(super) fn init_thread_teb(machine: &Machine, address: u32, peb: u32, id: u32) {
++    let teb = machine.mem().view_mut::<TEB>(address);
++    teb.Peb = peb;
++    teb.Tib._Self = address;
++    teb.ClientId_UniqueThread = id;
++}
+--- a/win32/src/winapi/kernel32/misc.rs
++++ b/win32/src/winapi/kernel32/misc.rs
+@@ -269,6 +269,12 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn CloseHandle(machine: &mut Machine, hObject: HFILE) -> bool {
++    if machine.state.kernel32.thread_handles.remove(&hObject.to_raw()).is_some() {
++        return true;
++    }
++    if machine.state.kernel32.event_handles.remove(HEVENT::from_raw(hObject.to_raw())).is_some() {
++        return true;
++    }
+     if machine.state.kernel32.files.remove(hObject).is_none() {
+         log::debug!("CloseHandle({hObject:?}): unknown handle");
+         set_last_error(machine, ERROR::INVALID_HANDLE);
+--- a/win32/src/winapi/kernel32/sync.rs
++++ b/win32/src/winapi/kernel32/sync.rs
+@@ -1,47 +1,114 @@
+-//! Synchronization.  Currently all no-ops as we don't support threads.
++//! Porthole cooperative guest waits. These functions are exported to the PE
++//! loader by win32-derive, NOT synchronous JS promises or standalone Wasm exports.
++use crate::{winapi::types::HEVENT, Machine};
++use memory::Extensions;
+ 
+-use crate::{winapi::types::HEVENT, Machine};
+-
+-const TRACE_CONTEXT: &'static str = "kernel32/misc";
++const TRACE_CONTEXT: &'static str = "kernel32/sync";
++const WAIT_TIMEOUT: u32 = 258;
++const WAIT_FAILED: u32 = 0xffff_ffff;
+ 
+ pub struct EventObject {
+     state: bool,
++    manual: bool,
++}
++
++fn fail(machine: &mut Machine, error: u32) -> u32 {
++    super::teb_mut(machine).LastErrorValue = error;
++    WAIT_FAILED
++}
++
++fn ready(machine: &Machine, handle: u32) -> Option<bool> {
++    #[cfg(feature = "x86-emu")]
++    {
++        let index = if handle == 0xffff_fffe {
++            Some(machine.emu.x86.cur_cpu)
++        } else { machine.state.kernel32.thread_handles.get(&handle).copied() };
++        if let Some(index) = index {
++            return machine.emu.x86.cpus.get(index)
++                .map(|cpu| matches!(cpu.state, x86::CPUState::Terminated(_)));
++        }
++    }
++    machine.state.kernel32.event_handles.get(HEVENT::from_raw(handle)).map(|e| e.state)
++}
++
++fn consume(machine: &mut Machine, handle: u32) {
++    if let Some(event) = machine.state.kernel32.event_handles.get_mut(HEVENT::from_raw(handle)) {
++        if !event.manual { event.state = false; }
++    }
++}
++
++async fn wait(machine: &mut Machine, handles: Vec<u32>, all: bool, timeout: u32) -> u32 {
++    #[cfg(not(feature = "x86-emu"))]
++    { let _ = (handles, all, timeout); return fail(machine, 50); }
++    #[cfg(feature = "x86-emu")]
++    {
++        log::debug!("Porthole wait count={} all={} timeout={}", handles.len(), all, timeout);
++        let start = machine.host.ticks();
++        loop {
++            let states: Option<Vec<bool>> = handles.iter().map(|h| ready(machine, *h)).collect();
++            let states = match states { Some(s) => s, None => return fail(machine, 6) };
++            if all && states.iter().all(|s| *s) {
++                for handle in &handles { consume(machine, *handle); }
++                return 0;
++            }
++            if !all {
++                if let Some(index) = states.iter().position(|s| *s) {
++                    consume(machine, handles[index]);
++                    return index as u32;
++                }
++            }
++            // One deadline for the entire wait, including wait-all. Readiness
++            // and consumption happen atomically in this cooperative CPU turn.
++            if timeout != 0xffff_ffff && machine.host.ticks().wrapping_sub(start) >= timeout {
++                return WAIT_TIMEOUT;
++            }
++            super::Sleep(machine, 1).await;
++        }
++    }
+ }
+ 
+ #[win32_derive::dllexport]
+-pub fn WaitForSingleObject(_machine: &mut Machine, hHandle: HEVENT, dwMilliseconds: u32) -> u32 {
+-    todo!()
++pub async fn WaitForSingleObject(machine: &mut Machine, hHandle: HEVENT, dwMilliseconds: u32) -> u32 {
++    wait(machine, vec![hHandle.to_raw()], false, dwMilliseconds).await
+ }
+ 
+ #[win32_derive::dllexport]
+-pub fn CreateEventA(
+-    machine: &mut Machine,
+-    lpEventAttributes: u32,
+-    bManualReset: bool,
+-    bInitialState: bool,
+-    lpName: Option<&str>,
+-) -> HEVENT {
+-    if lpName.is_some() {
+-        todo!("CreateEventA: named events not supported");
++pub async fn WaitForMultipleObjects(machine: &mut Machine, nCount: u32, lpHandles: u32, bWaitAll: bool, dwMilliseconds: u32) -> u32 {
++    if nCount == 0 || nCount > 64 || lpHandles == 0 {
++        return fail(machine, 87);
+     }
++    let size = nCount * 4;
++    let memory = machine.mem();
++    if lpHandles.checked_add(size).map_or(true, |end| end as usize > memory.as_slice().len()) {
++        return fail(machine, 87);
++    }
++    let handles: Vec<u32> = (0..nCount).map(|i| memory.get_pod::<u32>(lpHandles + i * 4)).collect();
++    let unique: std::collections::HashSet<u32> = handles.iter().copied().collect();
++    if unique.len() != handles.len() { return fail(machine, 87); }
++    wait(machine, handles, bWaitAll, dwMilliseconds).await
++}
+ 
+-    machine
+-        .state
+-        .kernel32
+-        .event_handles
+-        .add(EventObject { state: false })
++#[win32_derive::dllexport]
++pub fn CreateEventA(machine: &mut Machine, lpEventAttributes: u32, bManualReset: bool, bInitialState: bool, lpName: Option<&str>) -> HEVENT {
++    if lpEventAttributes != 0 || lpName.is_some() {
++        fail(machine, 50);
++        return HEVENT::null();
++    }
++    machine.state.kernel32.event_handles.add(EventObject { state: bInitialState, manual: bManualReset })
+ }
+ 
+ #[win32_derive::dllexport]
+ pub fn SetEvent(machine: &mut Machine, hEvent: HEVENT) -> bool {
+     match machine.state.kernel32.event_handles.get_mut(hEvent) {
+-        Some(handle) => {
+-            handle.state = true;
+-            true
+-        }
+-        None => {
+-            log::warn!("SetEvent: invalid handle");
+-            false
+-        }
++        Some(event) => { event.state = true; true }
++        None => { fail(machine, 6); false }
+     }
+ }
++
++#[win32_derive::dllexport]
++pub fn ResetEvent(machine: &mut Machine, hEvent: HEVENT) -> bool {
++    match machine.state.kernel32.event_handles.get_mut(hEvent) {
++        Some(event) => { event.state = false; true }
++        None => { fail(machine, 6); false }
++    }
++}
+--- a/win32/src/winapi/kernel32/thread.rs
++++ b/win32/src/winapi/kernel32/thread.rs
+@@ -4,7 +4,7 @@
+     winapi,
+     winapi::types::{Str16, HANDLE},
+ };
+-use memory::Pod;
++use memory::{Pod, ExtensionsMut};
+ 
+ const TRACE_CONTEXT: &'static str = "kernel32/thread";
+ 
+@@ -14,14 +14,14 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn GetCurrentThread(machine: &mut Machine) -> HTHREAD {
+-    HTHREAD::from_raw(GetCurrentThreadId(machine))
++    HTHREAD::from_raw(0xffff_fffe)
+ }
+ 
+ #[win32_derive::dllexport]
+ pub fn GetCurrentThreadId(machine: &mut Machine) -> u32 {
+     #[cfg(feature = "x86-emu")]
+     {
+-        machine.emu.x86.cur_cpu as u32
++        machine.emu.x86.cur_cpu as u32 + 1
+     }
+ 
+     #[cfg(not(feature = "x86-emu"))]
+@@ -35,6 +35,7 @@
+ pub fn TlsAlloc(machine: &mut Machine) -> u32 {
+     let peb = peb_mut(machine);
+     let slot = peb.TlsCount;
++    if slot >= 64 { return 0xffff_ffff; }
+     peb.TlsCount = slot + 1;
+     slot
+ }
+@@ -52,6 +53,7 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn TlsSetValue(machine: &mut Machine, dwTlsIndex: u32, lpTlsValue: u32) -> bool {
++    if dwTlsIndex >= 64 { teb_mut(machine).LastErrorValue = 87; return false; }
+     let teb = teb_mut(machine);
+     teb.TlsSlots[dwTlsIndex as usize] = lpTlsValue;
+     true
+@@ -59,7 +61,9 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn TlsGetValue(machine: &mut Machine, dwTlsIndex: u32) -> u32 {
++    if dwTlsIndex >= 64 { teb_mut(machine).LastErrorValue = 87; return 0; }
+     let teb = teb_mut(machine);
++    teb.LastErrorValue = 0;
+     teb.TlsSlots[dwTlsIndex as usize]
+ }
+ 
+@@ -78,9 +82,31 @@
+ 
+     #[cfg(feature = "x86-emu")]
+     {
+-        let id = 1; // TODO
+-        let stack_pointer = machine.create_stack(format!("thread{id} stack"), dwStackSize);
++        // Suspension is not implemented: fail explicitly, never pretend success.
++        if dwCreationFlags != 0 || lpThreadAttributes != 0 {
++            teb_mut(machine).LastErrorValue = 50;
++            return HTHREAD::null();
++        }
++        let index = machine.emu.x86.cpus.len();
++        let id = index as u32 + 1;
++        let handle = 0x4000_0000 | id;
++        let stack_size = if dwStackSize == 0 { 64 << 10 } else { dwStackSize };
++        let stack_pointer = machine.create_stack(format!("thread{id} stack"), stack_size);
++        let peb = super::teb(machine).Peb;
++        let (teb_addr, teb_size) = {
++            let mapping = machine.state.kernel32.mappings.alloc(
++                std::mem::size_of::<super::TEB>() as u32,
++                format!("thread{id} TEB"), &mut machine.emu.memory);
++            (mapping.addr, mapping.size)
++        };
++        let mem = machine.mem();
++        mem.sub32_mut(teb_addr, teb_size).fill(0);
++        super::init_thread_teb(machine, teb_addr, peb, id);
++        if lpThreadId != 0 { mem.put_pod::<u32>(lpThreadId, id); }
++        machine.state.kernel32.thread_handles.insert(handle, index);
++        log::debug!("Porthole CreateThread cpu={index} handle={handle:x}");
+         let cpu = machine.emu.x86.new_cpu();
++        cpu.regs.fs_addr = teb_addr;
+         cpu.regs.set32(x86::Register::ESP, stack_pointer);
+         cpu.regs.set32(x86::Register::EBP, stack_pointer);
+         let mem = machine.emu.memory.mem();
+@@ -89,7 +115,7 @@
+         x86::ops::push(cpu, mem, 0);
+         cpu.regs.eip = retrowin32_thread_main;
+ 
+-        HTHREAD::from_raw(id)
++        HTHREAD::from_raw(handle)
+     }
+ 
+     #[cfg(not(feature = "x86-emu"))]
+@@ -246,3 +272,11 @@
+ pub fn ReleaseSRWLockExclusive(_machine: &mut Machine, SRWLock: Option<&mut SRWLOCK>) -> u32 {
+     0
+ }
++
++#[win32_derive::dllexport]
++pub fn ExitThread(machine: &mut Machine, dwExitCode: u32) {
++    #[cfg(feature = "x86-emu")]
++    machine.terminate_current_thread(dwExitCode);
++    #[cfg(not(feature = "x86-emu"))]
++    machine.exit(dwExitCode);
++}
+--- a/win32/src/winapi/kernel32/time.rs
++++ b/win32/src/winapi/kernel32/time.rs
+@@ -153,7 +153,7 @@
+ 
+     #[cfg(feature = "x86-emu")]
+     {
+-        let until = machine.host.ticks() + dwMilliseconds;
++        let until = machine.host.ticks().wrapping_add(dwMilliseconds);
+         machine.emu.x86.cpu_mut().block(Some(until)).await;
+     }
+ 
+--- a/x86/src/x86.rs
++++ b/x86/src/x86.rs
+@@ -20,6 +20,8 @@
+     DebugBreak,
+     SysCall,
+     Error(String),
++    /// Thread completed; CPU stays allocated so outstanding futures remain valid.
++    Terminated(u32),
+ }
+ 
+ impl CPUState {
+@@ -121,7 +123,10 @@
+         // here but it seems like nothing accesses it(?).
+         //let c = unsafe { std::task::Context::from_waker(&Waker::from_raw(std::task::RawWaker::)) };
+         #[allow(deref_nullptr)]
+-        let context: &mut std::task::Context = unsafe { &mut *std::ptr::null_mut() };
++        struct NoopWake;
++        impl std::task::Wake for NoopWake { fn wake(self: std::sync::Arc<Self>) {} }
++        let waker = std::task::Waker::from(std::sync::Arc::new(NoopWake));
++        let context = &mut std::task::Context::from_waker(&waker);
+         let poll = future.as_mut().poll(context);
+         match poll {
+             Poll::Ready(()) => {
+@@ -244,7 +249,7 @@
+         let mut soonest = None;
+         for (i, cpu) in self.cpus.iter().enumerate() {
+             match cpu.state {
+-                CPUState::Running => {}
++                CPUState::Running | CPUState::Terminated(_) => {}
+                 CPUState::DebugBreak | CPUState::Error(_) | CPUState::SysCall => {
+                     self.cur_cpu = i;
+                     return;
+@@ -259,7 +264,7 @@
+                 },
+             }
+         }
+-        self.cur_cpu = soonest.unwrap().0;
++        if let Some((index, _)) = soonest { self.cur_cpu = index; }
+ 
+         // if self.cur_cpu != prev || !self.cpu().state.is_running() {
+         //     log::info!("cpu {prev}=>{} {:?}", self.cur_cpu, self.cpu().state);
+@@ -294,3 +299,23 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod porthole_thread_tests {
++    use super::*;
++    #[test]
++    fn completed_cpu_is_not_scheduled() {
++        let mut x86 = X86::new();
++        x86.cpu_mut().state = CPUState::Terminated(7);
++        x86.new_cpu();
++        x86.schedule();
++        assert_eq!(x86.cur_cpu, 1);
++    }
++    #[test]
++    fn all_completed_does_not_unwrap_an_empty_deadline() {
++        let mut x86 = X86::new();
++        x86.cpu_mut().state = CPUState::Terminated(0);
++        x86.schedule();
++        assert_eq!(x86.cpu().state, CPUState::Terminated(0));
++    }
++}

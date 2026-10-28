@@ -1,0 +1,29 @@
+{
+  "upstream": "https://github.com/evmar/retrowin32",
+  "revision": "00d8809d579fb7baf8fecb2c0118abe72a91bd6c",
+  "archive": "https://codeload.github.com/evmar/retrowin32/tar.gz/00d8809d579fb7baf8fecb2c0118abe72a91bd6c",
+  "archiveSha256": "f87ae0f4c7bed0e91302039ad9a55b297c90680a0d217ebb1b39c39d4a702526",
+  "license": "Apache-2.0",
+  "rust": "1.81.0",
+  "wasmBindgen": "0.2.92",
+  "modifiedFiles": [
+    ".gitignore",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "web/glue/src/host.rs",
+    "win32/Cargo.toml",
+    "win32/src/host.rs",
+    "win32/src/machine_emu.rs",
+    "win32/src/shims.rs",
+    "win32/src/winapi/advapi32.rs",
+    "win32/src/winapi/error.rs",
+    "win32/src/winapi/kernel32/init.rs",
+    "win32/src/winapi/kernel32/misc.rs",
+    "win32/src/winapi/kernel32/sync.rs",
+    "win32/src/winapi/kernel32/thread.rs",
+    "win32/src/winapi/kernel32/time.rs",
+    "x86/src/x86.rs"
+  ],
+  "localBuildStatus": "BUILD_BLOCKED: missing cargo",
+  "promoted": false
+}

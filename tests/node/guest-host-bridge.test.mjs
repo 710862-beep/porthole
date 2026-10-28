@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require=createRequire(import.meta.url);
+require('../../js/porthole-linker.js');require('../../js/vfs.js');require('../../js/vfs-fallback.js');
+require('../../shims/registry.js');require('../../shims/guest-registry.js');require('../../js/retrowin32-backend.js');
+const P=globalThis.Porthole;
+function store(vfs){return new P.Registry.RegistryStore({vfs});}
+function memory(){const files=new Map();return {files,async readFile(k){if(!files.has(k))throw Object.assign(Error('not found'),{code:'NOT_FOUND'});return files.get(k);},async writeFile(k,bytes){files.set(k,new TextEncoder().encode(bytes));}};}
+const call=(b,...args)=>JSON.parse(b.call(...args));
+test('guest registry bridge refuses calls before preload',()=>{const b=new P.GuestRegistryBridge(store(memory()));assert.equal(call(b,'create',0x80000001,'App').status,21);});
+test('guest sync overlay marshals BINARY/DWORD, handles, and persists through store',async()=>{
+ const vfs=memory(),b=new P.GuestRegistryBridge(store(vfs));await b.ready();const c=call(b,'create',0x80000001,'Software\\Roblox\\Client');assert.equal(c.status,0);assert.equal(c.disposition,1);
+ const token=Uint8Array.from({length:128},(_,i)=>i);assert.equal(call(b,'set',c.handle,'AuthToken',3,token).status,0);assert.deepEqual(call(b,'query',c.handle,'AuthToken').data,Array.from(token));
+ assert.equal(call(b,'set',c.handle,'UserId',4,new Uint8Array([57,48,0,0])).status,0);assert.deepEqual(call(b,'query',c.handle,'UserId').data,[57,48,0,0]);await b.flush();
+ const second=new P.GuestRegistryBridge(store(vfs));await second.ready();const reopened=call(second,'open',0x80000001,'Software\\Roblox\\Client');assert.equal(reopened.status,0);assert.deepEqual(call(second,'query',reopened.handle,'AuthToken').data,Array.from(token));assert.equal(call(b,'close',c.handle,'').status,0);assert.equal(call(b,'query',c.handle,'UserId').status,6);
+});
+test('guest registry rejects unsupported types instead of pretending success',async()=>{
+ const b=new P.GuestRegistryBridge(store(memory()));await b.ready();const c=call(b,'create',0x80000001,'Software\\X');assert.equal(call(b,'set',c.handle,'x',11,new Uint8Array(8)).status,50);assert.equal(call(b,'set',c.handle,'x',1,new Uint8Array([255,0])).status,50);
+});
+test('guest registry persistence failure is observable at flush',async()=>{
+ const vfs=memory();vfs.writeFile=async()=>{throw Error('disk denied');};const b=new P.GuestRegistryBridge(store(vfs));await b.ready();assert.equal(call(b,'create',0x80000001,'Software\\X').status,0);await assert.rejects(b.flush(),/disk denied/);
+});
+function proc(vfs=null){return new P.Retrowin32Process({}, {path:'C:\\Tests\\x.exe',bytes:new Uint8Array([1]),vfs,preload:false});}
+test('candidate host clock and synchronous directory overlay reject invalid paths',()=>{
+ const p=proc();assert.equal(typeof p.ticks(),'number');assert.equal(p.create_dir('C:\\App'),0);assert.equal(p.create_dir('C:\\App'),183);assert.equal(p.create_dir('D:\\Outside'),5);assert.equal(p.create_dir('C:\\Missing\\Child'),3);assert.equal(p.create_dir('C:\\App\\Child'),0);
+});
+test('candidate directory host propagates queued persistence failure',async()=>{
+ const p=proc({createDirectory:async()=>{throw Error('denied');}});assert.equal(p.create_dir('C:\\App'),0);await assert.rejects(p.flushWrites(),/denied/);
+});
+test('fallback mkdir creates empty directories without claiming physical persistence',async()=>{
+ const f=new P.FallbackVFS();await f.mapFiles([{name:'seed',webkitRelativePath:'Drive/seed',size:1,arrayBuffer:async()=>new Uint8Array([1]).buffer}]);assert.equal((await f.createDirectory('C:\\App')).persistent,false);assert.equal((await f.stat('C:\\App')).kind,'directory');await assert.rejects(f.createDirectory('C:\\Missing\\Child'));await assert.rejects(f.createDirectory('C:\\App'));
+});

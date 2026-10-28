@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+require('../../../js/porthole-linker.js');
+require('../../../spoof-hardware.js');
+require('../../../js/shim-kernel32.js');
+const P = globalThis.Porthole;
+const values = [10.8, 9.2, 11.1];
+const kernel = new P.Kernel32Shim({ clock: new P.MonotonicClock({ now: () => values.shift() }) });
+assert.equal(kernel.GetTickCount64(), 10);
+assert.equal(kernel.GetTickCount64(), 10, 'relógio não pode retroceder');
+assert.equal(kernel.GetTickCount64(), 11);
+console.log('  ✓ autofix kernel32!GetTickCount64 preserva monotonicidade de 64 bits');
