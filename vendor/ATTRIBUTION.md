@@ -141,3 +141,10 @@ not host hardware enumeration and not a successful midiOutOpen emulation.
 midiOutSetVolume additionally follows Wine `winmm.c:571-581` under the same
 copyright/license, dispatching to the no-driver Host profile and returning
 MMSYSERR_INVALHANDLE rather than claiming successful volume/playback.
+
+### SYSTEM_INFO mapping
+
+`kernel32/sysinfo.rs`: Wine `dlls/kernelbase/memory.c:158-203,237-252`, SHA
+0738d528db522f52d9d75f2aec712688dd31d1d2, Copyright 1997 Alexandre Julliard,
+LGPL-2.1-or-later. NT hardware queries replaced with documented virtual Win32
+x86 single-vCPU ABI profile. This is not physical host hardware enumeration.

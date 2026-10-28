@@ -40,6 +40,7 @@ jobs:
           node scripts/extract-wine-api.mjs win32u NtUserSetWindowPlacement
           node scripts/extract-wine-api.mjs winmm midiOutGetNumDevs
           node scripts/extract-wine-api.mjs winmm midiOutSetVolume
+          node scripts/extract-wine-api.mjs kernelbase GetSystemInfo
           node scripts/extract-wine-api.mjs kernelbase CreateMutexA
           node scripts/extract-wine-api.mjs dplayx DirectPlayEnumerateA
           node scripts/extract-wine-api.mjs user32 ComboWndProc_common

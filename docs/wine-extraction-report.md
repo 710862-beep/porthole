@@ -397,3 +397,23 @@ Wine winmm.c:571-581 retorna MMSYSERR_INVALHANDLE se MMDRV_Get não achar o
 handle/device. Adaptado esse despacho ao Host: neste perfil sem driver/handles,
 volume retorna **5 (erro)**, não sucesso nem áudio fictício. Fixture consulta
 um mapper sem dispositivo e exige erro; mixer/MIDI/playback continuam ausentes.
+
+## Resultado 40765238326: inicialização MIDI passou; consulta de CPU causal
+
+https://github.com/710862-beep/porthole/actions/runs/40765238326
+Fonte fc1b00f: controles PASS/5 PEs PASS, build e 24 testes Rust PASS. Sem MIDI
+fictício: count=0/volume=INVALHANDLE. DOOM leu WAD, destruiu console, criou
+janela nova 0x2f e chegou a **GetSystemInfo** (ip=0x43a565); 268 presents/86
+mudanças, input/loop/observação ainda false, NÃO gameplay.
+
+Mineração: kernelbase/memory.c GetSystemInfo:237-252 → fill_system_info:158-203,
+NtQuerySystemInformation(SystemBasicInformation/SystemCpuInformation) e
+set_ntstatus (fronteiras NT). Tradução/revisão manual: layout Win32 36 bytes,
+union arch/reserved DWORD0, page4/range8,12/mask16/count20/type24/gran28/
+level32/rev34. Ponteiro validado antes de escrita; void ABI, sem callback/USER
+Driver. NT query substituída pelo perfil **virtual** Intel/Pentium (CPUID base
+upstream se identifica Pentium), 1 vCPU/mask1, page4KiB/gran64KiB/range de
+compatibilidade Win32 64KiB..0x7ffeffff. Não detecta CPU/RAM físicos nem promete
+proteções/reservas completas (VirtualAlloc upstream ainda parcial). Fixture PE
+confere campos e offsets; CI pendente. Licença/origem no módulo, inclusão no
+bundle/patch e aquisição/extração CI; não se alega portar NT ou kernel do Wine.
