@@ -35,6 +35,16 @@ def download(run):
     if len(manifests) != 1:
         raise ValueError('No unique API transfer manifest; annotations saved for diagnosis')
     manifest = manifests[0]
+    if 'manifestBlob' in manifest:
+        pointer=manifest
+        if not re.fullmatch(r'[0-9a-f]{40}',pointer['manifestBlob']) or not 0<pointer['bytes']<=1048576:
+            raise ValueError('Invalid manifest pointer')
+        blob=api(f"repos/{repo}/git/blobs/{pointer['manifestBlob']}")
+        if blob['encoding']!='base64': raise ValueError('Unexpected manifest encoding')
+        data=base64.b64decode(blob['content'])
+        if len(data)!=pointer['bytes'] or hashlib.sha256(data).hexdigest()!=pointer['sha256'] or hashlib.sha1(f'blob {len(data)}\0'.encode()+data).hexdigest()!=pointer['manifestBlob']:
+            raise ValueError('Manifest integrity mismatch')
+        manifest=json.loads(data)
     if manifest['sourceSha'] != metadata['head_sha'] or str(manifest['runId']) != run:
         raise ValueError('Transfer manifest source/run mismatch')
     for item in manifest['files']:

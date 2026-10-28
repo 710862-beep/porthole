@@ -29,5 +29,9 @@ for path in paths:
     manifest['files'].append({'path': str(path), 'blob': blob['sha'],
                              'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
 Path('artifacts/api-transfer.json').write_text(json.dumps(manifest, indent=2) + '\n')
-# Small, structured annotation; downloaders must verify source SHA and hashes.
-print('::notice title=Porthole API transfer::' + json.dumps(manifest, separators=(',', ':')))
+# Annotations truncate at 4096 chars: publish the full manifest as a Git blob.
+data=json.dumps(manifest,separators=(',', ':')).encode()
+payload=json.dumps({'encoding':'base64','content':base64.b64encode(data).decode()})
+result=subprocess.run(['gh','api','--method','POST',f"repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",'--input','-'],input=payload,text=True,check=True,capture_output=True)
+pointer={'manifestBlob':json.loads(result.stdout)['sha'],'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+print('::notice title=Porthole API transfer::'+json.dumps(pointer,separators=(',', ':')))

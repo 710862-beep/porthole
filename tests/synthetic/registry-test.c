@@ -10,6 +10,7 @@ static void dplayMetadataProbe(void){
  typedef HRESULT(WINAPI*Create)(void*,void**,void*);Create create=(Create)GetProcAddress(lib,"DirectPlayCreate");void*object=(void*)1;REQUIRE(create&&create(0,&object,0)==(HRESULT)0x887700fa&&object==0);
 }
 void mainCRTStartup(void) {
+    HMODULE mm=LoadLibraryA("winmm.dll");UINT(WINAPI*midiCount)(void)=(UINT(WINAPI*)(void))GetProcAddress(mm,"midiOutGetNumDevs");REQUIRE(mm&&midiCount&&midiCount()==0); /* configured no-driver profile, not working MIDI */
     dplayMetadataProbe();
     FILETIME original={0,0},local,back;SYSTEMTIME oldEpoch;
     REQUIRE(FileTimeToSystemTime(&original,&oldEpoch)&&oldEpoch.wYear==1601&&oldEpoch.wMonth==1&&oldEpoch.wDay==1);

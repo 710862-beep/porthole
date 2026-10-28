@@ -63,3 +63,10 @@ test('registry provider enumeration snapshots only immediate children',async()=>
  assert.deepEqual(call(b,'enumKeys',root.handle,'').names,['Alpha','Beta']);
  assert.equal(call(b,'enumKeys',0x1234,'').status,6);
 });
+
+test('resized surfaces bind the requested HWND, not the last created window',()=>{
+ const p=proc();const first={canvas:{id:1},drawImage(){}};const last={canvas:{id:2},drawImage(){}};
+ p.windows=[{hwnd:1,context:first},{hwnd:2,context:last}];
+ assert.equal(p.screen(1).canvas,first.canvas);assert.equal(p.screen(2).canvas,last.canvas);
+ assert.throws(()=>p.screen(999),/HWND desconhecido/);
+});

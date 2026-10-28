@@ -95,7 +95,12 @@
      fn log(this: &JsHost, level: u8, msg: String);
  
      #[wasm_bindgen(method)]
-@@ -274,8 +309,15 @@
+@@ -270,12 +305,19 @@
+     fn create_window(this: &JsHost, hwnd: u32) -> JsWindow;
+ 
+     #[wasm_bindgen(method)]
+-    fn screen(this: &JsHost) -> web_sys::CanvasRenderingContext2d;
++    fn screen(this: &JsHost,hwnd:u32) -> web_sys::CanvasRenderingContext2d;
  }
  
  impl win32::Host for JsHost {
@@ -144,7 +149,12 @@
      }
  
      fn log(&self, buf: &[u8]) {
-@@ -337,11 +397,20 @@
+@@ -333,15 +393,24 @@
+         hwnd: u32,
+         opts: &win32::SurfaceOptions,
+     ) -> Box<dyn win32::Surface> {
+-        Box::new(WebSurface::new(hwnd, opts, JsHost::screen(self)))
++        Box::new(WebSurface::new(hwnd, opts, JsHost::screen(self,hwnd)))
      }
  
      fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
@@ -296,8 +306,12 @@
      Quit,
      Mouse(MouseMessage),
  }
-@@ -129,6 +132,14 @@
+@@ -127,8 +130,18 @@
+ }
+ 
  pub trait Host {
++    /// Installed WinMM MIDI output driver devices; default profile has no driver.
++    fn midi_output_count(&self)->u32{0}
      /// Get an arbitrary time counter, measured in milliseconds.
      fn ticks(&self) -> u32;
 +    /// Porthole synchronous overlay bridge. Missing hosts fail, never succeed silently.
@@ -311,7 +325,7 @@
      fn system_time(&self) -> chrono::DateTime<chrono::Local>;
  
      /// Get the next pending message, or None if no message waiting.
-@@ -142,6 +153,8 @@
+@@ -142,6 +155,8 @@
  
      /// Retrieves the absolute (Windows-style) path of the current working directory.
      fn current_dir(&self) -> Result<WindowsPathBuf, ERROR>;
@@ -3079,6 +3093,28 @@
 +  current=w.parent;
 + }false
 +}
+--- /dev/null
++++ b/win32/src/winapi/winmm/midi.rs
+@@ -0,0 +1,10 @@
++//! Wine winmm/winmm.c:287-290 -> MMDRV_GetNum, lolvldrv.c:75+.
++//! SHA 0738d528db522f52d9d75f2aec712688dd31d1d2; LGPL-2.1-or-later.
++//! Copyright 1993 Martin Ayotte; 1998-2002 Eric Pouech.
++//! Query installed output devices, NOT successful MIDI playback. This Host
++//! profile installs no WinMM MIDI driver (as existing wave output is disabled).
++//! No physical WebMIDI permission/devices or software synth are fabricated.
++use crate::Machine;
++const TRACE_CONTEXT:&str="winmm/midi";
++#[win32_derive::dllexport]
++pub fn midiOutGetNumDevs(machine:&mut Machine)->u32{machine.host.midi_output_count()}
+--- a/win32/src/winapi/winmm/mod.rs
++++ b/win32/src/winapi/winmm/mod.rs
+@@ -9,3 +9,6 @@
+ pub use misc::*;
+ pub use time::*;
+ pub use wave::*;
++
++mod midi;
++pub use midi::*;
 --- /dev/null
 +++ b/win32/src/winapi/ws2_32.rs
 @@ -0,0 +1,126 @@

@@ -9,3 +9,6 @@ mod wave;
 pub use misc::*;
 pub use time::*;
 pub use wave::*;
+
+mod midi;
+pub use midi::*;

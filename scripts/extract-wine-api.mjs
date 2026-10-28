@@ -39,7 +39,7 @@ export function definitions(source){
  return result;
 }
 export function extract(dll='user32',entry='CreateDialogParamA'){
- const sourceFile={dplayx:'dplay.c',win32u:'window.c',user32:entry==='ComboWndProc_common'?'combo.c':entry==='LISTBOX_FindString'||entry==='LISTBOX_InsertString'?'listbox.c':'dialog.c',comctl32:'updown.c',advapi32:'advapi.c',kernelbase:entry==='CreateMutexA'?'sync.c':entry==='WideCharToMultiByte'?'locale.c':['SetCurrentDirectoryA','FindFirstFileA','FileTimeToLocalFileTime'].includes(entry)?'file.c':'process.c'}[dll];if(!sourceFile)throw Error('Unsupported Wine DLL/source root');
+ const sourceFile={winmm:'winmm.c',dplayx:'dplay.c',win32u:'window.c',user32:entry==='ComboWndProc_common'?'combo.c':entry==='LISTBOX_FindString'||entry==='LISTBOX_InsertString'?'listbox.c':'dialog.c',comctl32:'updown.c',advapi32:'advapi.c',kernelbase:entry==='CreateMutexA'?'sync.c':entry==='WideCharToMultiByte'?'locale.c':['SetCurrentDirectoryA','FindFirstFileA','FileTimeToLocalFileTime'].includes(entry)?'file.c':'process.c'}[dll];if(!sourceFile)throw Error('Unsupported Wine DLL/source root');
  if(!/^[A-Za-z_]\w*$/.test(entry))throw Error('Invalid function');
  const commit=fetchWine(),file=`dlls/${dll}/${sourceFile}`,source=fs.readFileSync(`vendor/wine-source/${file}`,'utf8'),defs=definitions(source);
  if(!defs.has(entry))throw Error(`Definition not found: ${entry}`);

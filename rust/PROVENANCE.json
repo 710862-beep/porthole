@@ -52,6 +52,8 @@
     "win32/src/winapi/user32/raw_input.rs",
     "win32/src/winapi/user32/updown.rs",
     "win32/src/winapi/user32/window.rs",
+    "win32/src/winapi/winmm/midi.rs",
+    "win32/src/winapi/winmm/mod.rs",
     "win32/src/winapi/ws2_32.rs",
     "x86/src/ops/control.rs",
     "x86/src/x86.rs"
@@ -95,7 +97,7 @@
     "promotable": false,
     "promoted": false
   },
-  "patchSha256": "ee4c61940c5ae1131eb6092e188446d90d981d421ab5d42d7619358f3e69a2eb",
+  "patchSha256": "428693bf7d36196a7942d86de78a47128ea2173dc2161822ffa63a9c42edfc50",
   "fontSource": {
     "repository": "dhepper/font8x8",
     "path": "font8x8_basic.h",
@@ -121,7 +123,8 @@
       "win32/src/winapi/kernel32/mutex.rs and mutex integration in sync/init/misc",
       "win32/src/winapi/dplay.rs",
       "win32/src/winapi/user32/controls.rs: combo insert/search/item-data cases",
-      "win32/src/winapi/user32/placement.rs"
+      "win32/src/winapi/user32/placement.rs",
+      "win32/src/winapi/winmm/midi.rs"
     ],
     "notices": "vendor/ATTRIBUTION.md; LICENSE.Wine",
     "status": "PARTIAL_ADAPTATION_NOT_FULL_WINE"

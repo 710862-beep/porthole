@@ -305,7 +305,7 @@ extern "C" {
     fn create_window(this: &JsHost, hwnd: u32) -> JsWindow;
 
     #[wasm_bindgen(method)]
-    fn screen(this: &JsHost) -> web_sys::CanvasRenderingContext2d;
+    fn screen(this: &JsHost,hwnd:u32) -> web_sys::CanvasRenderingContext2d;
 }
 
 impl win32::Host for JsHost {
@@ -393,7 +393,7 @@ impl win32::Host for JsHost {
         hwnd: u32,
         opts: &win32::SurfaceOptions,
     ) -> Box<dyn win32::Surface> {
-        Box::new(WebSurface::new(hwnd, opts, JsHost::screen(self)))
+        Box::new(WebSurface::new(hwnd, opts, JsHost::screen(self,hwnd)))
     }
 
     fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {

@@ -128,3 +128,12 @@ LGPL-2.1-or-later. A 44-byte x86 WINDOWPLACEMENT is checked/copied; a single
 virtual work area replaces monitor/server queries. Normal position/size and
 visibility reach real Host DOM methods; guest MOVE/SIZE/SHOWWINDOW callbacks
 remain real. Min/max/DPI/taskbar/asynchronous placement explicitly unsupported.
+
+### Wine-derived MIDI capability query, no-driver profile
+
+`winmm/midi.rs` adapts `dlls/winmm/winmm.c:287-290` →
+`dlls/winmm/lolvldrv.c:75-82`, Copyright 1993 Martin Ayotte and 1998-2002
+Eric Pouech, LGPL-2.1-or-later. Driver device count comes from the Host profile;
+this build installs **zero** WinMM MIDI drivers, consistent with disabled wave
+output. This is a truthful no-device configuration, not working MIDI/music,
+not host hardware enumeration and not a successful midiOutOpen emulation.

@@ -549,9 +549,9 @@
       return hostWindow;
     }
 
-    screen() {
-      const record = this.windows[this.windows.length - 1];
-      if (!record) throw new Error('DirectDraw/GDI solicitou screen() antes de CreateWindow.');
+    screen(hwnd=0) {
+      const record = hwnd ? this.windows.find(w=>w.hwnd===hwnd) : this.windows[this.windows.length - 1];
+      if (!record) throw new Error('DirectDraw/GDI solicitou surface para HWND desconhecido: '+hwnd);
       if (!record.context) {
         record.context = record.canvas.getContext('2d');
         if (!record.context) throw new Error('Canvas 2D indisponível para screen().');

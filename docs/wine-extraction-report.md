@@ -359,3 +359,27 @@ GetWindowRect top-level usa posição armazenada; transformação child→screen
 permanece parcial. Full ShowWindow/ativação/oclusão não está sendo reivindicado.
 Screenshot real do Chromium agora é transportado como evidência diagnóstica;
 uma imagem do launcher não substitui o gate de gameplay.
+
+## Resultado 40762957982: core DOOM95 começou; regressão visual detectada
+
+https://github.com/710862-beep/porthole/actions/runs/40762957982
+Fonte 9fbf0f5: build/24 testes win32 e 5/5 PEs PASS. Placement roundtrip
+executou/exit0, mas **controles FAIL por pixels**: glyph=0/selection=0,
+mesmo stdout SUCCESS. Não aceitei exit0 como sucesso de renderização.
+Causa: recriar surface do HWND antigo chamava Host.screen() que escolhia
+**a última janela criada**, incluindo uma já destruída. Bind Rust/JS agora
+passa o HWND explicitamente e resolve sua canvas; gate pixel original mantido.
+Teste Node com duas janelas rejeita redirecionamento e HWND desconhecido.
+
+DOOM95 passou do launcher para o core em ip=0x41abf8 e falhou em
+**winmm!midiOutGetNumDevs**; 256 presents/86 mudanças, ainda sem gameplay.
+Screenshot real mostra launcher, não prova de jogo. Mineração Wine:
+winmm.c query → lolvldrv.c contador após init de drivers. Perfil atual tem
+zero drivers MIDI (wave já desabilitado upstream); retorno consulta capacidade
+Host sem inventar placa/synth/driver ou playback. Áudio continua indisponível.
+
+O manifesto API cresceu além do limite 4096 bytes de annotation. Recuperadas
+somente entradas completas verificadas por Git/SHA256 (log final omitido), sem
+fingir transporte íntegro. Corrigido protocolo: manifesto completo em Git blob,
+annotation carrega apenas ponteiro/hash/tamanho; downloader verifica tudo e
+source/run. Próximo CI deve validar tanto pixels quanto transporte corrigidos.

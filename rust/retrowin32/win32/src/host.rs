@@ -130,6 +130,8 @@ pub struct Message {
 }
 
 pub trait Host {
+    /// Installed WinMM MIDI output driver devices; default profile has no driver.
+    fn midi_output_count(&self)->u32{0}
     /// Get an arbitrary time counter, measured in milliseconds.
     fn ticks(&self) -> u32;
     /// Porthole synchronous overlay bridge. Missing hosts fail, never succeed silently.
