@@ -25,6 +25,7 @@
     "win32/src/winapi/comctl32.rs",
     "win32/src/winapi/dplay.rs",
     "win32/src/winapi/error.rs",
+    "win32/src/winapi/gdi32/dc.rs",
     "win32/src/winapi/kernel32/dll.rs",
     "win32/src/winapi/kernel32/env.rs",
     "win32/src/winapi/kernel32/file.rs",
@@ -98,7 +99,7 @@
     "promotable": false,
     "promoted": false
   },
-  "patchSha256": "e50874356c40396f4f2c562c5dc9faba5782d346957bbdbab5586d3a926f62ce",
+  "patchSha256": "1819944dcff7ca7dd297d64122e55f2b287701e6d4e6424cb9f04857035c363f",
   "fontSource": {
     "repository": "dhepper/font8x8",
     "path": "font8x8_basic.h",

@@ -44,6 +44,9 @@ jobs:
           node scripts/extract-wine-api.mjs winmm midiOutGetNumDevs
           node scripts/extract-wine-api.mjs winmm midiOutSetVolume
           node scripts/extract-wine-api.mjs kernelbase GetSystemInfo
+          node scripts/extract-wine-api.mjs gdi32 GetDeviceCaps
+          node scripts/extract-wine-api.mjs win32u NtGdiGetDeviceCaps
+          node scripts/extract-wine-api.mjs win32u nulldrv_GetDeviceCaps
           node scripts/extract-wine-api.mjs kernelbase CreateMutexA
           node scripts/extract-wine-api.mjs dplayx DirectPlayEnumerateA
           node scripts/extract-wine-api.mjs user32 ComboWndProc_common

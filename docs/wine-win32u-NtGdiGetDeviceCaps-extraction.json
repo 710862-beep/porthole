@@ -1,0 +1,78 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/win32u/dc.c",
+  "sourceSha256": "68cfbefd210c67216bb1c41e7e75847286389401d36bdb7ea8f33926dc813dc3",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1993 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "NtGdiGetDeviceCaps",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "NtGdiGetDeviceCaps",
+      "startLine": 877,
+      "endLine": 889,
+      "calls": [
+        "GET_DC_PHYSDEV",
+        "get_dc_ptr",
+        "pGetDeviceCaps",
+        "release_dc_ptr"
+      ],
+      "source": "dlls/win32u/dc.c"
+    },
+    {
+      "name": "get_dc_ptr",
+      "startLine": 289,
+      "endLine": 313,
+      "calls": [
+        "GDI_ReleaseObj",
+        "GetCurrentThreadId",
+        "InterlockedCompareExchange",
+        "InterlockedIncrement",
+        "WARN",
+        "get_dc_obj"
+      ],
+      "source": "dlls/win32u/dc.c"
+    },
+    {
+      "name": "release_dc_ptr",
+      "startLine": 319,
+      "endLine": 327,
+      "calls": [
+        "GetCurrentThreadId",
+        "InterlockedDecrement",
+        "assert"
+      ],
+      "source": "dlls/win32u/dc.c"
+    },
+    {
+      "name": "get_dc_obj",
+      "startLine": 67,
+      "endLine": 84,
+      "calls": [
+        "GDI_ReleaseObj",
+        "RtlSetLastWin32Error",
+        "get_any_obj_ptr"
+      ],
+      "source": "dlls/win32u/dc.c"
+    }
+  ],
+  "boundaries": [
+    "GDI_ReleaseObj",
+    "GET_DC_PHYSDEV",
+    "GetCurrentThreadId",
+    "InterlockedCompareExchange",
+    "InterlockedDecrement",
+    "InterlockedIncrement",
+    "RtlSetLastWin32Error",
+    "WARN",
+    "assert",
+    "get_any_obj_ptr",
+    "pGetDeviceCaps"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

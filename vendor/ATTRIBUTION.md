@@ -148,3 +148,13 @@ MMSYSERR_INVALHANDLE rather than claiming successful volume/playback.
 0738d528db522f52d9d75f2aec712688dd31d1d2, Copyright 1997 Alexandre Julliard,
 LGPL-2.1-or-later. NT hardware queries replaced with documented virtual Win32
 x86 single-vCPU ABI profile. This is not physical host hardware enumeration.
+
+### GDI device capabilities
+
+The GetDeviceCaps section in `gdi32/dc.rs` adapts Wine SHA
+0738d528db522f52d9d75f2aec712688dd31d1d2, gdi32/dc.c:621-625,
+win32u/dc.c:877-889 and win32u/driver.c:147-288. Copyright 1993/1994
+Alexandre Julliard, 1997 Bertho A. Stultiens, 1999 Huw D M Davies,
+2021 Jacek Caban (gdi32); 1993 Alexandre Julliard (win32u dc);
+1994 Bob Amstadt, 1996/2001 Alexandre Julliard (driver). LGPL-2.1-or-later.
+PHYSDEV/display lookup replaced by the documented virtual Canvas profile.

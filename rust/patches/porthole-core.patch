@@ -807,6 +807,47 @@
      ACCESS_DENIED = 5,
      INVALID_HANDLE = 6,
      INVALID_ACCESS = 12,
+--- a/win32/src/winapi/gdi32/dc.rs
++++ b/win32/src/winapi/gdi32/dc.rs
+@@ -124,18 +124,31 @@
+     BLTALIGNMENT = 119,
+ }
+ 
++// Wine-derived capability dispatch, LGPL-2.1-or-later.
++// Wine 0738d528db522f52d9d75f2aec712688dd31d1d2:
++// gdi32/dc.c:621-625 (Julliard 1993/94, Stultiens 1997, Davies 1999,
++// Caban 2021); win32u/dc.c:877-889 (Julliard 1993);
++// win32u/driver.c:147-288 (Amstadt 1994, Julliard 1996/2001).
++// PHYSDEV replaced by the existing single 640x480 RGBA Canvas display profile.
++// Conservative capabilities: no fabricated hardware acceleration or printer.
+ #[win32_derive::dllexport]
+ pub fn GetDeviceCaps(
+-    _machine: &mut Machine,
++    machine: &mut Machine,
+     hdc: HDC,
+     index: Result<GetDeviceCapsArg, u32>,
+ ) -> u32 {
+-    match index.unwrap() {
+-        GetDeviceCapsArg::NUMCOLORS => -1i32 as u32, // true color
+-        GetDeviceCapsArg::HORZRES => 640,
+-        GetDeviceCapsArg::VERTRES => 480,
+-        GetDeviceCapsArg::RASTERCAPS => 0, // none
+-        _ => unimplemented!(),
++    if machine.state.gdi32.dcs.get(hdc).is_none() { return 0; }
++    let Ok(index)=index else { return 0; };
++    match index {
++        GetDeviceCapsArg::TECHNOLOGY => 1, // DT_RASDISPLAY
++        GetDeviceCapsArg::NUMCOLORS => u32::MAX, // true color, Wine bpp>4
++        GetDeviceCapsArg::HORZRES | GetDeviceCapsArg::DESKTOPHORZRES => 640,
++        GetDeviceCapsArg::VERTRES | GetDeviceCapsArg::DESKTOPVERTRES => 480,
++        GetDeviceCapsArg::BITSPIXEL => 32, // RGBA backing pixels
++        GetDeviceCapsArg::PLANES => 1,
++        GetDeviceCapsArg::COLORRES => 24, // RGB precision excludes alpha
++        GetDeviceCapsArg::LOGPIXELSX | GetDeviceCapsArg::LOGPIXELSY => 96,
++        _ => 0, // unsupported capability: Wine's conservative fallback, not panic
+     }
+ }
+ 
 --- a/win32/src/winapi/kernel32/dll.rs
 +++ b/win32/src/winapi/kernel32/dll.rs
 @@ -181,8 +181,10 @@

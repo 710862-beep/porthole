@@ -1,0 +1,50 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/gdi32/dc.c",
+  "sourceSha256": "ac37f1348740cbc8c5083b62deb24f1a88a5b510b8344c3e8dc6b148ac138914",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1993, 1994 Alexandre Julliard",
+    "Copyright 1997 Bertho A. Stultiens",
+    "Copyright 2021 Jacek Caban for CodeWeavers"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "GetDeviceCaps",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "GetDeviceCaps",
+      "startLine": 621,
+      "endLine": 626,
+      "calls": [
+        "METADC_GetDeviceCaps",
+        "NtGdiGetDeviceCaps",
+        "get_dc_attr",
+        "is_meta_dc"
+      ],
+      "source": "dlls/gdi32/dc.c"
+    },
+    {
+      "name": "get_dc_attr",
+      "startLine": 121,
+      "endLine": 131,
+      "calls": [
+        "SetLastError",
+        "gdi_handle_type",
+        "get_gdi_client_ptr"
+      ],
+      "source": "dlls/gdi32/dc.c"
+    }
+  ],
+  "boundaries": [
+    "METADC_GetDeviceCaps",
+    "NtGdiGetDeviceCaps",
+    "SetLastError",
+    "gdi_handle_type",
+    "get_gdi_client_ptr",
+    "is_meta_dc"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

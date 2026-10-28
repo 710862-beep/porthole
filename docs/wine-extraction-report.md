@@ -417,3 +417,21 @@ compatibilidade Win32 64KiB..0x7ffeffff. Não detecta CPU/RAM físicos nem prome
 proteções/reservas completas (VirtualAlloc upstream ainda parcial). Fixture PE
 confere campos e offsets; CI pendente. Licença/origem no módulo, inclusão no
 bundle/patch e aquisição/extração CI; não se alega portar NT ou kernel do Wine.
+
+## CI 40766176358: SYSTEM_INFO passou; panic GDI causal confirmado
+
+https://github.com/710862-beep/porthole/actions/runs/40766176358
+Fonte ac5f05e: controles PASS, DOOM268 presents/86 mudanças, sem gameplay.
+GetSystemInfo executou; falha seguinte não é IAT: panic Rust real em
+`gdi32/dc.rs:138` ao consultar BITSPIXEL (12). Stack/log transportados íntegros.
+
+Extração e revisão manual: gdi32 GetDeviceCaps:621-625 → win32u
+NtGdiGetDeviceCaps:877-889 → PHYSDEV pGetDeviceCaps →
+nulldrv_GetDeviceCaps:147-288. Leitura completa dos switches; fronteiras de
+DC/driver/display/DPI/math/NT enumeradas nos três inventários, não portadas
+como kernel. A adaptação valida HDC e substitui PHYSDEV pelo display Canvas
+RGBA já existente: bpp32/planes1/RGB24/colors=-1/DPI96, desktop640x480.
+Não anuncia aceleração, capacidades de impressora, física do monitor ou refresh
+medido. Índices sem implementação retornam0 (fallback Wine), não panic.
+Sem ponteiro guest/callback novo, stdcall 2 argumentos/retorno INT32 preservado.
+Fixture confere campos, índice desconhecido e HDC inválido. CI pendente.
