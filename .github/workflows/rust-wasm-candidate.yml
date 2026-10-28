@@ -27,7 +27,8 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: toolcache
         with:
           path: |
             ~/.cargo/registry
@@ -44,6 +45,14 @@ jobs:
           if ! command -v wasm-bindgen || ! wasm-bindgen --version | grep -Fx 'wasm-bindgen 0.2.92'; then
             cargo install wasm-bindgen-cli --version 0.2.92 --locked
           fi
+      - uses: actions/cache/save@v4
+        if: always() && steps.toolcache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-bindgen*
+          key: porthole-ubuntu24-rust81-bindgen92-${{ hashFiles('rust/retrowin32/Cargo.lock') }}
       - name: Rebuild Wasm
         id: rebuild
         run: bash scripts/rebuild-wasm.sh

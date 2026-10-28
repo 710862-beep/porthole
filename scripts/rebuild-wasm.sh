@@ -13,6 +13,7 @@ cargo --version
 wasm-bindgen --version | grep -Fx 'wasm-bindgen 0.2.92'
 source=rust/retrowin32
 # Force regeneration: changing asyncness/exports changes guest stdcall DLLs too.
+cargo test --manifest-path "$source/Cargo.toml" --locked -p win32-derive
 make -B -C "$source/win32"
 cargo test --manifest-path "$source/Cargo.toml" --locked -p x86
 cargo test --manifest-path "$source/Cargo.toml" --locked -p win32 --features x86-emu

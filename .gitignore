@@ -11,3 +11,6 @@ tests/synthetic/*.exe
 tests/synthetic/*.pdb
 tests/synthetic/*.lib
 tests/synthetic/BUILD.json
+
+__pycache__/
+*.pyc

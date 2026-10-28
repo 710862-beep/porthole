@@ -9,9 +9,11 @@ use quote::quote;
 use std::{fmt::Write, path::Path};
 
 fn write_if_changed(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    let old_contents = std::fs::read(path)?;
-    if old_contents == contents {
-        return Ok(());
+    match std::fs::read(path) {
+        Ok(old_contents) if old_contents == contents => return Ok(()),
+        Ok(_) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error.into()),
     }
     std::fs::write(path, contents)?;
     Ok(())
@@ -284,4 +286,22 @@ fn main() -> anyhow::Result<()> {
     std::fs::write(&args.builtins, &builtins_module)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod porthole_generator_tests {
+    use super::*;
+    #[test]
+    fn clean_checkout_creates_missing_generated_files() {
+        let dir = std::env::temp_dir().join(format!("porthole-derive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("new.s");
+        if path.exists() { std::fs::remove_file(&path).unwrap(); }
+        write_if_changed(&path, b"first").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        write_if_changed(&path, b"first").unwrap();
+        write_if_changed(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
