@@ -23,9 +23,13 @@
     "win32/src/str16.rs",
     "win32/src/winapi/advapi32.rs",
     "win32/src/winapi/comctl32.rs",
+    "win32/src/winapi/ddraw/caps.rs",
+    "win32/src/winapi/ddraw/ddraw1.rs",
+    "win32/src/winapi/ddraw/mod.rs",
     "win32/src/winapi/dplay.rs",
     "win32/src/winapi/error.rs",
     "win32/src/winapi/gdi32/dc.rs",
+    "win32/src/winapi/heap.rs",
     "win32/src/winapi/kernel32/dll.rs",
     "win32/src/winapi/kernel32/env.rs",
     "win32/src/winapi/kernel32/file.rs",
@@ -99,7 +103,7 @@
     "promotable": false,
     "promoted": false
   },
-  "patchSha256": "7ecef475b53bac105be72bf253b7257f68e1ed47587c5f115068a96af51c9737",
+  "patchSha256": "5df3aafc2fda10d137687cd6e393f5e82bb2dfb3ebb793983c79c8fd257b8eb1",
   "fontSource": {
     "repository": "dhepper/font8x8",
     "path": "font8x8_basic.h",
@@ -127,7 +131,8 @@
       "win32/src/winapi/user32/controls.rs: combo insert/search/item-data cases",
       "win32/src/winapi/user32/placement.rs",
       "win32/src/winapi/winmm/midi.rs",
-      "win32/src/winapi/kernel32/sysinfo.rs"
+      "win32/src/winapi/kernel32/sysinfo.rs",
+      "win32/src/winapi/ddraw/caps.rs"
     ],
     "notices": "vendor/ATTRIBUTION.md; LICENSE.Wine",
     "status": "PARTIAL_ADAPTATION_NOT_FULL_WINE"

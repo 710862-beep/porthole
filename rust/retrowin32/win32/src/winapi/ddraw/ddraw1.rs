@@ -33,7 +33,7 @@ pub mod IDirectDraw {
         EnumDisplayModes: ok,
         EnumSurfaces: todo,
         FlipToGDISurface: todo,
-        GetCaps: todo,
+        GetCaps: ok,
         GetDisplayMode: todo,
         GetFourCCCodes: todo,
         GetGDISurface: todo,
@@ -46,6 +46,9 @@ pub mod IDirectDraw {
         SetDisplayMode: ok,
         WaitForVerticalBlank: (IDirectDraw7::WaitForVerticalBlank),
     ];
+
+    #[win32_derive::dllexport]
+    pub fn GetCaps(machine:&mut Machine,_this:u32,driver:u32,hel:u32)->u32{ddraw::caps::get_caps(machine,driver,hel)}
 
     pub fn new(machine: &mut Machine) -> u32 {
         let ddraw = &mut machine.state.ddraw;

@@ -13,6 +13,9 @@ pub struct Heap {
 }
 
 impl Heap {
+    /// Unallocated backing bytes, including space needed for allocation headers.
+    pub fn free_bytes(&self)->u32{self.freelist.iter().map(|n|n.size).sum()}
+
     pub fn new(addr: u32, size: u32) -> Self {
         let freelist = vec![FreeNode { addr, size }];
         Heap {

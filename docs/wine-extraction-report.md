@@ -449,3 +449,26 @@ ESP e 8 DWORDs validados da pilha; **não ignora INT3 nem continua execução**.
 Também completada revisão get_dc_attr:121-131: HDC inválido deve retornar0
 com ERROR_INVALID_HANDLE6, agora coberto pela fixture. Gameplay continua FAIL,
 268 presents/86 mudanças de startup, sem input/loop/observação completos.
+
+## CI 40767732211: causa da interrupção identificada sem a suprimir
+
+https://github.com/710862-beep/porthole/actions/runs/40767732211
+Fonte cf25a19: erro estruturado GUEST_DEBUG_BREAK ip=0x1d20e,
+ESP0x32c90, retorno0x43a091. Disassembly do PE original em0x43a08e:
+`call *0x2c(%edx)`; vtable IDirectDraw offset44/slot11 = **GetCaps**, marcado
+todo no backend. Portanto é o thunk de GetCaps, não SetCursor nem assert do
+jogo. A instrumentação preservou falha e forneceu evidência para corrigi-la.
+
+Mineração/revisão: ddraw.c ddraw1_GetCaps:1632-1639 → ddraw7_GetCaps:1524-1612,
+get_z_buffer_caps e fronteiras Wined3D/driver/heap/format; macro de cópia
+por tamanho em ddraw_private.h:734-745; layouts DX3/5/6/7 em include/ddraw.h.
+Adaptação remove dependência Wined3D/NT/GPU e consulta estado já existente:
+paleta CPU8bit/primary, superfícies/backbuffer/flip em memória de sistema,
+capacidade do heap reservado real4MiB e bytes livres reais do freelist. NÃO
+inventa VRAM física; heap é compartilhado com objetos. NÃO anuncia BLT genérico
+(rects/flags incompletos), colorfill (ainda TODO), 3D/overlay/stretch/FourCC.
+Driver e HEL seguem cópia Wine com tamanho do chamador preservado, limite380,
+sem alterar caudas DX3 ou canários. Ponteiros de ambos destinos validados antes
+de escrita; ambosNULL→E_INVALIDARG, HRESULT/stdcall/3 argumentos COM intactos.
+Fixture PE usa vtable real slot11 e confere capacidades, memória, dois tamanhos,
+HEL-only, ambosNULL e canários. Não constitui implementação completa DirectDraw.

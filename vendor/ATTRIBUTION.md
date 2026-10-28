@@ -158,3 +158,13 @@ Alexandre Julliard, 1997 Bertho A. Stultiens, 1999 Huw D M Davies,
 2021 Jacek Caban (gdi32); 1993 Alexandre Julliard (win32u dc);
 1994 Bob Amstadt, 1996/2001 Alexandre Julliard (driver). LGPL-2.1-or-later.
 PHYSDEV/display lookup replaced by the documented virtual Canvas profile.
+
+### DirectDraw device capability query
+
+`ddraw/caps.rs` adapts Wine SHA0738d528db522f52d9d75f2aec712688dd31d1d2,
+`dlls/ddraw/ddraw.c:1524-1639`, `ddraw_private.h:734-745`, DDCAPS layouts in
+`include/ddraw.h`, LGPL-2.1-or-later. Copyright 1997-2000 Marcus Meissner,
+1998-2000 Lionel Ulmer, 2000-2001 TransGaming Technologies Inc., 2006 Stefan
+Dösinger, 2008 Denver Gingerich, 2007-2008/2011/2013 Stefan Dösinger for
+CodeWeavers. Wined3D/physical hardware queries replaced by documented software
+surface/palette capabilities and actual reserved allocator/free-list sizes.

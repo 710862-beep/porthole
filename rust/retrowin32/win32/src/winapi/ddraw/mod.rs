@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
+mod caps;
 mod clipper;
 mod ddraw1;
 mod ddraw2;
