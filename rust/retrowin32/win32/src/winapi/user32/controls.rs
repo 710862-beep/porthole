@@ -93,7 +93,7 @@ pub fn paint(machine:&mut Machine,hwnd:HWND) {
             else if let Some(crate::winapi::gdi32::Object::Bitmap(image))=machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(c.image)) {
                 match image {
                     crate::winapi::gdi32::BitmapType::RGBA32(b)=>{let pixels=b.pixels.as_slice(machine.mem());for y in 0..b.height.min(height){for x in 0..b.width.min(width){if let Some(color)=pixels.get((y*b.width+x)as usize){let mut color=*color;color[3]=255;dot(x as i32,y as i32,color)}}}},
-                    crate::winapi::gdi32::BitmapType::Mono(b)=>{let pixels=b.pixels.as_slice(machine.mem());let stride=crate::winapi::bitmap::BitmapMono::stride(b.width);for y in 0..b.height.min(height){for x in 0..b.width.min(width){if let Some(byte)=pixels.get((y*stride+x/8)as usize){dot(x as i32,y as i32,if byte&(0x80>>(x%8))!=0{white}else{black});}}}}
+                    crate::winapi::gdi32::BitmapType::Mono(b)=>{let pixels=b.pixels.as_slice(machine.mem());let stride=crate::winapi::bitmap::BitmapMono::stride(b.width);for y in 0..b.height.min(height){for x in 0..b.width.min(width){if let Some(byte)=pixels.get((y*stride+x/8)as usize){dot(x as i32,y as i32,if byte&(0x80>>(x%8))!=0{white}else{[0,0,0,255]});}}}}
                 }
             }
         },

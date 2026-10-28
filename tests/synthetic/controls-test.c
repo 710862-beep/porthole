@@ -26,6 +26,8 @@ void mainCRTStartup(void){
  REQUIRE(SendMessageA(combo,CB_ADDSTRING,0,(LPARAM)"first")==0);REQUIRE(SendMessageA(combo,CB_SETCURSEL,0,0)==0);REQUIRE(SendMessageA(combo,CB_GETCURSEL,0,0)==0);
  SendMessageA(scroll,SBM_SETRANGE,0,10);SendMessageA(scroll,SBM_SETPOS,7,TRUE);REQUIRE(SendMessageA(scroll,SBM_GETPOS,0,0)==7);
  SendMessageA(progress,PBM_SETPOS,55,0);REQUIRE(SendMessageA(progress,PBM_GETPOS,0,0)==55);
+ HWND imageControl=CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_BITMAP,200,130,20,20,parent,0,0,0);REQUIRE(imageControl);HBITMAP image=CreateBitmap(8,8,1,1,0);REQUIRE(image);REQUIRE(SendMessageA(imageControl,STM_SETIMAGE,IMAGE_BITMAP,(LPARAM)image)==0);REQUIRE(SendMessageA(imageControl,STM_GETIMAGE,IMAGE_BITMAP,0)==(LRESULT)image);
+ REQUIRE(GetParent(button)==parent&&GetDlgCtrlID(button)==101);SetFocus(edit);REQUIRE(GetFocus()==edit);
  REQUIRE(UpdateWindow(parent));REQUIRE(UpdateWindow(button));REQUIRE(UpdateWindow(edit));REQUIRE(UpdateWindow(list));
  REQUIRE(DestroyWindow(edit));REQUIRE(!IsWindow(edit));REQUIRE(DestroyWindow(parent));REQUIRE(!IsWindow(button));
  SAY("SUCCESS COMMON_CONTROLS_STATE_MESSAGES_NOTIFICATIONS\n");ExitProcess(0);

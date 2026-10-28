@@ -27,6 +27,10 @@ pub fn RegCreateKeyA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>, 
     RegCreateKeyExA(machine, hKey, lpSubKey, 0, None, 0, 0, 0, phkResult, None)
 }
 #[win32_derive::dllexport]
+pub fn RegOpenKeyA(machine:&mut Machine,hKey:HKEY,lpSubKey:Option<&str>,phkResult:Option<&mut HKEY>)->u32 {
+    RegOpenKeyExA(machine,hKey,lpSubKey,0,0x02000000,phkResult)
+}
+#[win32_derive::dllexport]
 pub fn RegOpenKeyExA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>, ulOptions: u32, samDesired: u32, phkResult: Option<&mut HKEY>) -> u32 {
     if ulOptions != 0 { return 87; }
     let result = match phkResult { Some(p) => p, None => return 87 };

@@ -8,6 +8,9 @@ void mainCRTStartup(void) {
     REQUIRE(RegSetValueExA(key,"UserId",0,REG_DWORD,(BYTE*)&uid,sizeof(uid))==ERROR_SUCCESS);
     RegCloseKey(key);
     REQUIRE(RegOpenKeyExA(HKEY_CURRENT_USER,"Software\\Roblox\\Client",0,KEY_READ,&key)==ERROR_SUCCESS);
+    REQUIRE(RegCloseKey(key)==ERROR_SUCCESS);
+    REQUIRE(RegOpenKeyA(HKEY_CURRENT_USER,"Software\\Roblox\\Client",&key)==ERROR_SUCCESS);
+    HKEY missing;REQUIRE(RegOpenKeyA(HKEY_CURRENT_USER,"Software\\PortholeMissingKey",&missing)==ERROR_FILE_NOT_FOUND);
     DWORD type=0,size=sizeof(readback);
     REQUIRE(RegQueryValueExA(key,"AuthToken",0,&type,readback,&size)==ERROR_SUCCESS);
     REQUIRE(type==REG_BINARY && size==sizeof(token));
