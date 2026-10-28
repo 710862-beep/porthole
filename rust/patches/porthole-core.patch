@@ -1144,7 +1144,7 @@
 +pub use mutex::*;
 --- /dev/null
 +++ b/win32/src/winapi/kernel32/mutex.rs
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,63 @@
 +//! Wine-derived cooperative mutex objects. LGPL-2.1-or-later.
 +//! wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2:
 +//! kernelbase/sync.c:702-760,782-785; server/mutex.c:85-140,185-198.
@@ -1152,6 +1152,7 @@
 +//! ownership is a real emulated CPU/thread ID, not a host JS boolean/promise.
 +//! Object names are process-isolated; security descriptors/cross-process IPC
 +//! are not supported. Current scheduler polls waits cooperatively.
++const TRACE_CONTEXT: &str = "kernel32/mutex";
 +use crate::{Machine,winapi::types::{AnsiString,Str16}};
 +use std::{cell::RefCell,collections::{HashMap,HashSet},rc::{Rc,Weak}};
 +#[derive(Default)]struct MutexObject{owner:Option<u32>,count:u64,abandoned:bool}

@@ -5,6 +5,7 @@
 //! ownership is a real emulated CPU/thread ID, not a host JS boolean/promise.
 //! Object names are process-isolated; security descriptors/cross-process IPC
 //! are not supported. Current scheduler polls waits cooperatively.
+const TRACE_CONTEXT: &str = "kernel32/mutex";
 use crate::{Machine,winapi::types::{AnsiString,Str16}};
 use std::{cell::RefCell,collections::{HashMap,HashSet},rc::{Rc,Weak}};
 #[derive(Default)]struct MutexObject{owner:Option<u32>,count:u64,abandoned:bool}

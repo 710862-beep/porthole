@@ -267,3 +267,13 @@ release por não-owner, fechamento e abandono com thread real emulada.
 Dois testes Rust de estado/vida complementam, não substituem, o PE remoto.
 Novo candidato ainda precisa compilar/executar remotamente. Gameplay não
 validado; enumeração Combo 0x14a/0x14c também permanece parcial e diagnosticada.
+
+Run 40757211811 (477a8c1) repetiu 5/5 PEs/controles PASS e o mesmo mutex
+faltante; tar de fontes e LICENSE.Wine foram baixados/verificados (464 entradas,
+SOURCE_COMMIT correto, licença byte-idêntica). validate-wasm local PASS:
+1.989.372 bytes, SHA256 607bf084fc9e627aebb4d12da64aa19ff40ba788d856cff8bc7884f0317fde73,
+42 exports/68 imports. Isso valida integridade, não gameplay.
+
+Run 40758473786 (7436bdb) falhou no build nativo: módulo novo mutex.rs omitiu
+TRACE_CONTEXT exigido pelo macro dllexport (E0425). Corrigido o contexto de
+tracing; nenhuma semântica de mutex foi removida para fazer o build passar.
