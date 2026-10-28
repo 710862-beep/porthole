@@ -55,3 +55,11 @@ test('directory snapshot enumerates only immediate authorized cached children',(
  const p=proc();p._registerFile('C:\\Tests\\Game.WAD',new Uint8Array([1,2,3]));p._registerFile('C:\\Tests\\Nested\\Hidden.WAD',new Uint8Array([1]));
  const snapshot=JSON.parse(p.read_dir(''));assert.equal(snapshot.status,0);assert.equal(snapshot.entries.find(e=>e.name==='Game.WAD').size,3);assert.equal(snapshot.entries.find(e=>e.name==='Nested').kind,'directory');assert.ok(!snapshot.entries.some(e=>e.name==='Hidden.WAD'));assert.equal(JSON.parse(p.read_dir('D:\\Denied')).status,5);assert.equal(JSON.parse(p.read_dir('missing')).status,3);assert.equal(JSON.parse(p.read_dir('Game.WAD')).status,267);
 });
+
+test('registry provider enumeration snapshots only immediate children',async()=>{
+ const b=new P.GuestRegistryBridge(store(memory()));await b.ready();
+ const root=call(b,'create',0x80000002,'Software\\Microsoft\\DirectPlay\\Service Providers');
+ call(b,'create',root.handle,'Alpha');call(b,'create',root.handle,'Beta\\Nested');
+ assert.deepEqual(call(b,'enumKeys',root.handle,'').names,['Alpha','Beta']);
+ assert.equal(call(b,'enumKeys',0x1234,'').status,6);
+});

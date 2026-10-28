@@ -1,0 +1,382 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/user32/listbox.c",
+  "sourceSha256": "b44289a6b76597afb55f6135c858f8b05fe8fe6793438878f6172d76b5406a2e",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1996 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "LISTBOX_InsertString",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "LISTBOX_InsertString",
+      "startLine": 1689,
+      "endLine": 1715,
+      "calls": [
+        "GetProcessHeap",
+        "HAS_STRINGS",
+        "HeapAlloc",
+        "HeapFree",
+        "LISTBOX_InsertItem",
+        "SEND_NOTIFICATION",
+        "TRACE",
+        "debugstr_w",
+        "lstrcpyW",
+        "lstrlenW"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_InsertItem",
+      "startLine": 1623,
+      "endLine": 1683,
+      "calls": [
+        "GetWindowLongPtrW",
+        "HAS_STRINGS",
+        "IS_MULTISELECT",
+        "LISTBOX_InvalidateItems",
+        "LISTBOX_SetCaretIndex",
+        "LISTBOX_SetSelection",
+        "LISTBOX_UpdateScroll",
+        "NtUserNotifyWinEvent",
+        "SendMessageW",
+        "TRACE",
+        "debugstr_w",
+        "get_item_height",
+        "insert_item_data",
+        "resize_storage",
+        "set_item_data",
+        "set_item_height",
+        "set_item_selected_state",
+        "set_item_string"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_InvalidateItems",
+      "startLine": 1229,
+      "endLine": 1251,
+      "calls": [
+        "LISTBOX_GetItemRect",
+        "NtUserInvalidateRect"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_SetCaretIndex",
+      "startLine": 1464,
+      "endLine": 1485,
+      "calls": [
+        "LISTBOX_DrawFocusRect",
+        "LISTBOX_MakeItemVisible",
+        "TRACE"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_SetSelection",
+      "startLine": 1533,
+      "endLine": 1568,
+      "calls": [
+        "LISTBOX_RepaintItem",
+        "LISTBOX_SelectItemRange",
+        "SEND_NOTIFICATION",
+        "TRACE",
+        "set_item_selected_state"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_UpdateScroll",
+      "startLine": 309,
+      "endLine": 384,
+      "calls": [
+        "LISTBOX_GetCurrentPageSize",
+        "NtUserSetScrollInfo",
+        "NtUserShowScrollBar"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "get_item_height",
+      "startLine": 200,
+      "endLine": 203,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "insert_item_data",
+      "startLine": 231,
+      "endLine": 240,
+      "calls": [
+        "get_sizeof_item",
+        "memmove"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "resize_storage",
+      "startLine": 151,
+      "endLine": 178,
+      "calls": [
+        "SEND_NOTIFICATION",
+        "get_sizeof_item",
+        "memset",
+        "realloc"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "set_item_data",
+      "startLine": 185,
+      "endLine": 188,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "set_item_height",
+      "startLine": 205,
+      "endLine": 208,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "set_item_selected_state",
+      "startLine": 220,
+      "endLine": 229,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "set_item_string",
+      "startLine": 195,
+      "endLine": 198,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_GetItemRect",
+      "startLine": 519,
+      "endLine": 569,
+      "calls": [
+        "SetLastError",
+        "SetRect",
+        "SetRectEmpty",
+        "TRACE",
+        "get_item_height",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_DrawFocusRect",
+      "startLine": 788,
+      "endLine": 809,
+      "calls": [
+        "GetSysColor",
+        "IsWindowEnabled",
+        "IsWindowVisible",
+        "LISTBOX_GetItemRect",
+        "LISTBOX_PaintItem",
+        "NtUserGetDCEx",
+        "NtUserReleaseDC",
+        "SelectObject",
+        "SetTextColor",
+        "SetWindowOrgEx"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_MakeItemVisible",
+      "startLine": 1425,
+      "endLine": 1455,
+      "calls": [
+        "LISTBOX_SetTopItem",
+        "TRACE",
+        "get_item_height"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_RepaintItem",
+      "startLine": 755,
+      "endLine": 782,
+      "calls": [
+        "GetSysColor",
+        "IsWindowEnabled",
+        "IsWindowVisible",
+        "LISTBOX_GetItemRect",
+        "LISTBOX_PaintItem",
+        "NtUserGetDCEx",
+        "NtUserReleaseDC",
+        "SelectObject",
+        "SendMessageW",
+        "SetTextColor",
+        "SetWindowOrgEx"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_SelectItemRange",
+      "startLine": 1493,
+      "endLine": 1528,
+      "calls": [
+        "LISTBOX_InvalidateItemRect",
+        "is_item_selected",
+        "set_item_selected_state"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_GetCurrentPageSize",
+      "startLine": 259,
+      "endLine": 269,
+      "calls": [
+        "get_item_height"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "get_sizeof_item",
+      "startLine": 146,
+      "endLine": 149,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_PaintItem",
+      "startLine": 624,
+      "endLine": 723,
+      "calls": [
+        "DeleteObject",
+        "DrawFocusRect",
+        "ERR",
+        "ExtTextOutW",
+        "GetClientRect",
+        "GetSysColor",
+        "GetWindowLongPtrW",
+        "IS_OWNERDRAW",
+        "IsWindowEnabled",
+        "SelectClipRgn",
+        "SendMessageW",
+        "SetBkColor",
+        "SetTextColor",
+        "TRACE",
+        "TabbedTextOutW",
+        "debugstr_w",
+        "get_item_data",
+        "get_item_string",
+        "is_item_selected",
+        "lstrlenW",
+        "set_control_clipping",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_SetTopItem",
+      "startLine": 392,
+      "endLine": 432,
+      "calls": [
+        "LISTBOX_GetMaxTopIndex",
+        "LISTBOX_UpdateScroll",
+        "NtUserInvalidateRect",
+        "NtUserScrollWindowEx",
+        "TRACE",
+        "get_item_height"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_InvalidateItemRect",
+      "startLine": 1253,
+      "endLine": 1259,
+      "calls": [
+        "LISTBOX_GetItemRect",
+        "NtUserInvalidateRect"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "is_item_selected",
+      "startLine": 210,
+      "endLine": 218,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "get_item_data",
+      "startLine": 180,
+      "endLine": 183,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "get_item_string",
+      "startLine": 190,
+      "endLine": 193,
+      "calls": [
+        "HAS_STRINGS"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_GetMaxTopIndex",
+      "startLine": 277,
+      "endLine": 300,
+      "calls": [
+        "get_item_height"
+      ],
+      "source": "dlls/user32/listbox.c"
+    }
+  ],
+  "boundaries": [
+    "DeleteObject",
+    "DrawFocusRect",
+    "ERR",
+    "ExtTextOutW",
+    "GetClientRect",
+    "GetProcessHeap",
+    "GetSysColor",
+    "GetWindowLongPtrW",
+    "HAS_STRINGS",
+    "HeapAlloc",
+    "HeapFree",
+    "IS_MULTISELECT",
+    "IS_OWNERDRAW",
+    "IsWindowEnabled",
+    "IsWindowVisible",
+    "NtUserGetDCEx",
+    "NtUserInvalidateRect",
+    "NtUserNotifyWinEvent",
+    "NtUserReleaseDC",
+    "NtUserScrollWindowEx",
+    "NtUserSetScrollInfo",
+    "NtUserShowScrollBar",
+    "SEND_NOTIFICATION",
+    "SelectClipRgn",
+    "SelectObject",
+    "SendMessageW",
+    "SetBkColor",
+    "SetLastError",
+    "SetRect",
+    "SetRectEmpty",
+    "SetTextColor",
+    "SetWindowOrgEx",
+    "TRACE",
+    "TabbedTextOutW",
+    "debugstr_w",
+    "lstrcpyW",
+    "lstrlenW",
+    "memmove",
+    "memset",
+    "realloc",
+    "set_control_clipping",
+    "wine_dbgstr_rect"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

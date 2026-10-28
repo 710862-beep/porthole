@@ -164,7 +164,7 @@
 +++ b/win32/Makefile
 @@ -1,4 +1,4 @@
 -DLL_SRC=advapi32.rs bass.rs ddraw/ dsound.rs gdi32/ kernel32/ ntdll.rs ole32.rs oleaut32.rs retrowin32_test.rs ucrtbase.rs vcruntime140.rs version.rs user32/ wininet.rs winmm/
-+DLL_SRC=comctl32.rs advapi32.rs bass.rs ddraw/ dsound.rs gdi32/ kernel32/ ntdll.rs ole32.rs oleaut32.rs retrowin32_test.rs ucrtbase.rs vcruntime140.rs version.rs user32/ wininet.rs winmm/ ws2_32.rs
++DLL_SRC=comctl32.rs advapi32.rs bass.rs dplay.rs ddraw/ dsound.rs gdi32/ kernel32/ ntdll.rs ole32.rs oleaut32.rs retrowin32_test.rs ucrtbase.rs vcruntime140.rs version.rs user32/ wininet.rs winmm/ ws2_32.rs
  DLLS=$(foreach dll,$(DLL_SRC),src/winapi/$(dll))
  src/winapi/builtin.rs: Makefile derive/src/*.rs src/*.rs src/winapi/* src/winapi/*/*
  	cargo run -p win32-derive -- --dll-dir dll --builtins $@ $(DLLS)
@@ -686,6 +686,61 @@
 +    if flags&0x10!=0 {controls::register(machine,"msctls_updown32",controls::Kind::Updown)}
 +    true
 +}
+--- /dev/null
++++ b/win32/src/winapi/dplay.rs
+@@ -0,0 +1,52 @@
++//! Wine-derived DirectPlay provider enumeration, LGPL-2.1-or-later.
++//! wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
++//! dlls/dplayx/dplay.c:4950-5131,6540-6601.
++//! Copyright 1998,1999,2000,2001 Peter Hunnisett.
++//! Registry/heap/callback boundaries -> existing Host registry and guest heap.
++//! Enumerates registry metadata, NOT functioning network transports. No session
++//! object is fabricated: DirectPlayCreate explicitly reports unavailable.
++use crate::{Machine,winapi::kernel32};
++use memory::ExtensionsMut;
++use serde_json::{Value,json};
++const TRACE_CONTEXT:&str="dplay";
++const INVALID:u32=0x80070057;const UNAVAILABLE:u32=0x887700fa;
++fn reg(machine:&Machine,op:&str,key:u32,name:&str)->Value{serde_json::from_str(&machine.host.registry_call(op,key,name,0,&[])).unwrap_or(json!({"status":13}))}
++fn status(v:&Value)->u64{v["status"].as_u64().unwrap_or(13)}
++fn text(machine:&Machine,key:u32,name:&str)->Option<String>{let v=reg(machine,"query",key,name);if status(&v)!=0||!matches!(v["type"].as_u64(),Some(1)|Some(2)){return None}let b:Option<Vec<u8>>=v["data"].as_array()?.iter().map(|x|x.as_u64().filter(|x|*x<=127).map(|x|x as u8)).collect();Some(String::from_utf8(b?).ok()?.trim_end_matches('\0').to_string())}
++fn guid(value:&str)->Option<[u8;16]>{let s=value.strip_prefix('{').and_then(|s|s.strip_suffix('}')).unwrap_or(value);if s.len()!=36||[8,13,18,23].iter().any(|&i|s.as_bytes()[i]!=b'-'){return None}let h:String=s.chars().filter(|c|*c!='-').collect();if h.len()!=32||!h.is_ascii(){return None}let mut b=[0;16];for i in 0..16{b[i]=u8::from_str_radix(&h[i*2..i*2+2],16).ok()?}b[0..4].reverse();b[4..6].reverse();b[6..8].reverse();Some(b)}
++struct Provider{guid:[u8;16],name_a:String,name_w:String}
++fn providers(machine:&Machine)->Result<Vec<Provider>,u32>{
++ let root=reg(machine,"open",0x80000002,"SOFTWARE\\Microsoft\\DirectPlay\\Service Providers");
++ if status(&root)==2{return Ok(vec![])}if status(&root)!=0{return Err(UNAVAILABLE)}
++ let handle=root["handle"].as_u64().ok_or(UNAVAILABLE)?as u32;
++ let listed=reg(machine,"enumKeys",handle,"");reg(machine,"close",handle,"");if status(&listed)!=0{return Err(UNAVAILABLE)}
++ let names=listed["names"].as_array().ok_or(UNAVAILABLE)?;if names.len()>4096{return Err(UNAVAILABLE)}
++ let mut result=vec![];
++ for n in names{let Some(name)=n.as_str()else{return Err(UNAVAILABLE)};let opened=reg(machine,"open",0x80000002,&format!("SOFTWARE\\Microsoft\\DirectPlay\\Service Providers\\{name}"));if status(&opened)!=0{continue}let Some(key)=opened["handle"].as_u64()else{continue};let key=key as u32;
++  let g=text(machine,key,"Guid").and_then(|v|guid(&v));let desc=text(machine,key,"DescriptionA").unwrap_or_else(||name.to_string());
++  let desc_w=text(machine,key,"DescriptionW").unwrap_or_else(||name.to_string());let path=text(machine,key,"Path");let valid=["dwReserved1","dwReserved2"].iter().all(|n|{let v=reg(machine,"query",key,n);status(&v)==0&&v["type"].as_u64()==Some(4)&&v["data"].as_array().map_or(false,|a|a.len()==4)});
++  reg(machine,"close",key,"");if !desc.is_ascii()||!desc_w.is_ascii()||desc.len()>4096||desc_w.len()>4096{return Err(UNAVAILABLE)}if let(Some(g),Some(_))=(g,path){if valid{result.push(Provider{guid:g,name_a:desc,name_w:desc_w})}}
++ }Ok(result)
++}
++async fn enumerate(machine:&mut Machine,callback:u32,context:u32,wide:bool)->u32{
++ if callback==0{return INVALID}let list=match providers(machine){Ok(v)=>v,Err(e)=>return e};
++ log::debug!("DIRECTPLAY_ENUM registered={} transports=unavailable",list.len());
++ for p in list{let mut bytes=p.guid.to_vec();if wide{for c in p.name_w.encode_utf16().chain(Some(0)){bytes.extend(c.to_le_bytes());}}else{bytes.extend(p.name_a.bytes());bytes.push(0);}
++  let heap=kernel32::GetProcessHeap(machine);let ptr=kernel32::HeapAlloc(machine,heap,0,bytes.len()as u32);if ptr==0{return 0x8007000e}
++  machine.mem().sub32_mut(ptr,bytes.len()as u32).copy_from_slice(&bytes);
++  let keep=machine.call_x86(callback,vec![ptr,ptr+16,6,0,context]).await;
++  kernel32::HeapFree(machine,heap,0,ptr);if keep==0{break}
++ }0
++}
++#[win32_derive::dllexport(ordinal=2)]
++pub async fn DirectPlayEnumerateA(machine:&mut Machine,lpEnumCallback:u32,lpContext:u32)->u32{enumerate(machine,lpEnumCallback,lpContext,false).await}
++#[win32_derive::dllexport(ordinal=3)]
++pub async fn DirectPlayEnumerateW(machine:&mut Machine,lpEnumCallback:u32,lpContext:u32)->u32{enumerate(machine,lpEnumCallback,lpContext,true).await}
++#[win32_derive::dllexport(ordinal=9)]
++pub async fn DirectPlayEnumerate(machine:&mut Machine,lpEnumCallback:u32,lpContext:u32)->u32{enumerate(machine,lpEnumCallback,lpContext,false).await}
++#[win32_derive::dllexport(ordinal=1)]
++pub fn DirectPlayCreate(machine:&mut Machine,lpGuid:u32,lplpDP:u32,pUnk:u32)->u32{
++ let _=(lpGuid,pUnk);if lplpDP==0||(lplpDP as usize).checked_add(4).map_or(true,|e|e>machine.mem().as_slice().len()){return INVALID}
++ machine.mem().put_pod::<u32>(lplpDP,0);log::warn!("DIRECTPLAY_SESSION_UNAVAILABLE: no transport implementation");UNAVAILABLE
++}
++#[cfg(test)]mod tests{use super::*;#[test]fn guid_guest_layout(){assert_eq!(guid("{00112233-4455-6677-8899-aabbccddeeff}"),Some([0x33,0x22,0x11,0,0x55,0x44,0x77,0x66,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff]));assert!(guid("not-a-guid").is_none());}}
 --- a/win32/src/winapi/error.rs
 +++ b/win32/src/winapi/error.rs
 @@ -6,6 +6,13 @@
@@ -1602,15 +1657,16 @@
 +}
 --- a/win32/src/winapi/mod.rs
 +++ b/win32/src/winapi/mod.rs
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,8 @@
  mod bitmap;
  mod builtin;
  mod com;
 +mod comctl32;
++mod dplay;
  pub mod ddraw;
  pub mod dsound;
  mod error;
-@@ -25,6 +26,7 @@
+@@ -25,6 +27,7 @@
  mod version;
  mod wininet;
  mod winmm;
@@ -1618,17 +1674,20 @@
  
  pub use error::ERROR;
  
-@@ -42,7 +44,8 @@
+@@ -42,9 +45,11 @@
      }
  }
  
 -pub const DLLS: [builtin::BuiltinDLL; 16] = [
-+pub const DLLS: [builtin::BuiltinDLL; 18] = [
++pub const DLLS: [builtin::BuiltinDLL; 19] = [
 +    builtin::comctl32::DLL,
      builtin::advapi32::DLL,
      builtin::bass::DLL,
++    builtin::dplay::DLL,
      builtin::ddraw::DLL,
-@@ -58,6 +61,7 @@
+     builtin::dsound::DLL,
+     builtin::gdi32::DLL,
+@@ -58,11 +63,13 @@
      builtin::version::DLL,
      builtin::wininet::DLL,
      builtin::winmm::DLL,
@@ -1636,7 +1695,13 @@
      builtin::retrowin32_test::DLL,
  ];
  
-@@ -89,6 +93,7 @@
+ pub fn dll_alias(name: &str) -> Option<&'static str> {
+     Some(match name {
++        "dplayx.dll" => "dplay.dll",
+         "msvcrt.dll" => "ucrtbase.dll",
+         _ => return None,
+     })
+@@ -89,6 +96,7 @@
      pub gdi32: gdi32::State,
      pub kernel32: kernel32::State,
      pub user32: user32::State,
@@ -1644,7 +1709,7 @@
  }
  
  impl State {
-@@ -102,6 +107,7 @@
+@@ -102,6 +110,7 @@
              gdi32: gdi32::State::default(),
              kernel32,
              user32: user32::State::default(),
@@ -1811,7 +1876,7 @@
 +];
 --- /dev/null
 +++ b/win32/src/winapi/user32/controls.rs
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,176 @@
 +//! Native, per-HWND controls. Guest pointers are checked offsets, never host pointers.
 +//! First implementation: basic Latin ANSI text, single-line edit/single-selection lists.
 +use super::{window::*, message::MSG};
@@ -1926,7 +1991,7 @@
 +pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
 +    if machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.control.as_ref()).map_or(false,|c|c.kind==Kind::Updown){return Box::pin(super::updown::dispatch(machine,msg)).await;}
 +    let (hwnd,m,wp,lp)=(msg.hwnd,msg.message,msg.wParam,msg.lParam);
-+    let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
++    let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a|0x14c|0x14d|0x158){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
 +    if m==0x172 && (wp!=0 || (lp!=0&&!matches!(machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(lp)),Some(crate::winapi::gdi32::Object::Bitmap(_))))){return error(machine,87)}
 +    let Some(w)=machine.state.user32.windows.get_mut(hwnd) else{return error(machine,1400)};
 +    let (parent,id)=(w.parent,w.id);let Some(c)=w.control.as_mut() else{return 0};
@@ -1955,10 +2020,19 @@
 +        0x100 if c.kind==Kind::Edit=>{
 +            match wp {8 if c.style&0x800==0=>{if c.start==c.end&&c.start>0{c.start-=1}c.replace(&[]);notify=Some(0x300)},0x2e if c.style&0x800==0=>{if c.start==c.end{c.end=(c.end+1).min(c.text.len())}c.replace(&[]);notify=Some(0x300)},0x25=>{c.end=c.start.min(c.end).saturating_sub(1);c.start=c.end},0x27=>{c.end=(c.start.max(c.end)+1).min(c.text.len());c.start=c.end},0x24=>{c.start=0;c.end=0},0x23=>{c.start=c.text.len();c.end=c.start},_=>{redraw=false}}
 +        }
++        // Wine user32/combo.c:1930-1980 and listbox.c:1019-1080,1689+;
++        // SHA 0738d528db522f52d9d75f2aec712688dd31d1d2, LGPL-2.1-or-later.
++        // Copyright 1997 Alex Korobka; 1996 Alexandre Julliard.
++        // String-only ASCII-case profile; no owner-draw/locale collation port.
++        0x181|0x14a if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if wp==u32::MAX{c.items.len()}else{wp as usize};if i>c.items.len(){result=u32::MAX}else{c.items.insert(i,incoming);if c.selected>=i as i32{c.selected+=1}result=i as u32}},
++        0x14c|0x14d|0x158 if c.kind==Kind::Combo=>{
++            result=u32::MAX;redraw=false;
++            if !c.items.is_empty()&&!incoming.is_empty(){let start=if wp==u32::MAX{0}else{(wp as usize+1)%c.items.len()};for n in 0..c.items.len(){let i=(start+n)%c.items.len();let item=&c.items[i];let matched=if m==0x158{item.eq_ignore_ascii_case(&incoming)}else{item.get(..incoming.len()).map_or(false,|p|p.eq_ignore_ascii_case(&incoming))};if matched{result=i as u32;if m==0x14d{c.selected=i as i32;c.text=item.clone();redraw=true}break}}}
++        }
 +        0x180|0x143 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if c.style & if c.kind==Kind::Combo{0x100}else{2} !=0{c.items.partition_point(|s|s<&incoming)}else{c.items.len()};c.items.insert(i,incoming);if c.selected>=i as i32{c.selected+=1}result=i as u32},
 +        0x182|0x144 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if (wp as usize)<c.items.len(){c.items.remove(wp as usize);if c.selected==wp as i32{c.selected=-1}else if c.selected>wp as i32{c.selected-=1}result=c.items.len()as u32}else{result=u32::MAX}},
 +        0x184|0x14b if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{c.items.clear();c.selected=-1},
-+        0x186|0x14e if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if wp==u32::MAX{c.selected=-1;result=u32::MAX}else if (wp as usize)<c.items.len(){c.selected=wp as i32;result=wp}else{result=u32::MAX}},
++        0x186|0x14e if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if wp==u32::MAX{c.selected=-1;result=u32::MAX}else if (wp as usize)<c.items.len(){c.selected=wp as i32;if c.kind==Kind::Combo{c.text=c.items[wp as usize].clone()}result=wp}else{result=u32::MAX}},
 +        0x188|0x147 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.selected as u32;redraw=false},
 +        0x18b|0x146 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.items.len()as u32;redraw=false},
 +        0x18a|0x149 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.items.get(wp as usize).map_or(u32::MAX,|s|s.len()as u32);redraw=false},

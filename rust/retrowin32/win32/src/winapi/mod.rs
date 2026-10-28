@@ -7,6 +7,7 @@ mod bitmap;
 mod builtin;
 mod com;
 mod comctl32;
+mod dplay;
 pub mod ddraw;
 pub mod dsound;
 mod error;
@@ -44,10 +45,11 @@ impl<'a> std::fmt::Display for ImportSymbol<'a> {
     }
 }
 
-pub const DLLS: [builtin::BuiltinDLL; 18] = [
+pub const DLLS: [builtin::BuiltinDLL; 19] = [
     builtin::comctl32::DLL,
     builtin::advapi32::DLL,
     builtin::bass::DLL,
+    builtin::dplay::DLL,
     builtin::ddraw::DLL,
     builtin::dsound::DLL,
     builtin::gdi32::DLL,
@@ -67,6 +69,7 @@ pub const DLLS: [builtin::BuiltinDLL; 18] = [
 
 pub fn dll_alias(name: &str) -> Option<&'static str> {
     Some(match name {
+        "dplayx.dll" => "dplay.dll",
         "msvcrt.dll" => "ucrtbase.dll",
         _ => return None,
     })

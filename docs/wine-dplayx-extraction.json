@@ -1,0 +1,176 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/dplayx/dplay.c",
+  "sourceSha256": "1db1fffafff94ae0fd93b88ea51e55ba00ffbb0a1e15d3a21564c8c6a67f613f",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1998,1999,2000,2001 - Peter Hunnisett"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "DirectPlayEnumerateA",
+  "additionalRoots": [
+    "DP_InitConnections",
+    "DP_ReadConnections"
+  ],
+  "functions": [
+    {
+      "name": "DirectPlayEnumerateA",
+      "startLine": 6586,
+      "endLine": 6591,
+      "calls": [
+        "DirectPlayEnumerateAW",
+        "TRACE"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_InitConnections",
+      "startLine": 5108,
+      "endLine": 5121,
+      "calls": [
+        "DP_ReadConnections"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_ReadConnections",
+      "startLine": 4952,
+      "endLine": 5104,
+      "calls": [
+        "CLSIDFromString",
+        "DPLAYX_HresultToString",
+        "DPL_CreateCompoundAddress",
+        "DP_GetRegDword",
+        "DP_GetRegStringA",
+        "DP_GetRegStringW",
+        "ERR",
+        "RegCloseKey",
+        "RegEnumKeyExA",
+        "RegOpenKeyExA",
+        "TRACE",
+        "calloc",
+        "free",
+        "list_add_tail"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DirectPlayEnumerateAW",
+      "startLine": 6540,
+      "endLine": 6580,
+      "calls": [
+        "DP_GetConnections",
+        "LIST_FOR_EACH_ENTRY",
+        "lpEnumCallbackA",
+        "lpEnumCallbackW"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_GetRegDword",
+      "startLine": 4923,
+      "endLine": 4950,
+      "calls": [
+        "RegGetValueW",
+        "free",
+        "malloc",
+        "swscanf"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_GetRegStringA",
+      "startLine": 4918,
+      "endLine": 4921,
+      "calls": [
+        "DP_GetRegString"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_GetRegStringW",
+      "startLine": 4913,
+      "endLine": 4916,
+      "calls": [
+        "DP_GetRegString"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_GetConnections",
+      "startLine": 5123,
+      "endLine": 5131,
+      "calls": [
+        "InitOnceExecuteOnce",
+        "LIST_INIT"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_GetRegString",
+      "startLine": 4873,
+      "endLine": 4911,
+      "calls": [
+        "DP_DuplicateString",
+        "RegGetValueA",
+        "RegGetValueW",
+        "free",
+        "malloc"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_DuplicateString",
+      "startLine": 303,
+      "endLine": 320,
+      "calls": [
+        "DP_CopyString",
+        "malloc"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    },
+    {
+      "name": "DP_CopyString",
+      "startLine": 261,
+      "endLine": 301,
+      "calls": [
+        "MultiByteToWideChar",
+        "WideCharToMultiByte",
+        "memcpy",
+        "strlen",
+        "wcslen"
+      ],
+      "source": "dlls/dplayx/dplay.c"
+    }
+  ],
+  "boundaries": [
+    "CLSIDFromString",
+    "DPLAYX_HresultToString",
+    "DPL_CreateCompoundAddress",
+    "ERR",
+    "InitOnceExecuteOnce",
+    "LIST_FOR_EACH_ENTRY",
+    "LIST_INIT",
+    "MultiByteToWideChar",
+    "RegCloseKey",
+    "RegEnumKeyExA",
+    "RegGetValueA",
+    "RegGetValueW",
+    "RegOpenKeyExA",
+    "TRACE",
+    "WideCharToMultiByte",
+    "calloc",
+    "free",
+    "list_add_tail",
+    "lpEnumCallbackA",
+    "lpEnumCallbackW",
+    "malloc",
+    "memcpy",
+    "strlen",
+    "swscanf",
+    "wcslen"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

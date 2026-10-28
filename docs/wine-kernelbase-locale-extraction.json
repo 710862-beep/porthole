@@ -3,7 +3,7 @@
   "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
   "source": "dlls/kernelbase/locale.c",
   "sourceSha256": "76584b5426836b1b0c8600efced75f780046f48bbc23a609d0c76c873954ec77",
-  "license": "LGPL-2.1-or-later; Copyright Alexandre Julliard",
+  "license": "LGPL-2.1-or-later",
   "copyrights": [
     "Copyright 1995 Martin von Loewis",
     "Copyright 1998 David Lee Lambert",
@@ -14,6 +14,7 @@
   ],
   "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
   "entry": "WideCharToMultiByte",
+  "additionalRoots": [],
   "functions": [
     {
       "name": "WideCharToMultiByte",

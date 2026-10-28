@@ -94,3 +94,22 @@ CPU/thread IDs, recursion, shared named objects, owned-object references,
 ReleaseMutex errors and abandonment feed the existing cooperative waits.
 Security descriptors/access masks, global cross-process objects and NT futex
 fast paths are not ported.
+
+### Wine-derived DirectPlay provider metadata enumeration
+
+`winapi/dplay.rs` adapts `dlls/dplayx/dplay.c:4952-5131,6540-6601`,
+Copyright 1998,1999,2000,2001 Peter Hunnisett, LGPL-2.1-or-later at the pinned SHA.
+Root callback edges DP_InitConnections/DP_ReadConnections are included explicitly
+in extraction (not discoverable merely by regex call syntax). GUIDs, names,
+versions and stop/continue callbacks come from registry metadata; no network
+session object or functional transport is manufactured. DirectPlayCreate fails
+with DPERR_UNAVAILABLE and clears its checked output. This is not full DirectPlay.
+
+### Wine-derived combo insertion/search subset
+
+Marked controls.rs message cases adapt `dlls/user32/combo.c:1930-1980` and
+`dlls/user32/listbox.c:1019-1080,1689+`, Copyright 1997 Alex Korobka and
+Copyright 1996 Alexandre Julliard respectively, LGPL-2.1-or-later. Vector-backed
+string items replace LB storage; ASCII-case prefix/exact search, insertion and
+selection are supported. Locale collation, directory-prefix special cases and
+owner-draw item-data comparisons remain unsupported.

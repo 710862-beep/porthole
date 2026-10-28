@@ -3,12 +3,13 @@
   "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
   "source": "dlls/kernelbase/process.c",
   "sourceSha256": "f14930fea19c2f43c8e6f4527794297a114f2e42ea7bfb6057af4db8cc9ffd03",
-  "license": "LGPL-2.1-or-later; Copyright Alexandre Julliard",
+  "license": "LGPL-2.1-or-later",
   "copyrights": [
     "Copyright 1996, 1998 Alexandre Julliard"
   ],
   "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
   "entry": "GetEnvironmentVariableA",
+  "additionalRoots": [],
   "functions": [
     {
       "name": "GetEnvironmentVariableA",

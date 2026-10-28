@@ -277,3 +277,38 @@ SOURCE_COMMIT correto, licença byte-idêntica). validate-wasm local PASS:
 Run 40758473786 (7436bdb) falhou no build nativo: módulo novo mutex.rs omitiu
 TRACE_CONTEXT exigido pelo macro dllexport (E0425). Corrigido o contexto de
 tracing; nenhuma semântica de mutex foi removida para fazer o build passar.
+
+## Décimo segundo resultado: 40758905273
+
+https://github.com/710862-beep/porthole/actions/runs/40758905273
+Fonte b71a3cd: build/23 Rust tests, 5/5 PEs e controles PASS. Mutexes agora
+comprovados no PE com contenção/owner/recursão/abandono. DOOM95 passou pelos
+mutexes e chegou a **62 presents**, falhando em **dplay.dll ordinal 2**.
+Wine dplay/dplay.spec e dplayx/dplayx.spec mapeiam a enumeração ANSI (2).
+
+Adaptação seguinte: DirectPlayEnumerateA/W consulta a chave real do registro
+virtual Service Providers, valida GUID/reserved/path e entrega GUID/nome/6/0/
+context via callback stdcall real no guest; libera scratch após retorno e
+respeita FALSE. Sem chave, lista vazia/DP_OK segue o ramo real Wine
+DP_ReadConnections; não lista transportes fictícios. Havendo provedores,
+eles geram callbacks (fixture registra **metadados sintéticos**, não DLLs de
+transportes). DirectPlayCreate explicitamente falha DPERR_UNAVAILABLE, output
+NULL; multiplayer NÃO suportado. UTF16 é aplicado no callback W; nomes A/W
+separados; perfil de strings do registro ainda ASCII, non-ASCII indisponível.
+Semântica de cache é snapshot por chamada, diferente do InitOnce Wine.
+
+Revisão manual por helper: `reg/status/text` validam retorno Host/tipo/bytes;
+`guid` valida formato/tamanho/endian; `providers` fecha handles e rejeita
+metadados inválidos; `enumerate` não retém borrow de memória/registro durante
+call_x86 e honra parada; `DirectPlayCreate` não fabrica COM/vtable/sucesso.
+Callback ABI: 5 DWORDs/stdcall, GUID 16 bytes, string ANSI ou UTF16 terminada.
+Regressão usa 2 provedores, callback A/W, parada no primeiro e failure COM.
+Nenhum stub de rede bem-sucedido foi introduzido.
+
+Logs também mostravam CB_INSERTSTRING/CB_FINDSTRING não suportados: adaptado
+roteamento combo→listbox e busca circular do Wine, com índice/erro, deslocamento
+da seleção e retorno do texto selecionado. Fixtures testam início/fim, prefixo
+case-insensitive ASCII, exact miss, seleção e índice inválido. Owner-draw,
+collation por locale e dropdown interativo completo continuam pendentes.
+Extrações são inventários/limites, não declaração de closure integral validada.
+Novo build/execução remoto ainda necessário para este candidato.

@@ -1,0 +1,721 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/user32/combo.c",
+  "sourceSha256": "a2ba5d9823f694d4bdd01ed868567026ef0cac1ad58ef669fed8c9a20f4d8661",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1997 Alex Korobka"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "ComboWndProc_common",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "ComboWndProc_common",
+      "startLine": 1702,
+      "endLine": 2100,
+      "calls": [
+        "CBCalcPlacement",
+        "CBDropDown",
+        "CBGetDroppedControlRect",
+        "CBGetTextAreaHeight",
+        "CBPaintText",
+        "CBRollUp",
+        "CB_GETTYPE",
+        "CB_HASSTRINGS",
+        "COMBO_Command",
+        "COMBO_Create",
+        "COMBO_FlipListbox",
+        "COMBO_Font",
+        "COMBO_GetTextA",
+        "COMBO_GetTextW",
+        "COMBO_ItemOp",
+        "COMBO_KillFocus",
+        "COMBO_LButtonDown",
+        "COMBO_LButtonUp",
+        "COMBO_MouseMove",
+        "COMBO_NCCreate",
+        "COMBO_NCDestroy",
+        "COMBO_Paint",
+        "COMBO_SelectString",
+        "COMBO_SetFocus",
+        "COMBO_SetItemHeight",
+        "COMBO_Size",
+        "CharLowerA",
+        "CharLowerW",
+        "CharUpperA",
+        "CharUpperW",
+        "DefWindowProcA",
+        "DefWindowProcW",
+        "GET_WHEEL_DELTA_WPARAM",
+        "GetComboBoxInfo",
+        "HIWORD",
+        "IsWindow",
+        "LOWORD",
+        "MAKE_FNID",
+        "NtUserEnableWindow",
+        "NtUserInvalidateRect",
+        "NtUserSetFocus",
+        "NtUserSetWindowFNID",
+        "SPY_GetMsgName",
+        "SendMessageA",
+        "SendMessageW",
+        "TRACE",
+        "WARN",
+        "WIN_GetFullHandle",
+        "free",
+        "get_control_state",
+        "strdup"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBCalcPlacement",
+      "startLine": 315,
+      "endLine": 379,
+      "calls": [
+        "CBGetTextAreaHeight",
+        "CB_GETTYPE",
+        "COMBO_EDITBUTTONSPACE",
+        "COMBO_XBORDERSIZE",
+        "COMBO_YBORDERSIZE",
+        "EDIT_CONTROL_PADDING",
+        "GetClientRect",
+        "GetSystemMetrics",
+        "InflateRect",
+        "TRACE",
+        "wine_dbgstr_rect"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBDropDown",
+      "startLine": 906,
+      "endLine": 998,
+      "calls": [
+        "CBUpdateEdit",
+        "CBUpdateLBox",
+        "CB_GETTYPE",
+        "CB_NOTIFY",
+        "COMBO_EDITBUTTONSPACE",
+        "COMBO_YBORDERSIZE",
+        "GetCapture",
+        "GetMonitorInfoW",
+        "GetWindowRect",
+        "MonitorFromRect",
+        "NtUserEnableWindow",
+        "NtUserRedrawWindow",
+        "NtUserSetCapture",
+        "NtUserSetWindowPos",
+        "SendMessageW",
+        "TRACE",
+        "max",
+        "min"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBGetDroppedControlRect",
+      "startLine": 384,
+      "endLine": 394,
+      "calls": [
+        "GetWindowRect"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBGetTextAreaHeight",
+      "startLine": 204,
+      "endLine": 271,
+      "calls": [
+        "CB_OWNERDRAWN",
+        "GetClientRect",
+        "GetWindowLongPtrW",
+        "SendMessageW",
+        "combo_get_text_height"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBPaintText",
+      "startLine": 637,
+      "endLine": 751,
+      "calls": [
+        "CB_HASSTRINGS",
+        "CB_OWNERDRAWN",
+        "COMBO_PrepareColors",
+        "DeleteObject",
+        "DrawFocusRect",
+        "ExtTextOutW",
+        "FIXME",
+        "FillRect",
+        "GetSysColor",
+        "GetSysColorBrush",
+        "GetWindowLongPtrW",
+        "InflateRect",
+        "IsWindowEnabled",
+        "IsWindowVisible",
+        "NtUserGetDC",
+        "NtUserReleaseDC",
+        "SelectClipRgn",
+        "SelectObject",
+        "SendMessageW",
+        "SetBkColor",
+        "SetTextColor",
+        "SetWindowTextW",
+        "TRACE",
+        "free",
+        "malloc",
+        "set_control_clipping"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBRollUp",
+      "startLine": 1005,
+      "endLine": 1053,
+      "calls": [
+        "CB_GETTYPE",
+        "CB_NOTIFY",
+        "GetCapture",
+        "IsWindow",
+        "NtUserRedrawWindow",
+        "NtUserReleaseCapture",
+        "NtUserShowWindow",
+        "TRACE",
+        "UnionRect"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_Command",
+      "startLine": 1132,
+      "endLine": 1234,
+      "calls": [
+        "CBPaintText",
+        "CBRollUp",
+        "CBUpdateLBox",
+        "CB_NOTIFY",
+        "COMBO_KillFocus",
+        "COMBO_SetFocus",
+        "HIWORD",
+        "TRACE",
+        "case"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_Create",
+      "startLine": 399,
+      "endLine": 560,
+      "calls": [
+        "CBCalcPlacement",
+        "CBForceDummyResize",
+        "CB_GETTYPE",
+        "COMBO_EDITBUTTONSPACE",
+        "COMBO_YBORDERSIZE",
+        "CreateWindowExA",
+        "CreateWindowExW",
+        "ERR",
+        "GetClientRect",
+        "GetWindowLongPtrW",
+        "IsWindowEnabled",
+        "MapWindowPoints",
+        "NtUserSetParent",
+        "TRACE",
+        "combo_get_text_height"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_FlipListbox",
+      "startLine": 1060,
+      "endLine": 1070,
+      "calls": [
+        "CBDropDown",
+        "CBRollUp"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_Font",
+      "startLine": 1477,
+      "endLine": 1503,
+      "calls": [
+        "CBCalcPlacement",
+        "CBForceDummyResize",
+        "CBResetPos",
+        "CB_GETTYPE",
+        "CB_OWNERDRAWN",
+        "SendMessageW",
+        "combo_get_text_height"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_GetTextA",
+      "startLine": 1339,
+      "endLine": 1380,
+      "calls": [
+        "SendMessageA",
+        "SendMessageW",
+        "free",
+        "lstrcpynA",
+        "malloc"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_GetTextW",
+      "startLine": 1289,
+      "endLine": 1330,
+      "calls": [
+        "SendMessageW",
+        "free",
+        "lstrcpynW",
+        "malloc"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_ItemOp",
+      "startLine": 1241,
+      "endLine": 1283,
+      "calls": [
+        "GetWindowLongPtrW",
+        "SendMessageW",
+        "TRACE"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_KillFocus",
+      "startLine": 1106,
+      "endLine": 1127,
+      "calls": [
+        "CBRollUp",
+        "CB_GETTYPE",
+        "CB_NOTIFY",
+        "IsWindow",
+        "NtUserInvalidateRect",
+        "SendMessageW"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_LButtonDown",
+      "startLine": 1563,
+      "endLine": 1601,
+      "calls": [
+        "CBDropDown",
+        "CBRepaintButton",
+        "CBRollUp",
+        "CB_GETTYPE",
+        "HIWORD",
+        "IsWindow",
+        "LOWORD",
+        "NtUserReleaseCapture",
+        "NtUserSetCapture",
+        "PtInRect"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_LButtonUp",
+      "startLine": 1608,
+      "endLine": 1633,
+      "calls": [
+        "CBRepaintButton",
+        "CBUpdateEdit",
+        "CBUpdateLBox",
+        "CB_GETTYPE",
+        "NtUserReleaseCapture",
+        "NtUserSetCapture"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_MouseMove",
+      "startLine": 1641,
+      "endLine": 1673,
+      "calls": [
+        "CBRepaintButton",
+        "CBUpdateLBox",
+        "CB_GETTYPE",
+        "GetClientRect",
+        "HIWORD",
+        "LOWORD",
+        "MapWindowPoints",
+        "NtUserReleaseCapture",
+        "PtInRect",
+        "SendMessageW"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_NCCreate",
+      "startLine": 122,
+      "endLine": 152,
+      "calls": [
+        "COMBO_Init",
+        "GetWindowLongW",
+        "SetWindowLongW",
+        "TRACE",
+        "calloc",
+        "set_control_state"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_NCDestroy",
+      "startLine": 157,
+      "endLine": 171,
+      "calls": [
+        "CB_GETTYPE",
+        "NtUserDestroyWindow",
+        "TRACE",
+        "free",
+        "set_control_state"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_Paint",
+      "startLine": 778,
+      "endLine": 828,
+      "calls": [
+        "CBPaintBorder",
+        "CBPaintButton",
+        "CBPaintText",
+        "CB_GETTYPE",
+        "COMBO_PrepareColors",
+        "EDIT_CONTROL_PADDING",
+        "FillRect",
+        "FrameRect",
+        "GetSysColorBrush",
+        "InflateRect",
+        "NtUserBeginPaint",
+        "NtUserEndPaint",
+        "SelectObject",
+        "TRACE"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_SelectString",
+      "startLine": 1544,
+      "endLine": 1558,
+      "calls": [
+        "CBUpdateEdit",
+        "NtUserInvalidateRect",
+        "SendMessageA",
+        "SendMessageW"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_SetFocus",
+      "startLine": 1084,
+      "endLine": 1101,
+      "calls": [
+        "CB_GETTYPE",
+        "CB_NOTIFY",
+        "NtUserInvalidateRect",
+        "SendMessageW"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_SetItemHeight",
+      "startLine": 1509,
+      "endLine": 1539,
+      "calls": [
+        "CBCalcPlacement",
+        "CBForceDummyResize",
+        "CBResetPos",
+        "CB_GETTYPE",
+        "CB_OWNERDRAWN",
+        "SendMessageW"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_Size",
+      "startLine": 1422,
+      "endLine": 1471,
+      "calls": [
+        "CBCalcPlacement",
+        "CBGetTextAreaHeight",
+        "CBResetPos",
+        "CB_GETTYPE",
+        "COMBO_YBORDERSIZE",
+        "GetWindowRect",
+        "NtUserSetWindowPos",
+        "TRACE"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "GetComboBoxInfo",
+      "startLine": 1679,
+      "endLine": 1697,
+      "calls": [
+        "IsRectEmpty",
+        "TRACE",
+        "get_control_state"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "get_control_state",
+      "startLine": 72,
+      "endLine": 75,
+      "calls": [
+        "NtUserGetPrivateData"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBUpdateEdit",
+      "startLine": 869,
+      "endLine": 899,
+      "calls": [
+        "CB_HASSTRINGS",
+        "SendMessageW",
+        "TRACE",
+        "free",
+        "malloc"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBUpdateLBox",
+      "startLine": 835,
+      "endLine": 862,
+      "calls": [
+        "GetWindowTextW",
+        "SendMessageW",
+        "TRACE",
+        "free",
+        "malloc"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "combo_get_text_height",
+      "startLine": 173,
+      "endLine": 190,
+      "calls": [
+        "GetTextMetricsW",
+        "NtUserGetDC",
+        "NtUserReleaseDC",
+        "SelectObject"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_PrepareColors",
+      "startLine": 595,
+      "endLine": 630,
+      "calls": [
+        "CB_DISABLED",
+        "GetSysColor",
+        "GetSysColorBrush",
+        "SendMessageW",
+        "SetTextColor"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBForceDummyResize",
+      "startLine": 280,
+      "endLine": 308,
+      "calls": [
+        "CBCalcPlacement",
+        "CBGetTextAreaHeight",
+        "CBResetPos",
+        "COMBO_YBORDERSIZE",
+        "GetWindowRect",
+        "NtUserSetWindowPos"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBResetPos",
+      "startLine": 1389,
+      "endLine": 1417,
+      "calls": [
+        "CB_GETTYPE",
+        "NtUserRedrawWindow",
+        "NtUserSetWindowPos",
+        "NtUserShowWindow"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBRepaintButton",
+      "startLine": 1075,
+      "endLine": 1079,
+      "calls": [
+        "NtUserInvalidateRect",
+        "UpdateWindow"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "COMBO_Init",
+      "startLine": 87,
+      "endLine": 117,
+      "calls": [
+        "CreateCompatibleDC",
+        "DeleteDC",
+        "GetObjectW",
+        "InvertRect",
+        "LoadBitmapW",
+        "MAKEINTRESOURCEW",
+        "SelectObject",
+        "SetRect",
+        "TRACE"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "set_control_state",
+      "startLine": 77,
+      "endLine": 80,
+      "calls": [
+        "NtUserSetPrivateData"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBPaintBorder",
+      "startLine": 756,
+      "endLine": 773,
+      "calls": [
+        "CB_GETTYPE",
+        "COMBO_XBORDERSIZE",
+        "COMBO_YBORDERSIZE",
+        "DrawEdge",
+        "EDIT_CONTROL_PADDING",
+        "GetClientRect",
+        "InflateRect"
+      ],
+      "source": "dlls/user32/combo.c"
+    },
+    {
+      "name": "CBPaintButton",
+      "startLine": 567,
+      "endLine": 585,
+      "calls": [
+        "CB_DISABLED",
+        "DrawFrameControl",
+        "IsRectEmpty"
+      ],
+      "source": "dlls/user32/combo.c"
+    }
+  ],
+  "boundaries": [
+    "CB_DISABLED",
+    "CB_GETTYPE",
+    "CB_HASSTRINGS",
+    "CB_NOTIFY",
+    "CB_OWNERDRAWN",
+    "COMBO_EDITBUTTONSPACE",
+    "COMBO_XBORDERSIZE",
+    "COMBO_YBORDERSIZE",
+    "CharLowerA",
+    "CharLowerW",
+    "CharUpperA",
+    "CharUpperW",
+    "CreateCompatibleDC",
+    "CreateWindowExA",
+    "CreateWindowExW",
+    "DefWindowProcA",
+    "DefWindowProcW",
+    "DeleteDC",
+    "DeleteObject",
+    "DrawEdge",
+    "DrawFocusRect",
+    "DrawFrameControl",
+    "EDIT_CONTROL_PADDING",
+    "ERR",
+    "ExtTextOutW",
+    "FIXME",
+    "FillRect",
+    "FrameRect",
+    "GET_WHEEL_DELTA_WPARAM",
+    "GetCapture",
+    "GetClientRect",
+    "GetMonitorInfoW",
+    "GetObjectW",
+    "GetSysColor",
+    "GetSysColorBrush",
+    "GetSystemMetrics",
+    "GetTextMetricsW",
+    "GetWindowLongPtrW",
+    "GetWindowLongW",
+    "GetWindowRect",
+    "GetWindowTextW",
+    "HIWORD",
+    "InflateRect",
+    "InvertRect",
+    "IsRectEmpty",
+    "IsWindow",
+    "IsWindowEnabled",
+    "IsWindowVisible",
+    "LOWORD",
+    "LoadBitmapW",
+    "MAKEINTRESOURCEW",
+    "MAKE_FNID",
+    "MapWindowPoints",
+    "MonitorFromRect",
+    "NtUserBeginPaint",
+    "NtUserDestroyWindow",
+    "NtUserEnableWindow",
+    "NtUserEndPaint",
+    "NtUserGetDC",
+    "NtUserGetPrivateData",
+    "NtUserInvalidateRect",
+    "NtUserRedrawWindow",
+    "NtUserReleaseCapture",
+    "NtUserReleaseDC",
+    "NtUserSetCapture",
+    "NtUserSetFocus",
+    "NtUserSetParent",
+    "NtUserSetPrivateData",
+    "NtUserSetWindowFNID",
+    "NtUserSetWindowPos",
+    "NtUserShowWindow",
+    "PtInRect",
+    "SPY_GetMsgName",
+    "SelectClipRgn",
+    "SelectObject",
+    "SendMessageA",
+    "SendMessageW",
+    "SetBkColor",
+    "SetRect",
+    "SetTextColor",
+    "SetWindowLongW",
+    "SetWindowTextW",
+    "TRACE",
+    "UnionRect",
+    "UpdateWindow",
+    "WARN",
+    "WIN_GetFullHandle",
+    "calloc",
+    "case",
+    "free",
+    "lstrcpynA",
+    "lstrcpynW",
+    "malloc",
+    "max",
+    "min",
+    "set_control_clipping",
+    "strdup",
+    "wine_dbgstr_rect"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

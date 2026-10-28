@@ -1,5 +1,16 @@
 #include "common.h"
+static BOOL CALLBACK providerA(GUID*g,LPSTR name,DWORD major,DWORD minor,void*context){REQUIRE(g->Data1==0x00112233&&name[0]=='P'&&major==6&&minor==0);(*(DWORD*)context)++;return TRUE;}
+static BOOL CALLBACK providerStop(GUID*g,LPSTR name,DWORD major,DWORD minor,void*context){(*(DWORD*)context)++;return FALSE;}
+static BOOL CALLBACK providerW(GUID*g,LPWSTR name,DWORD major,DWORD minor,void*context){REQUIRE(name[0]==L'P'&&name[1]==L'o');(*(DWORD*)context)++;return TRUE;}
+static void dplayMetadataProbe(void){
+ HMODULE lib=LoadLibraryA("dplay.dll");REQUIRE(lib);typedef HRESULT(WINAPI*Enum)(void*,void*);Enum enumerate=(Enum)GetProcAddress(lib,"DirectPlayEnumerateA");REQUIRE(enumerate&&(FARPROC)enumerate==GetProcAddress(lib,(LPCSTR)2));REQUIRE(enumerate(0,0)==(HRESULT)0x80070057);
+ for(int i=0;i<2;i++){HKEY key;char path[]="SOFTWARE\\Microsoft\\DirectPlay\\Service Providers\\ProbeA";path[sizeof(path)-2]=(char)('A'+i);REQUIRE(!RegCreateKeyA(HKEY_LOCAL_MACHINE,path,&key));char guid[]="{00112233-4455-6677-8899-aabbccddeeff}",description[]="Porthole metadata probe",dll[]="synthetic-unavailable-provider.dll";DWORD zero=0;
+ REQUIRE(!RegSetValueExA(key,"Guid",0,REG_SZ,(BYTE*)guid,sizeof(guid)));REQUIRE(!RegSetValueExA(key,"DescriptionA",0,REG_SZ,(BYTE*)description,sizeof(description)));REQUIRE(!RegSetValueExA(key,"DescriptionW",0,REG_SZ,(BYTE*)description,sizeof(description)));REQUIRE(!RegSetValueExA(key,"Path",0,REG_SZ,(BYTE*)dll,sizeof(dll)));REQUIRE(!RegSetValueExA(key,"dwReserved1",0,REG_DWORD,(BYTE*)&zero,4));REQUIRE(!RegSetValueExA(key,"dwReserved2",0,REG_DWORD,(BYTE*)&zero,4));RegCloseKey(key);}
+ DWORD count=0;REQUIRE(enumerate(providerA,&count)==0&&count==2);count=0;REQUIRE(enumerate(providerStop,&count)==0&&count==1);enumerate=(Enum)GetProcAddress(lib,"DirectPlayEnumerateW");count=0;REQUIRE(enumerate&&enumerate(providerW,&count)==0&&count==2);
+ typedef HRESULT(WINAPI*Create)(void*,void**,void*);Create create=(Create)GetProcAddress(lib,"DirectPlayCreate");void*object=(void*)1;REQUIRE(create&&create(0,&object,0)==(HRESULT)0x887700fa&&object==0);
+}
 void mainCRTStartup(void) {
+    dplayMetadataProbe();
     FILETIME original={0,0},local,back;SYSTEMTIME oldEpoch;
     REQUIRE(FileTimeToSystemTime(&original,&oldEpoch)&&oldEpoch.wYear==1601&&oldEpoch.wMonth==1&&oldEpoch.wDay==1);
     original.dwLowDateTime=0xd53e8000;original.dwHighDateTime=0x019db1de;

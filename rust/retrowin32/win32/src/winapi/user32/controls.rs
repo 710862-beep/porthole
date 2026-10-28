@@ -112,7 +112,7 @@ pub fn paint_children(machine:&mut Machine,parent:HWND){let mut children:Vec<_>=
 pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
     if machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.control.as_ref()).map_or(false,|c|c.kind==Kind::Updown){return Box::pin(super::updown::dispatch(machine,msg)).await;}
     let (hwnd,m,wp,lp)=(msg.hwnd,msg.message,msg.wParam,msg.lParam);
-    let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
+    let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a|0x14c|0x14d|0x158){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
     if m==0x172 && (wp!=0 || (lp!=0&&!matches!(machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(lp)),Some(crate::winapi::gdi32::Object::Bitmap(_))))){return error(machine,87)}
     let Some(w)=machine.state.user32.windows.get_mut(hwnd) else{return error(machine,1400)};
     let (parent,id)=(w.parent,w.id);let Some(c)=w.control.as_mut() else{return 0};
@@ -141,10 +141,19 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         0x100 if c.kind==Kind::Edit=>{
             match wp {8 if c.style&0x800==0=>{if c.start==c.end&&c.start>0{c.start-=1}c.replace(&[]);notify=Some(0x300)},0x2e if c.style&0x800==0=>{if c.start==c.end{c.end=(c.end+1).min(c.text.len())}c.replace(&[]);notify=Some(0x300)},0x25=>{c.end=c.start.min(c.end).saturating_sub(1);c.start=c.end},0x27=>{c.end=(c.start.max(c.end)+1).min(c.text.len());c.start=c.end},0x24=>{c.start=0;c.end=0},0x23=>{c.start=c.text.len();c.end=c.start},_=>{redraw=false}}
         }
+        // Wine user32/combo.c:1930-1980 and listbox.c:1019-1080,1689+;
+        // SHA 0738d528db522f52d9d75f2aec712688dd31d1d2, LGPL-2.1-or-later.
+        // Copyright 1997 Alex Korobka; 1996 Alexandre Julliard.
+        // String-only ASCII-case profile; no owner-draw/locale collation port.
+        0x181|0x14a if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if wp==u32::MAX{c.items.len()}else{wp as usize};if i>c.items.len(){result=u32::MAX}else{c.items.insert(i,incoming);if c.selected>=i as i32{c.selected+=1}result=i as u32}},
+        0x14c|0x14d|0x158 if c.kind==Kind::Combo=>{
+            result=u32::MAX;redraw=false;
+            if !c.items.is_empty()&&!incoming.is_empty(){let start=if wp==u32::MAX{0}else{(wp as usize+1)%c.items.len()};for n in 0..c.items.len(){let i=(start+n)%c.items.len();let item=&c.items[i];let matched=if m==0x158{item.eq_ignore_ascii_case(&incoming)}else{item.get(..incoming.len()).map_or(false,|p|p.eq_ignore_ascii_case(&incoming))};if matched{result=i as u32;if m==0x14d{c.selected=i as i32;c.text=item.clone();redraw=true}break}}}
+        }
         0x180|0x143 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if c.style & if c.kind==Kind::Combo{0x100}else{2} !=0{c.items.partition_point(|s|s<&incoming)}else{c.items.len()};c.items.insert(i,incoming);if c.selected>=i as i32{c.selected+=1}result=i as u32},
         0x182|0x144 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if (wp as usize)<c.items.len(){c.items.remove(wp as usize);if c.selected==wp as i32{c.selected=-1}else if c.selected>wp as i32{c.selected-=1}result=c.items.len()as u32}else{result=u32::MAX}},
         0x184|0x14b if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{c.items.clear();c.selected=-1},
-        0x186|0x14e if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if wp==u32::MAX{c.selected=-1;result=u32::MAX}else if (wp as usize)<c.items.len(){c.selected=wp as i32;result=wp}else{result=u32::MAX}},
+        0x186|0x14e if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if wp==u32::MAX{c.selected=-1;result=u32::MAX}else if (wp as usize)<c.items.len(){c.selected=wp as i32;if c.kind==Kind::Combo{c.text=c.items[wp as usize].clone()}result=wp}else{result=u32::MAX}},
         0x188|0x147 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.selected as u32;redraw=false},
         0x18b|0x146 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.items.len()as u32;redraw=false},
         0x18a|0x149 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.items.get(wp as usize).map_or(u32::MAX,|s|s.len()as u32);redraw=false},

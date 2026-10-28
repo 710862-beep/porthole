@@ -38,6 +38,13 @@
           } else return JSON.stringify({status:50});
           this.store.setValueSync(root,input,type,value);this._persist();return JSON.stringify({status:0});
         }
+        if(op==='enumKeys') {
+          const record=this.store._record(root);if(!record)return JSON.stringify({status:2});
+          const prefix=record.key+'\\';const names=[];
+          for(const child of this.store.keys.values()){if(child.key.startsWith(prefix)&&!child.key.slice(prefix.length).includes('\\'))names.push(child.path.slice(record.path.length+1));}
+          if(names.length>4096)return JSON.stringify({status:8});
+          return JSON.stringify({status:0,names:names.sort((a,b)=>a.localeCompare(b))});
+        }
         if(op==='query') {
           const value=this.store._record(root)?.values.get(input.toLocaleLowerCase('en-US'));
           if(!value)return JSON.stringify({status:2});

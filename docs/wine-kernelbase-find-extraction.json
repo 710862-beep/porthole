@@ -3,7 +3,7 @@
   "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
   "source": "dlls/kernelbase/file.c",
   "sourceSha256": "efe946fd5f7059453dbbb65679e469288b8d7f6f3fd8a288bb04570e112e79c6",
-  "license": "LGPL-2.1-or-later; Copyright Alexandre Julliard",
+  "license": "LGPL-2.1-or-later",
   "copyrights": [
     "Copyright 1993 John Burton",
     "Copyright 1996, 2004 Alexandre Julliard",
@@ -11,6 +11,7 @@
   ],
   "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
   "entry": "FindFirstFileA",
+  "additionalRoots": [],
   "functions": [
     {
       "name": "FindFirstFileA",
