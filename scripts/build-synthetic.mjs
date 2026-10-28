@@ -7,12 +7,12 @@ const zig = process.env.PORTHOLE_ZIG || '/home/user/.cache/porthole-tools/ziglan
 const check = spawnSync(zig, ['version'], { encoding: 'utf8' });
 if (check.status !== 0 || check.stdout.trim() !== '0.13.0') throw new Error('Zig 0.13.0 required. Install: python3 -m pip install --target .cache/tools ziglang==0.13.0; set PORTHOLE_ZIG to its zig executable.');
 const root = 'tests/synthetic';
-const names = ['thread-validation', 'input-test', 'network-test', 'registry-test', 'installer-test'];
+const names = ['thread-validation', 'input-test', 'network-test', 'registry-test', 'installer-test', 'controls-test'];
 const result = { kind: 'porthole-authored-synthetic-pe32', compiler: 'zig 0.13.0', tests: [] };
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 for (const name of names) {
   const source = `${root}/${name}.c`, output = `${root}/${name}.exe`;
-  const libs = name === 'network-test' ? ['-lws2_32'] : name === 'input-test' ? ['-luser32'] : ['registry-test', 'installer-test'].includes(name) ? ['-ladvapi32'] : [];
+  const libs = name === 'controls-test' ? ['-luser32','-lcomctl32'] : name === 'network-test' ? ['-lws2_32'] : name === 'input-test' ? ['-luser32'] : ['registry-test', 'installer-test'].includes(name) ? ['-ladvapi32'] : [];
   const args = ['cc', '-target', 'x86-windows-gnu', '-Os', '-march=i386', '-mno-sse', '-mno-sse2', '-nostdlib', '-fno-stack-protector', '-isystem', path.join(path.dirname(zig), 'lib/libc/include/any-windows-any'), '-Wl,--entry,mainCRTStartup', '-Wl,--subsystem,console', source, '-lkernel32', ...libs, '-o', output];
   const run = spawnSync(zig, args, { encoding: 'utf8', timeout: 120000 });
   if (run.status !== 0) throw new Error(`${name}: ${run.stderr || run.error?.message}`);

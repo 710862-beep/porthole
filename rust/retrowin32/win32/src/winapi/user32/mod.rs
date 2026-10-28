@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+pub(crate) mod controls;
+mod control_font;
 mod dialog;
 mod menu;
 mod message;

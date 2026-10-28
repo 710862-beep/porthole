@@ -10,7 +10,7 @@ import { createSyntheticDisk, verifySyntheticOutputs } from './synthetic-disk.mj
 import { sanitizeEvidence } from '../ci/autofix.mjs';
 const names=['thread-validation','input-test','network-test','registry-test','installer-test'];
 if(process.argv[2]==='--worker') {
-  const name=process.argv[3]; if(!names.includes(name)) throw new Error('Unknown fixture');
+  const name=process.argv[3]; if(![...names,'controls-test'].includes(name)) throw new Error('Unknown fixture');
   const bytes=fs.readFileSync(`tests/synthetic/${name}.exe`);
   const item={name,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),logs:[]};
   let disk,server,networkBridge;let requestSeen=false;let port;
@@ -41,7 +41,7 @@ if(process.argv[2]==='--worker') {
   console.log(JSON.stringify(item));
 } else {
   const selected=process.argv.slice(2); const tests=selected.length?selected:names;
-  if(tests.some(n=>!names.includes(n))) throw new Error('Unknown fixture name');
+  if(tests.some(n=>![...names,'controls-test'].includes(n))) throw new Error('Unknown fixture name');
   const report={kind:'synthetic-pe32-guest-execution',tests:[]};
   for(const name of tests){
     const run=spawnSync(process.execPath,[import.meta.filename,'--worker',name],{encoding:'utf8',timeout:15000,maxBuffer:1048576});

@@ -73,6 +73,11 @@ pub struct UpdateRegion {
 }
 
 pub struct Window {
+    pub parent: HWND,
+    pub id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub control: Option<super::controls::Control>,
     pub hwnd: HWND,
     pub typ: WindowType,
     /// Client area width (not total window width).
@@ -423,12 +428,13 @@ pub async fn CreateWindowExW(
         CreateWindowClassName::Atom(_) => unimplemented!(),
         CreateWindowClassName::Name(name) => name.to_string(),
     };
+    super::controls::standard(machine);
     let wndclass = match machine
         .state
         .user32
         .wndclasses
         .iter()
-        .find(|c| c.name == class_name)
+        .find(|c| c.name.eq_ignore_ascii_case(&class_name))
     {
         Some(wndclass) => wndclass.clone(),
         None => {
@@ -439,7 +445,7 @@ pub async fn CreateWindowExW(
         }
     };
 
-    let style = dwStyle.unwrap();
+    let style = WindowStyle::from_bits_truncate(dwStyle.unwrap_or_else(|bits|WindowStyle::from_bits_truncate(bits)).bits());
     const CW_USEDEFAULT: u32 = 0x8000_0000;
 
     // hInstance is only relevant when multiple DLLs register classes:
@@ -453,9 +459,11 @@ pub async fn CreateWindowExW(
         nHeight
     };
 
-    let style = dwStyle.unwrap();
+    let style = WindowStyle::from_bits_truncate(dwStyle.unwrap_or_else(|bits|WindowStyle::from_bits_truncate(bits)).bits());
     let menu = false; // TODO
-    let (width, height) = client_size_from_window_size(style, menu, width, height);
+    let (width, height) = if style.contains(WindowStyle::CHILD) {(width,height)}else{client_size_from_window_size(style, menu, width, height)};
+    if width>4096 || height>4096 { winapi::kernel32::teb_mut(machine).LastErrorValue=87;return HWND::null(); }
+    if style.contains(WindowStyle::CHILD)&&machine.state.user32.windows.get(hWndParent).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return HWND::null();}
 
     let typ = if style.contains(WindowStyle::CHILD) {
         WindowType::Child
@@ -481,7 +489,10 @@ pub async fn CreateWindowExW(
         })
     };
 
+    let raw_style = match dwStyle {Ok(value)=>value.bits(),Err(value)=>value};
+    let control = if wndclass.wndproc==super::controls::NATIVE_PROC {super::controls::kind(&class_name).map(|kind|super::controls::Control::new(kind,&lpWindowName.map(|s|s.to_string()).unwrap_or_default(),raw_style))}else{None};
     let window = Window {
+        parent:hWndParent,id:hMenu,x:X as i32,y:Y as i32,control,
         hwnd,
         typ,
         width,
@@ -507,8 +518,11 @@ pub async fn CreateWindowExW(
 }
 
 #[win32_derive::dllexport]
-pub fn DestroyWindow(_machine: &mut Machine, hWnd: HWND) -> bool {
-    true // success
+pub fn DestroyWindow(machine: &mut Machine, hWnd: HWND) -> bool {
+    if machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false}
+    let children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==hWnd).map(|w|w.hwnd).collect();
+    for child in children {DestroyWindow(machine,child);}
+    machine.state.user32.windows.remove(hWnd);true
 }
 
 #[win32_derive::dllexport]
@@ -560,6 +574,7 @@ pub fn FindWindowA(
 
 #[win32_derive::dllexport]
 pub async fn UpdateWindow(machine: &mut Machine, hWnd: HWND) -> bool {
+    if machine.state.user32.windows.get(hWnd).and_then(|w|w.control.as_ref()).is_some(){super::controls::paint(machine,hWnd);return true}
     let window = machine.state.user32.windows.get(hWnd).unwrap();
     match &window.typ {
         WindowType::TopLevel(top) => {
@@ -1085,6 +1100,7 @@ pub fn ReleaseCapture(_machine: &mut Machine) -> bool {
 
 #[win32_derive::dllexport]
 pub fn SetWindowTextA(machine: &mut Machine, hWnd: HWND, lpString: Option<&str>) -> bool {
+    if let Some(c)=machine.state.user32.windows.get_mut(hWnd).and_then(|w|w.control.as_mut()){c.text=lpString.unwrap_or("").as_bytes().to_vec();c.start=c.text.len();c.end=c.start;super::controls::paint(machine,hWnd);return true}
     match machine.state.user32.windows.get_mut(hWnd) {
         Some(window) => {
             window

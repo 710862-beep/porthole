@@ -125,6 +125,7 @@ pub fn BeginPaint(machine: &mut Machine, hWnd: HWND, lpPaint: Option<&mut PAINTS
 
 #[win32_derive::dllexport]
 pub fn EndPaint(machine: &mut Machine, hWnd: HWND, lpPaint: Option<&PAINTSTRUCT>) -> bool {
+    super::controls::paint_children(machine,hWnd);
     let window = machine.state.user32.windows.get_mut(hWnd).unwrap();
     match &mut window.typ {
         WindowType::TopLevel(toplevel) => {
