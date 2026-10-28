@@ -383,3 +383,17 @@ somente entradas completas verificadas por Git/SHA256 (log final omitido), sem
 fingir transporte íntegro. Corrigido protocolo: manifesto completo em Git blob,
 annotation carrega apenas ponteiro/hash/tamanho; downloader verifica tudo e
 source/run. Próximo CI deve validar tanto pixels quanto transporte corrigidos.
+
+## Resultado 40764417391: regressão visual corrigida e transporte íntegro
+
+https://github.com/710862-beep/porthole/actions/runs/40764417391
+Fonte e28f0c7: build/24 testes win32, 5/5 PEs e controles **PASS** (73 presents,
+glyph/selection/image verificados). Fix de HWND corrige pixels, sem relaxar gate.
+Novo manifesto por blob foi baixado completo e verificado por hash/source/run,
+inclusive screenshot e log. DOOM95 confirmou count MIDI=0 e avançou para
+**midiOutSetVolume** em 0x41ac27; ainda 256 presents de startup, não gameplay.
+
+Wine winmm.c:571-581 retorna MMSYSERR_INVALHANDLE se MMDRV_Get não achar o
+handle/device. Adaptado esse despacho ao Host: neste perfil sem driver/handles,
+volume retorna **5 (erro)**, não sucesso nem áudio fictício. Fixture consulta
+um mapper sem dispositivo e exige erro; mixer/MIDI/playback continuam ausentes.

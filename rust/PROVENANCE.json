@@ -97,7 +97,7 @@
     "promotable": false,
     "promoted": false
   },
-  "patchSha256": "428693bf7d36196a7942d86de78a47128ea2173dc2161822ffa63a9c42edfc50",
+  "patchSha256": "8b54c4a8892bb55e3c2e7e592f580aaa0c1ee04cb998fcd43fc0e8b4b24acb31",
   "fontSource": {
     "repository": "dhepper/font8x8",
     "path": "font8x8_basic.h",

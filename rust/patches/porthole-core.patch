@@ -306,12 +306,14 @@
      Quit,
      Mouse(MouseMessage),
  }
-@@ -127,8 +130,18 @@
+@@ -127,8 +130,20 @@
  }
  
  pub trait Host {
 +    /// Installed WinMM MIDI output driver devices; default profile has no driver.
 +    fn midi_output_count(&self)->u32{0}
++    /// No driver/handles installed in the default profile: MMSYSERR_INVALHANDLE.
++    fn midi_output_set_volume(&self,_handle:u32,_volume:u32)->u32{5}
      /// Get an arbitrary time counter, measured in milliseconds.
      fn ticks(&self) -> u32;
 +    /// Porthole synchronous overlay bridge. Missing hosts fail, never succeed silently.
@@ -325,7 +327,7 @@
      fn system_time(&self) -> chrono::DateTime<chrono::Local>;
  
      /// Get the next pending message, or None if no message waiting.
-@@ -142,6 +155,8 @@
+@@ -142,6 +157,8 @@
  
      /// Retrieves the absolute (Windows-style) path of the current working directory.
      fn current_dir(&self) -> Result<WindowsPathBuf, ERROR>;
@@ -3095,7 +3097,7 @@
 +}
 --- /dev/null
 +++ b/win32/src/winapi/winmm/midi.rs
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,15 @@
 +//! Wine winmm/winmm.c:287-290 -> MMDRV_GetNum, lolvldrv.c:75+.
 +//! SHA 0738d528db522f52d9d75f2aec712688dd31d1d2; LGPL-2.1-or-later.
 +//! Copyright 1993 Martin Ayotte; 1998-2002 Eric Pouech.
@@ -3106,6 +3108,11 @@
 +const TRACE_CONTEXT:&str="winmm/midi";
 +#[win32_derive::dllexport]
 +pub fn midiOutGetNumDevs(machine:&mut Machine)->u32{machine.host.midi_output_count()}
++
++// Wine winmm.c:571-581: MMDRV_Get(handle,MIDIOUT,TRUE) failing returns
++// MMSYSERR_INVALHANDLE; no successful MODM_SETVOLUME is fabricated.
++#[win32_derive::dllexport]
++pub fn midiOutSetVolume(machine:&mut Machine,hMidiOut:u32,dwVolume:u32)->u32{machine.host.midi_output_set_volume(hMidiOut,dwVolume)}
 --- a/win32/src/winapi/winmm/mod.rs
 +++ b/win32/src/winapi/winmm/mod.rs
 @@ -9,3 +9,6 @@

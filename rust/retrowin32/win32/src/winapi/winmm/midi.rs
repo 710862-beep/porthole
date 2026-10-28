@@ -8,3 +8,8 @@ use crate::Machine;
 const TRACE_CONTEXT:&str="winmm/midi";
 #[win32_derive::dllexport]
 pub fn midiOutGetNumDevs(machine:&mut Machine)->u32{machine.host.midi_output_count()}
+
+// Wine winmm.c:571-581: MMDRV_Get(handle,MIDIOUT,TRUE) failing returns
+// MMSYSERR_INVALHANDLE; no successful MODM_SETVOLUME is fabricated.
+#[win32_derive::dllexport]
+pub fn midiOutSetVolume(machine:&mut Machine,hMidiOut:u32,dwVolume:u32)->u32{machine.host.midi_output_set_volume(hMidiOut,dwVolume)}

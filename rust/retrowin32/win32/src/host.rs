@@ -132,6 +132,8 @@ pub struct Message {
 pub trait Host {
     /// Installed WinMM MIDI output driver devices; default profile has no driver.
     fn midi_output_count(&self)->u32{0}
+    /// No driver/handles installed in the default profile: MMSYSERR_INVALHANDLE.
+    fn midi_output_set_volume(&self,_handle:u32,_volume:u32)->u32{5}
     /// Get an arbitrary time counter, measured in milliseconds.
     fn ticks(&self) -> u32;
     /// Porthole synchronous overlay bridge. Missing hosts fail, never succeed silently.

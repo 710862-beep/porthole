@@ -11,6 +11,7 @@ static void dplayMetadataProbe(void){
 }
 void mainCRTStartup(void) {
     HMODULE mm=LoadLibraryA("winmm.dll");UINT(WINAPI*midiCount)(void)=(UINT(WINAPI*)(void))GetProcAddress(mm,"midiOutGetNumDevs");REQUIRE(mm&&midiCount&&midiCount()==0); /* configured no-driver profile, not working MIDI */
+    UINT(WINAPI*midiVolume)(void*,DWORD)=(UINT(WINAPI*)(void*,DWORD))GetProcAddress(mm,"midiOutSetVolume");REQUIRE(midiVolume&&midiVolume((void*)-1,0xffffffff)==5); /* no installed/opened MIDI device */
     dplayMetadataProbe();
     FILETIME original={0,0},local,back;SYSTEMTIME oldEpoch;
     REQUIRE(FileTimeToSystemTime(&original,&oldEpoch)&&oldEpoch.wYear==1601&&oldEpoch.wMonth==1&&oldEpoch.wDay==1);

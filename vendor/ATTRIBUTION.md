@@ -137,3 +137,7 @@ Eric Pouech, LGPL-2.1-or-later. Driver device count comes from the Host profile;
 this build installs **zero** WinMM MIDI drivers, consistent with disabled wave
 output. This is a truthful no-device configuration, not working MIDI/music,
 not host hardware enumeration and not a successful midiOutOpen emulation.
+
+midiOutSetVolume additionally follows Wine `winmm.c:571-581` under the same
+copyright/license, dispatching to the no-driver Host profile and returning
+MMSYSERR_INVALHANDLE rather than claiming successful volume/playback.

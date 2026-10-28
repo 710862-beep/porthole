@@ -1,0 +1,33 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/winmm/winmm.c",
+  "sourceSha256": "f50a4fc065d7c77e5f2564e5a727ff46980a4f8a64728edbc37bb5ade36360cf",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1993      Martin Ayotte"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "midiOutSetVolume",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "midiOutSetVolume",
+      "startLine": 571,
+      "endLine": 581,
+      "calls": [
+        "MMDRV_Get",
+        "MMDRV_Message",
+        "TRACE"
+      ],
+      "source": "dlls/winmm/winmm.c"
+    }
+  ],
+  "boundaries": [
+    "MMDRV_Get",
+    "MMDRV_Message",
+    "TRACE"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}
