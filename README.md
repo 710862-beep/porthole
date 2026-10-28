@@ -6,6 +6,8 @@ Camada experimental de compatibilidade **Win32 → Web** em Vanilla JS: dynamic 
 
 > **Estado vigente — 2026-10-28:** fonte `6eb2c0eb6207111a5b38c952aa7c1f0bf57b07c1`, [run 40727092030](https://github.com/710862-beep/porthole/actions/runs/40727092030). Build/integridade PASS; **5/5 PEs sintéticos PASS**; input headless injetado e TCP/HTTP/DNS guest Node comprovados. **DOOM95 falha em `comctl32.dll!17` (InitCommonControls), sem gameplay. Workflow vermelho, promotable=false, estável intacto.** [Relatório atual](docs/remaining-blockers.md).
 
+> **Estado vigente — Common Controls, 2026-10-28:** fonte `757abeba1c995af55a2cd7eab689483cabb943df`, [run 40736781228](https://github.com/710862-beep/porthole/actions/runs/40736781228). Build, 12 testes Rust, **5/5 PEs sintéticos** e **controle guest com pixels reais em Chromium PASS**. Gameplay **FAIL**: 5 presents antes de `user32!CreateDialogParamA`, sem input/loop comprovados. **Workflow vermelho, promotable=false; estável intacto. Implementação de controles parcial, pedido completo não concluído.** [Relatório atual](docs/common-controls.md).
+
 ## Executar
 
 Não há build nem dependências de runtime. Sirva a raiz por HTTP:

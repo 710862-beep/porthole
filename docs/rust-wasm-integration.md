@@ -1,3 +1,5 @@
+> **Atualização:** o estado vigente está em [Common Controls](common-controls.md). Os resultados abaixo são históricos; o bloqueio atual é CreateDialogParamA, não comctl32 ordinal 17. Gameplay continua reprovado.
+
 # Estado vigente
 
 Ver [relatório dos três bloqueios](remaining-blockers.md): 5/5 sintéticos PASS, DOOM95 bloqueado em comctl32 ordinal 17, não promovido.

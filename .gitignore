@@ -14,3 +14,5 @@ tests/synthetic/BUILD.json
 
 __pycache__/
 *.pyc
+# Authored DLL fixtures are reproducibly built alongside synthetic EXEs.
+tests/synthetic/*.dll
