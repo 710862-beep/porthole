@@ -24,6 +24,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Reject startup-only gameplay claims
+        run: node --test tests/node/gameplay.test.mjs tests/node/compatibility-gates.test.mjs
       - name: Install pinned PE32 compiler
         run: |
           python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0

@@ -31,6 +31,8 @@ pub use window::*;
 
 #[derive(Default)]
 pub struct State {
+    pub focused: HWND,
+    pub captured: HWND,
     raw_registered: bool,
     raw_next: u32,
     raw_packets: std::collections::HashMap<u32,(i32,i32)>,

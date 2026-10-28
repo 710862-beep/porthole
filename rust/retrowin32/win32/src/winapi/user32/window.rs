@@ -690,15 +690,19 @@ pub async fn ShowWindow(machine: &mut Machine, hWnd: HWND, nCmdShow: Result<SW, 
 }
 
 #[win32_derive::dllexport]
-pub fn SetFocus(_machine: &mut Machine, hWnd: HWND) -> HWND {
-    let prev_focused = HWND::null();
-    prev_focused
+pub fn SetFocus(machine: &mut Machine, hWnd: HWND) -> HWND {
+    let old=machine.state.user32.focused;
+    if !hWnd.is_null()&&machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return HWND::null()}
+    machine.state.user32.focused=hWnd;
+    for (hwnd,focus) in [(old,false),(hWnd,true)] {if let Some(c)=machine.state.user32.windows.get_mut(hwnd).and_then(|w|w.control.as_mut()){c.focus=focus;super::controls::paint(machine,hwnd)}}
+    old
 }
-
 #[win32_derive::dllexport]
-pub fn GetFocus(machine: &mut Machine) -> HWND {
-    machine.state.user32.windows.iter().next().unwrap().hwnd
-}
+pub fn GetFocus(machine:&mut Machine)->HWND {machine.state.user32.focused}
+#[win32_derive::dllexport]
+pub fn GetParent(machine:&mut Machine,hWnd:HWND)->HWND {machine.state.user32.windows.get(hWnd).map_or(HWND::null(),|w|w.parent)}
+#[win32_derive::dllexport]
+pub fn GetDlgCtrlID(machine:&mut Machine,hWnd:HWND)->u32 {machine.state.user32.windows.get(hWnd).map_or(0,|w|w.id)}
 
 async fn def_window_proc(
     machine: &mut Machine,
@@ -1043,16 +1047,9 @@ pub fn ReleaseDC(machine: &mut Machine, hwnd: HWND, hdc: HDC) -> bool {
 }
 
 #[win32_derive::dllexport]
-pub fn GetWindowLongA(_machine: &mut Machine, hWnd: HWND, nIndex: i32) -> i32 {
-    match nIndex {
-        // GWL_STYLE
-        -16 => WindowStyle::empty().bits() as i32,
-
-        // GWL_EXSTYLE
-        -20 => WindowStyleEx::empty().bits() as i32,
-
-        _ => todo!("GetWindowLong({nIndex})"),
-    }
+pub fn GetWindowLongA(machine: &mut Machine, hWnd: HWND, nIndex: i32) -> i32 {
+    let Some(w)=machine.state.user32.windows.get(hWnd)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0};
+    match nIndex {-16=>w.control.as_ref().map_or(w.style.bits(),|c|c.style)as i32,-20=>0,-12=>w.id as i32,-8=>w.parent.to_raw() as i32,_=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1413;0}}
 }
 
 #[win32_derive::dllexport]

@@ -15,10 +15,10 @@ pub struct Control {
     pub start: usize, pub end: usize, pub limit: usize,
     pub items: Vec<Vec<u8>>, pub selected: i32,
     pub low: i32, pub high: i32, pub position: i32, pub step: i32,
-    pub focus: bool,
+    pub focus: bool, pub image:u32,
 }
 impl Control {
-    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false}}
+    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0}}
     fn replace(&mut self, bytes:&[u8]) {
         let a=self.start.min(self.end).min(self.text.len());let b=self.start.max(self.end).min(self.text.len());
         let n=bytes.len().min(self.limit.saturating_sub(self.text.len()-(b-a)));
@@ -88,7 +88,15 @@ pub fn paint(machine:&mut Machine,hwnd:HWND) {
             else {for y in 2..height as i32-2{for x in p..p+8{dot(x.min(width as i32-2),y,blue)}}}
         }
         Kind::Tab=>{let mut x=2;for (i,text) in c.items.iter().enumerate(){texts.push((x,3,text.clone(),if i as i32==c.selected{blue}else{black}));x+=text.len() as i32*8+12;}}
-        Kind::Static=>texts.push((2,2,c.text.clone(),black)),
+        Kind::Static=>{
+            if c.image==0 {texts.push((2,2,c.text.clone(),black));}
+            else if let Some(crate::winapi::gdi32::Object::Bitmap(image))=machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(c.image)) {
+                match image {
+                    crate::winapi::gdi32::BitmapType::RGBA32(b)=>{let pixels=b.pixels.as_slice(machine.mem());for y in 0..b.height.min(height){for x in 0..b.width.min(width){if let Some(color)=pixels.get((y*b.width+x)as usize){let mut color=*color;color[3]=255;dot(x as i32,y as i32,color)}}}},
+                    crate::winapi::gdi32::BitmapType::Mono(b)=>{let pixels=b.pixels.as_slice(machine.mem());let stride=crate::winapi::bitmap::BitmapMono::stride(b.width);for y in 0..b.height.min(height){for x in 0..b.width.min(width){if let Some(byte)=pixels.get((y*stride+x/8)as usize){dot(x as i32,y as i32,if byte&(0x80>>(x%8))!=0{white}else{black});}}}}
+                }
+            }
+        },
     }
     for (x,y,text,color) in texts {for (i,ch) in text.iter().enumerate(){let glyph=super::control_font::FONT.get(*ch as usize).unwrap_or(&super::control_font::FONT[63]);for (row,bits) in glyph.iter().enumerate(){for col in 0..8 {if bits&(1<<col)!=0 {dot(x+i as i32*8+col,y+row as i32,color)}}}}}
     drop(dot);
@@ -103,6 +111,7 @@ pub fn paint_children(machine:&mut Machine,parent:HWND){let children:Vec<_>=mach
 pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
     let (hwnd,m,wp,lp)=(msg.hwnd,msg.message,msg.wParam,msg.lParam);
     let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
+    if m==0x172 && (wp!=0 || (lp!=0&&!matches!(machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(lp)),Some(crate::winapi::gdi32::Object::Bitmap(_))))){return error(machine,87)}
     let Some(w)=machine.state.user32.windows.get_mut(hwnd) else{return error(machine,1400)};
     let (parent,id)=(w.parent,w.id);let Some(c)=w.control.as_mut() else{return 0};
     let mut notify=None;let mut result=0u32;let mut redraw=true;let mut output=None;
@@ -110,6 +119,8 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         1=>{}, 0xf=>{}, 7=>c.focus=true,8=>c.focus=false,
         0xc=>{c.text=incoming;c.start=c.text.len();c.end=c.start;result=1},
         0xd=>{output=Some((lp,wp,c.text.clone()))},0xe=>{result=c.text.len() as u32;redraw=false},
+        0x172 if c.kind==Kind::Static=>{result=c.image;c.image=lp},
+        0x173 if c.kind==Kind::Static=>{result=c.image;redraw=false},
         0x30=>{}, // WM_SETFONT: the fixed public-domain bitmap font is the supported profile.
         0x200=>c.hover=true,
         0x201=>{c.pressed=true;c.focus=true;if c.kind==Kind::Edit{c.start=((lp&0xffff) as usize/8).min(c.text.len());c.end=c.start;}if c.kind==Kind::Listbox{let i=((lp>>16) as usize/12)as i32;if i>=0&&(i as usize)<c.items.len(){c.selected=i;notify=Some(1)}}},

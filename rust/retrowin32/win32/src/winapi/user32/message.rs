@@ -62,7 +62,7 @@ pub enum WM {
     USER = 0x0400,
 }
 
-fn msg_from_message(message: host::Message) -> MSG {
+fn msg_from_message(machine:&mut Machine,message: host::Message) -> MSG {
     let mut msg = MSG {
         hwnd: HWND::from_raw(message.hwnd),
         message: WM::QUIT as u32, // will be overwritten
@@ -74,6 +74,7 @@ fn msg_from_message(message: host::Message) -> MSG {
     };
 
     match &message.detail {
+        host::MessageDetail::Key{message,key}=>{msg.message=*message;msg.wParam=*key;let focus=machine.state.user32.focused;if machine.state.user32.windows.get(focus).is_some(){msg.hwnd=focus;}}
         host::MessageDetail::Quit => {
             msg.message = WM::QUIT as u32;
         }
@@ -94,6 +95,15 @@ fn msg_from_message(message: host::Message) -> MSG {
         }
     }
 
+    if matches!(&message.detail,host::MessageDetail::Mouse(_)) {
+        let mut x=msg.pt_x as i32;let mut y=msg.pt_y as i32;
+        for _ in 0..64 {
+            let child=machine.state.user32.windows.iter().filter(|w|w.parent==msg.hwnd && w.style.contains(super::WindowStyle::VISIBLE) && !w.style.contains(super::WindowStyle::DISABLED) && x>=w.x&&y>=w.y&&(x-w.x)<w.width as i32&&(y-w.y)<w.height as i32).max_by_key(|w|w.hwnd.to_raw()).map(|w|(w.hwnd,w.x,w.y));
+            if let Some((hwnd,cx,cy))=child{msg.hwnd=hwnd;x-=cx;y-=cy;}else{break}
+        }
+        msg.lParam=((y as u32&0xffff)<<16)|(x as u32&0xffff);
+        if msg.message==WM::LBUTTONDOWN as u32{machine.state.user32.focused=msg.hwnd;}
+    }
     msg
 }
 
@@ -122,11 +132,8 @@ fn enqueue_timer_event_if_ready(machine: &mut Machine, hwnd: HWND) -> Result<(),
 /// Returns Err(wait) if we need to wait for an event.
 fn fill_message_queue(machine: &mut Machine, hwnd: HWND) -> Result<(), Option<u32>> {
     if let Some(msg) = machine.host.get_message() {
-        machine
-            .state
-            .user32
-            .messages
-            .push_back(msg_from_message(msg));
+        let msg=msg_from_message(machine,msg);
+        machine.state.user32.messages.push_back(msg);
         return Ok(());
     }
 

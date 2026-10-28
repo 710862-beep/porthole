@@ -115,6 +115,7 @@ pub struct MouseMessage {
 
 #[derive(Debug)]
 pub enum MessageDetail {
+    Key { message:u32, key:u32 },
     Quit,
     Mouse(MouseMessage),
 }

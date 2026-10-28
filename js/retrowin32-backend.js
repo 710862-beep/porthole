@@ -496,7 +496,7 @@
       };
       canvas.tabIndex = 0;
       for (const type of ['keydown','keyup','blur']) {
-        const listener=event=>{if(type==='blur'){process.heldKeys.clear();process.pressedKeys.clear();}else if(Number.isInteger(event.keyCode)&&event.keyCode>=0&&event.keyCode<=255)process.injectKey(event.keyCode,type==='keydown');};
+        const listener=event=>{if(type==='blur'){process.heldKeys.clear();process.pressedKeys.clear();}else if(Number.isInteger(event.keyCode)&&event.keyCode>=0&&event.keyCode<=255){process.injectKey(event.keyCode,type==='keydown');process.enqueueEvent({type,hwnd,keyCode:event.keyCode,timeStamp:event.timeStamp||now()});if(type==='keydown'&&event.key?.length===1)process.enqueueEvent({type:'char',hwnd,keyCode:event.key.charCodeAt(0),timeStamp:event.timeStamp||now()});}};
         canvas.addEventListener(type,listener);record.listeners.push([type,listener]);
       }
       for (const type of ['mousedown', 'mouseup', 'mousemove']) {

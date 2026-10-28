@@ -215,6 +215,10 @@ fn message_from_event(event: web_sys::Event) -> anyhow::Result<win32::Message> {
         .unwrap() as u32;
     let time = event.time_stamp() as u32;
     let detail = match event.type_().as_str() {
+        "keydown"|"keyup"|"char" => {
+            let key=js_sys::Reflect::get(&event,&JsValue::from_str("keyCode"))?.as_f64().unwrap_or(0.0) as u32;
+            win32::MessageDetail::Key {message:match event.type_().as_str(){"keydown"=>0x100,"keyup"=>0x101,_=>0x102},key}
+        }
         "mousedown" => {
             let mut event = map_mousevent(event.unchecked_into::<web_sys::MouseEvent>())?;
             event.down = true;

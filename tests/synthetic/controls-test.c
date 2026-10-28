@@ -3,9 +3,9 @@
 static int clicked=0,changes=0;
 static LRESULT CALLBACK parent_proc(HWND h,UINT m,WPARAM w,LPARAM l){if(m==WM_COMMAND){if(LOWORD(w)==101 && HIWORD(w)==BN_CLICKED)clicked++;if(LOWORD(w)==102&&HIWORD(w)==EN_CHANGE)changes++;return 0;}return DefWindowProcA(h,m,w,l);}
 void mainCRTStartup(void){
- INITCOMMONCONTROLSEX ex={sizeof(ex),ICC_STANDARD_CLASSES|ICC_PROGRESS_CLASS};REQUIRE(InitCommonControlsEx(&ex));
+ INITCOMMONCONTROLSEX ex={sizeof(ex),ICC_STANDARD_CLASSES};REQUIRE(InitCommonControlsEx(&ex));
  ex.dwSize=7;REQUIRE(!InitCommonControlsEx(&ex));ex.dwSize=8;ex.dwICC=0x80000000;REQUIRE(!InitCommonControlsEx(&ex));
- InitCommonControls();
+ HMODULE common=LoadLibraryA("comctl32.dll");REQUIRE(common);void (WINAPI *initOrdinal)(void)=(void (WINAPI *)(void))GetProcAddress(common,(LPCSTR)17);REQUIRE(initOrdinal);initOrdinal();
  WNDCLASSA wc={0};wc.lpfnWndProc=parent_proc;wc.lpszClassName="ControlsParent";REQUIRE(RegisterClassA(&wc));
  HWND parent=CreateWindowExA(0,"ControlsParent","Controls",WS_VISIBLE,0,0,400,300,0,0,0,0);REQUIRE(parent);
  HWND button=CreateWindowExA(0,"BUTTON","Click",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,5,5,100,24,parent,(HMENU)101,0,0);REQUIRE(button);

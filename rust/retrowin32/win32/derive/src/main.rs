@@ -107,6 +107,7 @@ fn generate_shims_module(module_name: &str, dllexports: parse::DllExports) -> To
         shims.push(shim);
     }
 
+    let ordinals: Vec<u32> = dllexports.fns.iter().map(|f| f.meta.ordinal.unwrap() as u32).collect();
     let shims_count = shims.len();
     let raw_dll_path = format!("../../dll/{}", dll_name);
     quote! {
@@ -127,6 +128,7 @@ fn generate_shims_module(module_name: &str, dllexports: parse::DllExports) -> To
             pub const DLL: BuiltinDLL = BuiltinDLL {
                 file_name: #dll_name,
                 shims: &SHIMS,
+                ordinals: &[#(#ordinals),*],
                 raw: std::include_bytes!(#raw_dll_path),
             };
         }
@@ -164,6 +166,8 @@ fn generate_builtins_module(mods: Vec<TokenStream>) -> anyhow::Result<String> {
             pub file_name: &'static str,
             /// The xth function in the DLL represents a call to shims[x].
             pub shims: &'static [Shim],
+            /// Explicit PE export ordinals, including sparse tables.
+            pub ordinals: &'static [u32],
             /// Raw bytes of generated .dll.
             pub raw: &'static [u8],
         }
