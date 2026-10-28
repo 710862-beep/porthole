@@ -513,7 +513,8 @@ pub fn DestroyWindow(_machine: &mut Machine, hWnd: HWND) -> bool {
 
 #[win32_derive::dllexport]
 pub fn GetDesktopWindow(_machine: &mut Machine) -> HWND {
-    HWND::null()
+    // Reserved virtual desktop handle, not a physical host desktop.
+    HWND::from_raw(0xffff0001)
 }
 
 #[win32_derive::dllexport]
@@ -942,8 +943,9 @@ pub fn MoveWindow(
 
 #[win32_derive::dllexport]
 pub fn GetClientRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
-    let window = machine.state.user32.windows.get(hWnd).unwrap();
-    let rect = lpRect.unwrap();
+    if hWnd.to_raw()==0xffff0001 {return GetWindowRect(machine,hWnd,lpRect);}
+    let rect=match lpRect {Some(rect)=>rect,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;}};
+    let window=match machine.state.user32.windows.get(hWnd) {Some(window)=>window,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false;}};
     *rect = RECT {
         left: 0,
         top: 0,
@@ -955,7 +957,12 @@ pub fn GetClientRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT
 
 #[win32_derive::dllexport]
 pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
-    let window = machine.state.user32.windows.get(hWnd).unwrap();
+    let rect=match lpRect {Some(rect)=>rect,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;}};
+    if hWnd.to_raw()==0xffff0001 {
+        // Same virtual monitor profile as GetSystemMetrics, never host hardware identity.
+        *rect=RECT {left:0,top:0,right:super::GetSystemMetrics(machine,Ok(super::SystemMetric::CXSCREEN)) as i32,bottom:super::GetSystemMetrics(machine,Ok(super::SystemMetric::CYSCREEN)) as i32};return true;
+    }
+    let window=match machine.state.user32.windows.get(hWnd) {Some(window)=>window,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false;}};
 
     let mut result = RECT {
         left: 0,
@@ -977,7 +984,6 @@ pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT
     result.top += offset_y;
     result.bottom += offset_y;
 
-    let rect = lpRect.unwrap();
     *rect = result;
     true
 }

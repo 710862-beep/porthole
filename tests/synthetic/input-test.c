@@ -5,6 +5,8 @@ void mainCRTStartup(void) {
     REQUIRE((GetAsyncKeyState(VK_SHIFT)&0xffff)==0x8000);
     REQUIRE(GetAsyncKeyState(VK_CONTROL)==0);
     SetLastError(0);REQUIRE(SendMessageA(0,WM_SETFONT,0,0)==0);REQUIRE(GetLastError()==ERROR_INVALID_WINDOW_HANDLE);
+    HWND desktop=GetDesktopWindow();RECT desktopRect;REQUIRE(desktop!=0 && GetWindowRect(desktop,&desktopRect));REQUIRE(desktopRect.right==GetSystemMetrics(SM_CXSCREEN) && desktopRect.bottom==GetSystemMetrics(SM_CYSCREEN));
+    SetLastError(0);REQUIRE(!GetWindowRect(0,&desktopRect));REQUIRE(GetLastError()==ERROR_INVALID_WINDOW_HANDLE);
     RAWINPUTDEVICE dev={1,2,0,0};
     REQUIRE(RegisterRawInputDevices(&dev,1,sizeof(dev)));
     const LONG dx[3]={10,-5,20}, dy[3]={5,15,-10};
