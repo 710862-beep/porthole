@@ -7,7 +7,7 @@ use serde_json::{json,Value};
 use std::collections::HashSet;
 const TRACE_CONTEXT: &str="ws2_32";
 #[derive(Default)]
-pub struct State {started:u32,sockets:HashSet<u32>,allocations:HashSet<u32>,last_error:i32}
+pub struct State {started:u32,sockets:HashSet<u32>,allocations:HashSet<u32>,last_error:i32,hostent:Option<u32>}
 fn fail(machine:&mut Machine,code:i32)->u32 {machine.state.ws2_32.last_error=code;u32::MAX}
 fn valid(machine:&Machine,ptr:u32,len:u32)->bool {ptr!=0 && ptr.checked_add(len).map_or(false,|end|end as usize<=machine.mem().as_slice().len())}
 fn host(machine:&Machine,value:Value)->Value {serde_json::from_str(&machine.host.network_call(&value.to_string())).unwrap_or(json!({"error":10022}))}
@@ -107,3 +107,20 @@ pub fn freeaddrinfo(machine:&mut Machine,ptr:u32) {if machine.state.ws2_32.alloc
 pub fn htons(_machine:&mut Machine,value:u32)->u32 {(value as u16).to_be() as u32}
 #[win32_derive::dllexport]
 pub fn inet_addr(_machine:&mut Machine,value:Option<&str>)->u32 {value.and_then(|v|v.parse::<std::net::Ipv4Addr>().ok()).map(|v|u32::from_le_bytes(v.octets())).unwrap_or(u32::MAX)}
+
+#[win32_derive::dllexport]
+pub async fn gethostbyname(machine:&mut Machine,name:Option<&str>)->u32 {
+    if machine.state.ws2_32.started==0 {fail(machine,10093);return 0;}
+    let name=name.unwrap_or("localhost");if name.len()>253 {fail(machine,11001);return 0;}
+    let response=exchange(machine,json!({"op":"lookup","host":name})).await;
+    if let Some(code)=response["error"].as_i64() {fail(machine,code as i32);return 0;}
+    let ip:Vec<u8>=match serde_json::from_value(response["address"].clone()) {Ok(v)=>v,Err(_)=>{fail(machine,11001);return 0;}};
+    if ip.len()!=4 {fail(machine,11001);return 0;}
+    let ptr=if let Some(ptr)=machine.state.ws2_32.hostent {ptr}else{
+        let mut scratch=std::mem::take(&mut machine.state.scratch);let ptr=scratch.alloc(machine.mem(),288);machine.state.scratch=scratch;machine.state.ws2_32.hostent=Some(ptr);ptr
+    };
+    let mem=machine.mem();mem.sub32_mut(ptr,288).fill(0);
+    mem.put_pod::<u32>(ptr,ptr+32);mem.put_pod::<u32>(ptr+4,ptr+20);
+    mem.put_pod::<u16>(ptr+8,2);mem.put_pod::<u16>(ptr+10,4);mem.put_pod::<u32>(ptr+12,ptr+24);
+    mem.sub32_mut(ptr+16,4).copy_from_slice(&ip);mem.put_pod::<u32>(ptr+24,ptr+16);mem.sub32_mut(ptr+32,name.len() as u32).copy_from_slice(name.as_bytes());ptr
+}

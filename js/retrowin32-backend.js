@@ -87,6 +87,8 @@
       this.registryBridge = opts.registryBridge || null;
       this.networkBridge = opts.networkBridge || null;
       this.rawInputQueue = [];
+      this.heldKeys = new Set();
+      this.pressedKeys = new Set();
       this.directories = new Set(['']);
       this.path = Porthole.VFSUtils.normalizePath(opts.path || opts.name || 'C:\\program.exe');
       this.name = opts.name || this.path.segments[this.path.segments.length - 1] || 'program.exe';
@@ -268,6 +270,11 @@
     // Candidate Rust Host ABI: pointers are decoded in Rust, not by reentrant
     // calls to Emulator.memory() while the emulator is borrowed.
     ticks() { return now() >>> 0; }
+    injectKey(key, down) {
+      if (!Number.isInteger(key) || key<0 || key>255 || typeof down!=='boolean') throw new RangeError('Invalid virtual key');
+      if(down){if(!this.heldKeys.has(key))this.pressedKeys.add(key);this.heldKeys.add(key);}else this.heldKeys.delete(key);
+    }
+    key_state(key) {const result=(this.heldKeys.has(key)?0x8000:0)|(this.pressedKeys.has(key)?1:0);this.pressedKeys.delete(key);return result;}
     injectRawInput(dx, dy) {
       if (!Number.isInteger(dx) || !Number.isInteger(dy) || dx < -2147483648 || dx > 2147483647 || dy < -2147483648 || dy > 2147483647 || this.rawInputQueue.length >= 256) throw new RangeError('Invalid/bounded raw mouse delta');
       this.rawInputQueue.push([dx,dy]);
@@ -484,6 +491,11 @@
         if (event.type === 'mousedown' && canvas.focus) canvas.focus({ preventScroll: true });
         return false;
       };
+      canvas.tabIndex = 0;
+      for (const type of ['keydown','keyup','blur']) {
+        const listener=event=>{if(type==='blur'){process.heldKeys.clear();process.pressedKeys.clear();}else if(Number.isInteger(event.keyCode)&&event.keyCode>=0&&event.keyCode<=255)process.injectKey(event.keyCode,type==='keydown');};
+        canvas.addEventListener(type,listener);record.listeners.push([type,listener]);
+      }
       for (const type of ['mousedown', 'mouseup', 'mousemove']) {
         canvas.addEventListener(type, stash);
         record.listeners.push([type, stash]);

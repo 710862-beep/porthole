@@ -11,7 +11,7 @@ require('../js/retrowin32-backend.js');
 const manifest = JSON.parse(fs.readFileSync('tests/assets/MANIFEST.json'));
 const report = { kind: 'acquired-pe-guest-probes', tests: [] };
 const wasmBytes = fs.readFileSync(process.env.PORTHOLE_WASM || 'vendor/retrowin32/retrowin32.wasm');
-for (const asset of manifest.assets) {
+for (const asset of manifest.assets.filter(a=>!process.env.PORTHOLE_PROBE_ONLY || a.path.endsWith('/'+process.env.PORTHOLE_PROBE_ONLY))) {
   const item = { path: asset.path, sha256: asset.sha256 };
   report.tests.push(item);
   try {
@@ -32,5 +32,5 @@ for (const asset of manifest.assets) {
 }
 report.summary = { executed: report.tests.length, passed: report.tests.filter(t => t.status === 'PASS').length, failed: report.tests.filter(t => t.status !== 'PASS').length };
 fs.mkdirSync('artifacts', { recursive: true });
-fs.writeFileSync(process.env.PORTHOLE_WASM ? 'artifacts/guest-probes-candidate.json' : 'artifacts/guest-probes.json', JSON.stringify(report, null, 2) + '\n');
+fs.writeFileSync(process.env.PORTHOLE_PROBE_ONLY ? 'artifacts/doom95-candidate.json' : process.env.PORTHOLE_WASM ? 'artifacts/guest-probes-candidate.json' : 'artifacts/guest-probes.json', JSON.stringify(report, null, 2) + '\n');
 if (!report.tests.length || report.summary.failed) process.exitCode = 1;

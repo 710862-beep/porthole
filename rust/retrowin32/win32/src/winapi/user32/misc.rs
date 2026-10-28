@@ -154,3 +154,10 @@ pub fn WinHelpW(
 pub fn SetCursorPos(_machine: &mut Machine, x: i32, y: i32) -> bool {
     todo!();
 }
+
+// SHORT result: bit 15 is current down state; bit 0 is pressed since last query.
+#[win32_derive::dllexport]
+pub fn GetAsyncKeyState(machine: &mut Machine, key: i32) -> u32 {
+    if key<0 || key>255 {return 0;}
+    machine.host.key_state(key as u32) & 0x8001
+}

@@ -27,7 +27,7 @@ if(process.argv[2]==='--worker') {
       networkBridge=new GuestNetwork({allowedAddresses:['127.0.0.1']});
     }
     const proc=await backend.createProcess({vfs:disk.vfs,registryBridge,networkBridge,...(port?{commandLine:`network-test.exe ${port}`} :{}),path:`C:\\Synthetic\\${name}.exe`,bytes,preload:false});
-    if(name==='input-test')for(const [dx,dy] of [[10,5],[-5,15],[20,-10]])proc.injectRawInput(dx,dy);
+    if(name==='input-test'){proc.injectKey(16,true);for(const [dx,dy] of [[10,5],[-5,15],[20,-10]])proc.injectRawInput(dx,dy);}
     proc.start(); const result=await proc.done;
     item.result={status:result.status,exitCode:result.exitCode,error:result.error,instructions:result.instructions,stdout:sanitizeEvidence(proc.output),volatileWrites:result.volatileWrites,flushError:result.flushError};
     item.status=result.status==='exited' && result.exitCode===0 && !result.flushError && proc.output.includes('SUCCESS')?'PASS':'GUEST_FAILURE';

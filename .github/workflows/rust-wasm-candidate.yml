@@ -82,6 +82,12 @@ jobs:
           PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
           PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
         run: node scripts/probe-test-assets.mjs
+      - name: Trace original DOOM95 guest calls and null IAT operand
+        if: always() && steps.rebuild.outcome == 'success'
+        env:
+          PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
+          PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
+        run: node tests/run-doom95.mjs 2>&1 | tee artifacts/doom95-logs.log
       - name: Validate candidate Wasm integrity
         if: always() && steps.rebuild.outcome == 'success'
         run: node scripts/validate-wasm.mjs artifacts/wasm-candidate

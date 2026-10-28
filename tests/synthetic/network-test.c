@@ -4,6 +4,8 @@
 #include "common.h"
 void mainCRTStartup(void) {
     WSADATA data; REQUIRE(WSAStartup(MAKEWORD(2,2),&data)==0);
+    struct hostent *host=gethostbyname("localhost");REQUIRE(host && host->h_addrtype==AF_INET && host->h_length==4 && host->h_addr_list[0] && !host->h_addr_list[1]);
+    REQUIRE((BYTE)host->h_addr_list[0][0]==127);
     struct addrinfo hints={0}, *addr=0; hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
     const char *service=GetCommandLineA();while(*service && *service!=' ')service++;REQUIRE(*service==' ');service++;
     REQUIRE(getaddrinfo("localhost",service,&hints,&addr)==0);

@@ -1,6 +1,9 @@
 #include "common.h"
 /* Host injects these exact signed deltas; no DOM and no test-only DLL import. */
 void mainCRTStartup(void) {
+    REQUIRE((GetAsyncKeyState(VK_SHIFT)&0xffff)==0x8001);
+    REQUIRE((GetAsyncKeyState(VK_SHIFT)&0xffff)==0x8000);
+    REQUIRE(GetAsyncKeyState(VK_CONTROL)==0);
     RAWINPUTDEVICE dev={1,2,0,0};
     REQUIRE(RegisterRawInputDevices(&dev,1,sizeof(dev)));
     const LONG dx[3]={10,-5,20}, dy[3]={5,15,-10};

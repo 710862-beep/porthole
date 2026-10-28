@@ -31,3 +31,18 @@ test('candidate directory host propagates queued persistence failure',async()=>{
 test('fallback mkdir creates empty directories without claiming physical persistence',async()=>{
  const f=new P.FallbackVFS();await f.mapFiles([{name:'seed',webkitRelativePath:'Drive/seed',size:1,arrayBuffer:async()=>new Uint8Array([1]).buffer}]);assert.equal((await f.createDirectory('C:\\App')).persistent,false);assert.equal((await f.stat('C:\\App')).kind,'directory');await assert.rejects(f.createDirectory('C:\\Missing\\Child'));await assert.rejects(f.createDirectory('C:\\App'));
 });
+require('../../shims/user32.js');require('../../shims/api-logger.js');
+test('headless input forwards signed deltas to bounded real host queue',()=>{
+ const process=proc();const injector=new P.User32InputInjector(process);
+ for(const [dx,dy] of [[10,5],[-5,15],[20,-10]])injector.inject_test_input(dx,dy);
+ assert.deepEqual(JSON.parse(process.raw_input_events()),[[10,5],[-5,15],[20,-10]]);assert.equal(process.raw_input_events(),'[]');
+ assert.throws(()=>injector.inject_test_input(NaN,1),RangeError);assert.throws(()=>injector.inject_test_input(2147483648,1),RangeError);
+ for(let i=0;i<256;i++)injector.inject_test_input(1,1);assert.throws(()=>injector.inject_test_input(1,1),RangeError);
+});
+test('absent TCP transport returns explicit unsupported rather than success',()=>{assert.deepEqual(JSON.parse(proc().network_call('{"op":"socket"}')),{error:10045});});
+test('guest API logger preserves exact IAT cause without confusing last API',()=>{
+ const logger=new P.ApiLogger();const result=logger.ingestCrash('NULL_INDIRECT_CALL causal_import=Some("kernel32.dll!Example@IAT") LAST20_API=["OtherAPI args=[00000000]"]');
+ assert.equal(result.causalImport,'kernel32.dll!Example');assert.equal(result.lastApi.api,'OtherAPI');assert.equal(result.lastApi.origin,'rust-guest');
+});
+test('API tail is bounded and missing IAT provenance never invents a causal API',()=>{const logger=new P.ApiLogger(20);for(let i=0;i<100;i++)logger.log('API'+i,[]);assert.equal(logger.getLog().length,20);assert.equal(logger.getLastCall().api,'API99');assert.equal(logger.ingestCrash('jmp to null page').causalImport,null);});
+test('GetAsyncKeyState host tracks transitions, held state, release and consume-on-query',()=>{const process=proc();assert.equal(process.key_state(16),0);process.injectKey(16,true);assert.equal(process.key_state(16),0x8001);assert.equal(process.key_state(16),0x8000);process.injectKey(16,false);assert.equal(process.key_state(16),0);assert.throws(()=>process.injectKey(256,true),RangeError);});
