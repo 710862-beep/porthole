@@ -113,10 +113,10 @@ Workflow inclui compilador fixado, fetch-with-fallbacks, thread/input/network/re
 - `https://api.github.com/repos/Abel0424/abandons` — HTTP `404` — curl: (22) The requested URL returned error: 404
 - `https://github.com/lucasg/Dependencies/releases/download/v1.11.1/Dependencies_x86_Release.zip` — HTTP `302` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443
 - `https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.8.1/npp.8.9.8.1.Installer.exe` — HTTP `302` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443
-- `https://api.github.com/repos/lucasg/Dependencies/releases/assets/47845850` — HTTP `302` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443  
-- `release asset API lucasg/Dependencies` — HTTP `sem resposta` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443  
-- `https://api.github.com/repos/notepad-plus-plus/notepad-plus-plus/releases/assets/586237299` — HTTP `302` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443  
-- `release asset API notepad-plus-plus/notepad-plus-plus` — HTTP `sem resposta` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443  
+- `https://api.github.com/repos/lucasg/Dependencies/releases/assets/47845850` — HTTP `302` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443
+- `release asset API lucasg/Dependencies` — HTTP `sem resposta` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443
+- `https://api.github.com/repos/notepad-plus-plus/notepad-plus-plus/releases/assets/586237299` — HTTP `302` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443
+- `release asset API notepad-plus-plus/notepad-plus-plus` — HTTP `sem resposta` — curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to release-assets.githubusercontent.com:443
 - `tree Gryzly73/WineTest` — HTTP `sem resposta` — No matching standalone PE (archives/source require separate build)
 - `tree Pierl0/winetest` — HTTP `sem resposta` — No matching standalone PE (archives/source require separate build)
 - `tree itsmecevi/winetest` — HTTP `sem resposta` — No matching standalone PE (archives/source require separate build)

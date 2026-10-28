@@ -15,7 +15,7 @@ concurrency:
 jobs:
   rust-wasm-candidate:
     name: Rebuild and validate candidate Rust/Wasm (no automatic promotion)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,15 +27,29 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-bindgen*
+          key: porthole-ubuntu24-rust81-bindgen92-${{ hashFiles('rust/retrowin32/Cargo.lock') }}
       - name: Install PE DLL linker and matching binding generator
         run: |
+          mkdir -p artifacts
+          exec > >(tee artifacts/toolchain-install.log) 2>&1
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18
           echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
-          cargo install wasm-bindgen-cli --version 0.2.92 --locked
+          if ! command -v wasm-bindgen || ! wasm-bindgen --version | grep -Fx 'wasm-bindgen 0.2.92'; then
+            cargo install wasm-bindgen-cli --version 0.2.92 --locked
+          fi
       - name: Rebuild Wasm
         id: rebuild
         run: bash scripts/rebuild-wasm.sh
+      - name: Mirror build diagnostics to Checks API
+        if: always()
+        run: python3 scripts/publish-ci-diagnostics.py
       - name: Prepare authored synthetic PE32 fixtures
         if: always() && steps.rebuild.outcome == 'success'
         run: |
