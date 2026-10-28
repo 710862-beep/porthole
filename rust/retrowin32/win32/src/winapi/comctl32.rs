@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 use crate::{Machine,winapi::{user32::controls,kernel32}};
 use memory::Extensions;
+const TRACE_CONTEXT: &str = "comctl32";
 #[win32_derive::dllexport(ordinal = 17)]
 pub fn InitCommonControls(machine:&mut Machine) {
     controls::standard(machine);

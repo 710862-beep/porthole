@@ -99,12 +99,18 @@ jobs:
       - name: Install real headless Chromium for original game probe
         if: always() && steps.rebuild.outcome == 'success'
         run: npx playwright install --with-deps chromium
+      - name: Validate native controls with real Canvas pixels
+        if: always() && steps.rebuild.outcome == 'success'
+        run: node tests/run-controls-browser.mjs
       - name: Probe DOOM95 with real DOM and Canvas (not gameplay credit)
         if: always() && steps.rebuild.outcome == 'success'
         env:
           PORTHOLE_WASM: artifacts/wasm-candidate/retrowin32.wasm
           PORTHOLE_GLUE: artifacts/wasm-candidate/glue.mjs
         run: node tests/run-doom95-browser.mjs 2>&1 | tee artifacts/doom95-browser.log
+      - name: Validate five-second gameplay evidence
+        if: always() && steps.rebuild.outcome == 'success'
+        run: node scripts/validate-gameplay.mjs
       - name: Validate candidate Wasm integrity
         if: always() && steps.rebuild.outcome == 'success'
         run: node scripts/validate-wasm.mjs artifacts/wasm-candidate
@@ -118,6 +124,9 @@ jobs:
       - name: Validate all compatibility gates (documented failure is not promotion)
         if: always() && steps.rebuild.outcome == 'success'
         run: node scripts/validate-all-tests.mjs
+      - name: Check promotion without mutating stable vendor
+        if: always() && steps.rebuild.outcome == 'success'
+        run: node scripts/check-promotion.mjs
       - name: Mirror candidate and test results through Git blob API
         if: always()
         env:

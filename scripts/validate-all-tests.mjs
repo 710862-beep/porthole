@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-export function evaluate({synthetic,doom,integrity,regression}) {
+export function evaluate({synthetic,doom,integrity,regression,controls,gameplay}) {
  const checks=[];const check=(name,pass)=>checks.push({name,pass:Boolean(pass)});
  const names=['thread-validation','input-test','network-test','registry-test','installer-test'];const tests=synthetic?.tests||[];
  check('exactly five distinct required PEs',tests.length===5 && new Set(tests.map(t=>t.name)).size===5 && names.every(n=>tests.some(t=>t.name===n)));
@@ -15,11 +15,12 @@ export function evaluate({synthetic,doom,integrity,regression}) {
  const installer=by('installer-test').hostEvidence;check('installer directory/file/metadata disk reread',installer?.kind==='node-disk-fresh-registry-store' && installer.directory===true && installer.testFileBytes===15 && installer.uninstallerMarkerBytes===0 && installer.installPath==='C:\\Program Files\\TestApp');
  check('compiled Wasm and initialized binding',integrity?.status==='INTEGRITY_VALIDATED_NOT_COMPATIBILITY' && integrity.bindingInitialized===true);
  check('JS/DOM and syntax regressions',regression?.passed===true);
- check('DOOM95 actually passed without null import',doom?.status==='PASS' && doom.gameplayValidated===true && doom.executionAttempted===true && doom.exitCode===0 && !doom.causalImport);
+ check('Common Controls native guest and real Canvas pixels',controls?.status==='PASS'&&controls.pixelsValidated===true&&controls.backendSha256===integrity?.wasmSha256);
+ check('DOOM95 actually passed without null import',doom?.status==='GAMEPLAY_FUNCTIONAL' && doom.gameplayValidated===true && gameplay?.passed===true && doom.executionAttempted===true && !doom.error && !doom.causalImport && doom.backendSha256===integrity?.wasmSha256);
  return {status:checks.every(c=>c.pass)?'ALL_GATES_PASSED':'COMPATIBILITY_GATES_FAILED',promotable:checks.every(c=>c.pass),checks};
 }
 if(process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url){
  const dir=process.argv[2]||'artifacts';const read=file=>{try{return JSON.parse(fs.readFileSync(path.join(dir,file)));}catch{return null;}};
- const result=evaluate({synthetic:read('synthetic-candidate-all.json'),doom:read('doom95-browser.json')||read('doom95-diagnostics.json'),integrity:read('wasm-candidate/integrity.json'),regression:read('candidate-regressions.json')});
+ const result=evaluate({synthetic:read('synthetic-candidate-all.json'),doom:read('doom95-browser.json')||read('doom95-diagnostics.json'),integrity:read('wasm-candidate/integrity.json'),regression:read('candidate-regressions.json'),controls:read('controls-browser.json'),gameplay:read('gameplay-validation.json')});
  fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'validation-report.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2));process.exitCode=result.promotable?0:1;
 }
