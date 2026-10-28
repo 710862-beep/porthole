@@ -12,6 +12,7 @@ pub fn call(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
 pub fn call_rm32(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     // call dword ptr [addr]
     let target = rm32(cpu, mem, instr).get();
+    if target<0x1000 {cpu.fault_operand=if instr.op0_kind()==iced_x86::OpKind::Memory {Some(x86_addr(cpu,instr))}else{None};cpu.err(format!("NULL_INDIRECT_CALL ip={:x} operand={:?} target={:x}",instr.ip32(),cpu.fault_operand,target));return;}
     push(cpu, mem, cpu.regs.eip);
     x86_jmp(cpu, target)
 }
@@ -33,6 +34,7 @@ pub fn jmp(cpu: &mut CPU, _mem: Mem, instr: &Instruction) {
 
 pub fn jmp_rm32(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     let target = rm32(cpu, mem, instr).get();
+    if target<0x1000 {cpu.fault_operand=if instr.op0_kind()==iced_x86::OpKind::Memory {Some(x86_addr(cpu,instr))}else{None};cpu.err(format!("NULL_INDIRECT_JMP ip={:x} operand={:?} target={:x}",instr.ip32(),cpu.fault_operand,target));return;}
     x86_jmp(cpu, target)
 }
 

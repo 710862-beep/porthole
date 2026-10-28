@@ -85,6 +85,8 @@
       this.module = opts.module;
       this.vfs = opts.vfs || null;
       this.registryBridge = opts.registryBridge || null;
+      this.networkBridge = opts.networkBridge || null;
+      this.rawInputQueue = [];
       this.directories = new Set(['']);
       this.path = Porthole.VFSUtils.normalizePath(opts.path || opts.name || 'C:\\program.exe');
       this.name = opts.name || this.path.segments[this.path.segments.length - 1] || 'program.exe';
@@ -266,6 +268,12 @@
     // Candidate Rust Host ABI: pointers are decoded in Rust, not by reentrant
     // calls to Emulator.memory() while the emulator is borrowed.
     ticks() { return now() >>> 0; }
+    injectRawInput(dx, dy) {
+      if (!Number.isInteger(dx) || !Number.isInteger(dy) || dx < -2147483648 || dx > 2147483647 || dy < -2147483648 || dy > 2147483647 || this.rawInputQueue.length >= 256) throw new RangeError('Invalid/bounded raw mouse delta');
+      this.rawInputQueue.push([dx,dy]);
+    }
+    raw_input_events() { return JSON.stringify(this.rawInputQueue.splice(0)); }
+    network_call(request) { return this.networkBridge ? this.networkBridge.call(request) : '{"error":10045}'; }
     registry_call(op, handle, name, type, data) {
       return this.registryBridge ? this.registryBridge.call(op, handle, name, type, data) : '{"status":50}';
     }

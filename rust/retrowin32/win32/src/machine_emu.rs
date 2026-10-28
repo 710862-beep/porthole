@@ -46,6 +46,7 @@ pub struct Emulator {
     /// Places where we've patched out the instruction with an int3.
     /// The map values are the bytes from before the breakpoint.
     breakpoints: HashMap<u32, u8>,
+    api_tail: std::collections::VecDeque<String>,
 }
 
 pub type MemImpl = BoxMem;
@@ -65,6 +66,7 @@ impl MachineX<Emulator> {
                 memory,
                 shims,
                 breakpoints: Default::default(),
+                api_tail: Default::default(),
             },
             host,
             state,
@@ -179,7 +181,7 @@ impl MachineX<Emulator> {
             }
             x86::CPUState::Error(message) => {
                 self.status = Status::Error {
-                    message: message.clone(),
+                    message: format!("{} causal_import={:?} LAST20_API={:?}",message,self.emu.x86.cpu().fault_operand.and_then(|addr|self.labels.get(&addr)),self.emu.api_tail),
                 };
             }
             state => unimplemented!("{state:?}"),
@@ -211,6 +213,9 @@ impl MachineX<Emulator> {
         };
 
         let stack_args = esp + 8;
+        let entry=format!("{} args={:08x?}",shim.name,(0..4).map(|i|self.mem().get_pod::<u32>(stack_args+i*4)).collect::<Vec<_>>());
+        if self.emu.api_tail.len()==20 {self.emu.api_tail.pop_front();}
+        self.emu.api_tail.push_back(entry);
         match shim.func {
             Handler::Sync(func) => {
                 let ret = unsafe { func(self, stack_args) };

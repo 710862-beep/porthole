@@ -133,6 +133,8 @@ pub trait Host {
     fn registry_call(&self, _op: &str, _handle: u32, _name: &str, _ty: u32, _data: &[u8]) -> String {
         "{\"status\":50}".into()
     }
+    fn raw_input_events(&self) -> String { "[]".into() }
+    fn network_call(&self, _request: &str) -> String { "{\"error\":10045}".into() }
     fn system_time(&self) -> chrono::DateTime<chrono::Local>;
 
     /// Get the next pending message, or None if no message waiting.

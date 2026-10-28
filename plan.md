@@ -307,3 +307,11 @@ Raw Input/ws2_32 e DOOM95 continuam pendentes. Workflow vermelho, estável intac
 **sem promoção**. Próximo gate: implementar ABI guest de input/rede com prova
 real, investigar os traces e repetir CI. Documentação consolidada em
 `docs/rust-wasm-integration.md`; não inferir compatibilidade de integridade.
+
+## Fase 0 — estratégia dos três bloqueios
+
+1. Input: integrar fila determinística no núcleo user32 e export host de injeção; testar RegisterRawInputDevices → WM_INPUT → GetRawInputData com três deltas exatos, sem DOM e sem import de teste confundido com API Windows. Rotular como input sintético.
+2. Rede: implementar DLL guest ws2_32 no layout real win32/src/winapi; negociação/handles/erros e buffers x86; ponte assíncrona para transporte TCP Node real no CI e erro explícito quando indisponível no browser. Servidor HTTP loopback de teste deve conferir requisição e resposta, sem IP externo fixo ou sucesso mockado.
+3. DOOM95: instrumentar resolução de IAT e desvios x86 para identificar endereço/instrução/import efetivamente chamado com destino nulo. Registrar últimas chamadas guest e argumentos limitados. Implementar somente a API demonstrada pelo trace, repetir build e probe; não inferir causa da última API JS.
+4. Commit → push na branch da sessão → Actions dedicado → download API verificado → integridade/binding → cinco contratos e DOOM95. Preservar falhas no validador agregado. Atualizar CI geral sem duplicar builds ou copiar candidato sobre vendor antecipadamente.
+5. Relatório com SHA/run/evidências e limites. Promoção apenas com todos os gates efetivamente satisfeitos; falha documentada não vira sucesso técnico.

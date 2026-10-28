@@ -20,13 +20,14 @@ if(process.argv[2]==='--worker') {
     disk=await createSyntheticDisk(globalThis.Porthole.VFSUtils.normalizePath);
     const registryBridge=new globalThis.Porthole.GuestRegistryBridge(new globalThis.Porthole.Registry.RegistryStore({vfs:disk.vfs}));
     const proc=await backend.createProcess({vfs:disk.vfs,registryBridge,path:`C:\\Synthetic\\${name}.exe`,bytes,preload:false});
+    if(name==='input-test')for(const [dx,dy] of [[10,5],[-5,15],[20,-10]])proc.injectRawInput(dx,dy);
     proc.start(); const result=await proc.done;
     item.result={status:result.status,exitCode:result.exitCode,error:result.error,instructions:result.instructions,stdout:sanitizeEvidence(proc.output),volatileWrites:result.volatileWrites,flushError:result.flushError};
     item.status=result.status==='exited' && result.exitCode===0 && !result.flushError && proc.output.includes('SUCCESS')?'PASS':'GUEST_FAILURE';
     if(name==='thread-validation' && result.status==='exited' && proc.output.split('WORKER_DONE').length-1!==3) item.status='INCOMPLETE_THREAD_EXECUTION';
     if(item.status==='PASS') item.hostEvidence=await verifySyntheticOutputs(name,disk,globalThis.Porthole.Registry.RegistryStore);
     if(name==='thread-validation' && item.status==='PASS') item.guestContract={workers:3,loopsPerWorker:10,tlsAssertions:30,completedMarkers:3};
-    if(name==='input-test' && item.status==='PASS') item.status='INPUT_NOT_VALIDATED'; // Never credit a headless run as physical input.
+    if(name==='input-test' && item.status==='PASS') {if(proc.output.split('RAW_DELTA_VERIFIED').length-1!==3)item.status='INPUT_NOT_VALIDATED';else item.guestContract={kind:'synthetic-injected-raw-input',events:3,deltas:[[10,5],[-5,15],[20,-10]],physicalInputValidated:false};} // Never credit a headless run as physical input.
   }catch(e){item.status='LOAD_OR_BACKEND_FAILURE';item.error=sanitizeEvidence(e.message);}
   finally {if(disk)await disk.close();}
   console.log(JSON.stringify(item));

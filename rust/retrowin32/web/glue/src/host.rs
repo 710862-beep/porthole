@@ -260,6 +260,10 @@ extern "C" {
     fn registry_call(this: &JsHost, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String;
 
     #[wasm_bindgen(method)]
+    fn raw_input_events(this: &JsHost) -> String;
+    #[wasm_bindgen(method)]
+    fn network_call(this: &JsHost, request: &str) -> String;
+    #[wasm_bindgen(method)]
     fn log(this: &JsHost, level: u8, msg: String);
 
     #[wasm_bindgen(method)]
@@ -281,6 +285,8 @@ extern "C" {
 }
 
 impl win32::Host for JsHost {
+    fn raw_input_events(&self) -> String { JsHost::raw_input_events(self) }
+    fn network_call(&self, request: &str) -> String { JsHost::network_call(self,request) }
     fn registry_call(&self, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String {
         JsHost::registry_call(self, op, handle, name, ty, data)
     }

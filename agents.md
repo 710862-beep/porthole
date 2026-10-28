@@ -149,3 +149,9 @@ Raw Input/ws2_32 e DOOM95 continuam pendentes. Workflow vermelho, estável intac
 **sem promoção**. Próximo gate: implementar ABI guest de input/rede com prova
 real, investigar os traces e repetir CI. Documentação consolidada em
 `docs/rust-wasm-integration.md`; não inferir compatibilidade de integridade.
+
+## Fase 0 — três bloqueios, 2026-10-28
+
+Eu devo resolver os 3 bloqueios restantes (Input headless, ws2_32, DOOM95) antes de considerar o candidato pronto para promoção. Cada correção deve ser testada no CI remoto.
+
+Honestidade rigorosa: injeção sintética não valida input físico; socket/connect/send não podem retornar sucesso sem transporte real; última API observada não prova causalidade. Instrumentar o caminho Rust guest, não apenas SHIMs JS isolados. Manter estável intacto até os gates reais. Trabalhar exclusivamente na branch arena/6a52f3cb-porthole.

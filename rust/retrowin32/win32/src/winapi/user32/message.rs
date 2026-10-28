@@ -222,6 +222,7 @@ pub fn PeekMessageA(
 ) -> bool {
     let lpMsg = lpMsg.unwrap();
 
+    super::raw_input::pump(machine);
     let _ = fill_message_queue(machine, hWnd);
 
     if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {

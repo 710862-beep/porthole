@@ -37,6 +37,7 @@ const MAGIC_ADDR: u32 = 0xFFFF_FFF0;
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 pub struct CPU {
+    pub fault_operand: Option<u32>,
     pub regs: Registers,
     // Flags are in principle a register but we moved it outside of regs for lifetime reasons,
     // because there are operations we want to do over mut regs and flags at the same time.
@@ -57,6 +58,7 @@ impl CPU {
             ops::init_op_tab();
         }
         CPU {
+            fault_operand: None,
             regs: Registers::default(),
             flags: Flags::empty(),
             fpu: FPU::default(),
