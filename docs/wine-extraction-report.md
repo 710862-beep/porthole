@@ -342,7 +342,7 @@ Novo CI necessário para essas duas correções.
 ## Resultado 40761708664: 131 presents de startup, próximo SetWindowPlacement
 
 https://github.com/710862-beep/porthole/actions/runs/40761708664
-Fonte 0dcc42d: build/24 testes win32, 5/5 PEs e controles PASS (64 presents).
+Fonte 0dcc42d: build/24 testes Rust, 5/5 PEs e controles PASS (64 presents).
 IsWindowVisible e os item-data passaram. DOOM95 chegou a 131 presents/79 mudanças,
 mas sem 5s/input/loop; causal **user32!SetWindowPlacement**, não gameplay.
 
@@ -363,7 +363,7 @@ uma imagem do launcher não substitui o gate de gameplay.
 ## Resultado 40762957982: core DOOM95 começou; regressão visual detectada
 
 https://github.com/710862-beep/porthole/actions/runs/40762957982
-Fonte 9fbf0f5: build/24 testes win32 e 5/5 PEs PASS. Placement roundtrip
+Fonte 9fbf0f5: build/24 testes Rust e 5/5 PEs PASS. Placement roundtrip
 executou/exit0, mas **controles FAIL por pixels**: glyph=0/selection=0,
 mesmo stdout SUCCESS. Não aceitei exit0 como sucesso de renderização.
 Causa: recriar surface do HWND antigo chamava Host.screen() que escolhia
@@ -387,7 +387,7 @@ source/run. Próximo CI deve validar tanto pixels quanto transporte corrigidos.
 ## Resultado 40764417391: regressão visual corrigida e transporte íntegro
 
 https://github.com/710862-beep/porthole/actions/runs/40764417391
-Fonte e28f0c7: build/24 testes win32, 5/5 PEs e controles **PASS** (73 presents,
+Fonte e28f0c7: build/24 testes Rust, 5/5 PEs e controles **PASS** (73 presents,
 glyph/selection/image verificados). Fix de HWND corrige pixels, sem relaxar gate.
 Novo manifesto por blob foi baixado completo e verificado por hash/source/run,
 inclusive screenshot e log. DOOM95 confirmou count MIDI=0 e avançou para
@@ -490,3 +490,31 @@ cria front+2 backbuffers, verifica três ponteiros distintos e retorno ao root;
 não desenha pixels artificiais no gate de controles. CreateSurface completo,
 refcounts, mipmaps, overlays e rotação/flags de Flip ainda não estão portados;
 NÃO se declara conformidade DirectDraw. CI seguinte deve testar a cadeia real.
+
+## Estado verificado mais recente — CI 40769582061
+
+https://github.com/710862-beep/porthole/actions/runs/40769582061
+Fonte **1b9aaad9a0623a4390bc8e62ada2bebe302f0fb0**. Build PASS;
+24 testes Rust no total (21 win32), cinco PEs PASS, controles/pixels PASS,
+incluindo criação real de front+2 buffers distintos e cadeia circular.
+Download completo com manifesto/hash/source/run verificados. Wasm2,040,602B,
+SHA256 `405d4e44ffc23642da0faa8ef340bf57d5e48ba8b47f164dbd3907a4a6ff3261`,
+42 exports/70 imports; bindgen inicializado. Isto valida integridade, NÃO
+compatibilidade completa nem autorização de promoção.
+
+DOOM passou CreateSurface, Lock/Unlock e mais leitura WAD. **Próximo bloqueio
+não corrigido: SetWindowsHookExA**, NULL_INDIRECT_CALL ip0x43afa6,
+IAT0x620458. Disassembly original: GetCurrentThreadId → push tid, hinstance,
+callback0x438e70, tipo2 (**WH_KEYBOARD do thread atual**). Portanto precisa de
+registro+execução real do callback na retirada de mensagens de teclado,
+CallNextHookEx e UnhookWindowsHookEx — não um handle fictício/no-op.
+Wine user32/hook.c:132-155,372-375 é o próximo ponto de mineração;
+fronteira NtUserSetWindowsHookEx precisa ser adaptada à fila/threads locais.
+Hooks globais/injeção entre processos não podem ser alegados como suportados.
+
+Medição real: **273 presents,87 mudanças, input=false, loop=false,
+observação incompleta**. Workflow continua vermelho corretamente. Colorfill,
+rotação/flags de Flip, lifecycle/refcounts e outros caminhos DirectDraw ainda
+parciais; extrator lexical não é fechamento semântico completo. Esta etapa não
+conclui o objetivo gameplay e não demonstra limitação fundamental: resta trabalho
+causal de implementação/teste. **Stable intocado; candidato não promovível.**
