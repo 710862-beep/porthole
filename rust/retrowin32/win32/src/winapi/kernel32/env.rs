@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later
- * Adapted from Wine dlls/kernelbase/process.c:1565-1780, in particular
+ * Adapted from Wine dlls/kernelbase/process.c:1553-1780, in particular
  * GetEnvironmentVariableA/W and SetEnvironmentVariableA/W at 1656-1780.
  * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
  * Copyright 1996, 1998 Alexandre Julliard. See LICENSE.Wine.

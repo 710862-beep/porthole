@@ -4,6 +4,9 @@
   "source": "dlls/advapi32/advapi.c",
   "sourceSha256": "6e2691392dbfdc7554cf76f7c260eac5896de9ee8c88fc6a811805c3252f84ed",
   "license": "LGPL-2.1-or-later; Copyright Sven Verdoolaege",
+  "copyrights": [
+    "Copyright 1995 Sven Verdoolaege"
+  ],
   "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
   "entry": "GetUserNameA",
   "functions": [

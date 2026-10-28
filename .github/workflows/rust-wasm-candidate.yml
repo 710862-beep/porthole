@@ -31,6 +31,7 @@ jobs:
           node scripts/extract-wine-api.mjs comctl32 UpDownWindowProc
           node scripts/extract-wine-api.mjs advapi32 GetUserNameA
           node scripts/extract-wine-api.mjs kernelbase GetEnvironmentVariableA
+          node scripts/extract-wine-api.mjs kernelbase WideCharToMultiByte
           node --test tests/node/wine-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.81.0
         with:

@@ -98,3 +98,25 @@ https://github.com/710862-beep/porthole/actions/runs/40751078822
 
 Candidato seguinte ainda precisa compilar/executar remotamente; não atribuir
 estes novos resultados ao run anterior.
+
+## Terceiro resultado remoto: 40752178802
+
+Fonte `9f491e9ca6adc1998617401ad32ee27bc0a42849`:
+https://github.com/710862-beep/porthole/actions/runs/40752178802
+
+- Build, cinco PEs (incluindo novos contratos GetUserName/ambiente A/W) e
+  controles/diálogos/updown PASS. Isso não significa execução bem-sucedida do jogo.
+- Disponibilizar GetEnvironmentStringsW expôs dependência no CRT antes do
+  launcher: **WideCharToMultiByte**, panic real em kernel32/nls.rs:93.
+  5 presents; gameplay=false. A regressão de progresso foi analisada, não ocultada
+  voltando a fingir ausência do ambiente Unicode.
+- Wine locale.c:7426-7472 e wcstombs_utf8 dão validação e dispatch reais. A ABI
+  anterior de retrowin32 tinha sete parâmetros; corrigida para os oito exigidos,
+  incluindo lpDefaultChar. Subset revisado: CP_ACP/1252 e UTF8, tamanho/query/NUL,
+  flags, buffer curto, default/used e surrogate inválido. Outras codepages e
+  tabelas completas de best-fit/composição continuam não portadas.
+- Corpus em wine-kernelbase-locale-extraction.json (19 funções alcançáveis nesse
+  arquivo); demais conversores/tabelas e callbacks não são anunciados como um
+  port completo. Novos testes Rust e PE conferem euro CP1252, emoji UTF8, consulta
+  de tamanho, buffer curto e erro de surrogate inválido.
+- Novo candidato precisa de outra execução remota. Sem promoção.

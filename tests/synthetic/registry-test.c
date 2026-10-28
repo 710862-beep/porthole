@@ -1,9 +1,16 @@
 #include "common.h"
 void mainCRTStartup(void) {
+    WCHAR converted[]={L'A',0x20ac,0};char encoded[16];BOOL used=TRUE;
+    REQUIRE(WideCharToMultiByte(1252,0,converted,-1,0,0,0,0)==3);
+    REQUIRE(WideCharToMultiByte(1252,0,converted,-1,encoded,sizeof(encoded),0,&used)==3&&!used&&(BYTE)encoded[1]==0x80&&encoded[2]==0);
+    REQUIRE(!WideCharToMultiByte(1252,0,converted,-1,encoded,2,0,0)&&GetLastError()==ERROR_INSUFFICIENT_BUFFER);
+    WCHAR emoji[]={0xd83d,0xde00};REQUIRE(WideCharToMultiByte(CP_UTF8,0,emoji,2,encoded,sizeof(encoded),0,0)==4&&(BYTE)encoded[0]==0xf0);
+    REQUIRE(!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,emoji,1,encoded,sizeof(encoded),0,0)&&GetLastError()==ERROR_NO_UNICODE_TRANSLATION);
     char user[32];DWORD length=1;user[0]='!';REQUIRE(!GetUserNameA(user,&length));REQUIRE(length==9&&GetLastError()==ERROR_INSUFFICIENT_BUFFER&&user[0]=='!');
     REQUIRE(SetEnvironmentVariableA("WINEUSERNAME","Miner"));length=sizeof(user);REQUIRE(GetUserNameA(user,&length)&&length==6&&user[0]=='M'&&user[4]=='r'&&user[5]==0);
     WCHAR userW[16];length=16;REQUIRE(GetUserNameW(userW,&length)&&length==6&&userW[0]==L'M'&&userW[5]==0);
     REQUIRE(GetEnvironmentVariableA("wineusername",user,0)==6);REQUIRE(SetEnvironmentVariableA("WINEUSERNAME",0));length=sizeof(user);REQUIRE(!GetUserNameA(user,&length));REQUIRE(GetLastError()==ERROR_ENVVAR_NOT_FOUND);REQUIRE(SetEnvironmentVariableA("WINEUSERNAME","Porthole"));
+    REQUIRE(GetEnvironmentVariableA("WINDIR",user,sizeof(user))==10&&user[2]=='\\'&&user[3]=='W');
     LPCH env=GetEnvironmentStringsA();REQUIRE(env);REQUIRE(FreeEnvironmentStringsA(env));REQUIRE(!FreeEnvironmentStringsA(env));
     HKEY key; DWORD disposition; BYTE token[128], readback[128];
     for (int i=0;i<128;i++) token[i]=(BYTE)i; /* artificial data, never a real token */

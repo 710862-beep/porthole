@@ -44,3 +44,14 @@ configured initial virtual account is **Porthole**, not a claim about the host
 user. Generic ANSI environment encoding is partial (ASCII arguments/Latin-1
 output); the Unicode paths operate on UTF-16. Other registry code in advapi32.rs
 retains its prior licensing; the derived identity section is explicitly marked.
+
+### Wine-derived WideCharToMultiByte subset
+
+The marked section in kernel32/nls.rs derives from `dlls/kernelbase/locale.c`
+at the pinned SHA: Copyright 1995 Martin von Loewis; 1998 David Lee Lambert;
+2000 Julio César Gázquez; 2003 Jon Griffiths; 2005 Dmitry Timoshkov;
+2002, 2019 Alexandre Julliard, LGPL-2.1-or-later. Parameter/flag validation and
+CP1252/UTF8 behavior are adapted to checked guest buffers and Rust conversion.
+Full codepage/best-fit/composition tables are not ported. The native export ABI
+has all eight Win32 arguments, including default-character and used-default
+pointers; the earlier upstream declaration omitted one parameter.

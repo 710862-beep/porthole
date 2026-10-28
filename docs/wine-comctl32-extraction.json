@@ -4,6 +4,9 @@
   "source": "dlls/comctl32/updown.c",
   "sourceSha256": "8cb4cd35e02f59ad2f00218df3279de605f5e5c78438fd84780aa07011a493a8",
   "license": "LGPL-2.1-or-later; Copyright Dimitrie O. Paun",
+  "copyrights": [
+    "Copyright 1997, 2002 Dimitrie O. Paun"
+  ],
   "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
   "entry": "UpDownWindowProc",
   "functions": [

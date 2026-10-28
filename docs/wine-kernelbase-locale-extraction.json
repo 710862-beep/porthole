@@ -1,0 +1,233 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/kernelbase/locale.c",
+  "sourceSha256": "76584b5426836b1b0c8600efced75f780046f48bbc23a609d0c76c873954ec77",
+  "license": "LGPL-2.1-or-later; Copyright Alexandre Julliard",
+  "copyrights": [
+    "Copyright 1995 Martin von Loewis",
+    "Copyright 1998 David Lee Lambert",
+    "Copyright 2000 Julio César Gázquez",
+    "Copyright 2003 Jon Griffiths",
+    "Copyright 2005 Dmitry Timoshkov",
+    "Copyright 2002, 2019 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "WideCharToMultiByte",
+  "functions": [
+    {
+      "name": "WideCharToMultiByte",
+      "startLine": 7426,
+      "endLine": 7471,
+      "calls": [
+        "SetLastError",
+        "TRACE",
+        "debugstr_an",
+        "debugstr_wn",
+        "get_codepage_table",
+        "lstrlenW",
+        "wcstombs_codepage",
+        "wcstombs_cpsymbol",
+        "wcstombs_utf7",
+        "wcstombs_utf8"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "get_codepage_table",
+      "startLine": 2272,
+      "endLine": 2319,
+      "calls": [
+        "ARRAY_SIZE",
+        "ERR",
+        "NtCurrentTeb",
+        "NtGetNlsSectionPtr",
+        "RtlEnterCriticalSection",
+        "RtlInitCodePageTable",
+        "RtlLeaveCriticalSection",
+        "SetLastError",
+        "get_lcid_codepage"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_codepage",
+      "startLine": 3329,
+      "endLine": 3344,
+      "calls": [
+        "wcstombs_dbcs",
+        "wcstombs_dbcs_slow",
+        "wcstombs_sbcs",
+        "wcstombs_sbcs_slow"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_cpsymbol",
+      "startLine": 2834,
+      "endLine": 2867,
+      "calls": [
+        "SetLastError",
+        "min"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_utf7",
+      "startLine": 2870,
+      "endLine": 2962,
+      "calls": [
+        "ENCODABLE",
+        "OUTPUT",
+        "SetLastError"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_utf8",
+      "startLine": 2965,
+      "endLine": 2985,
+      "calls": [
+        "RtlUnicodeToUTF8N",
+        "SetLastError",
+        "set_ntstatus"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "get_lcid_codepage",
+      "startLine": 2259,
+      "endLine": 2269,
+      "calls": [
+        "NlsValidateLocale"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_dbcs",
+      "startLine": 3053,
+      "endLine": 3081,
+      "calls": [
+        "SetLastError"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_dbcs_slow",
+      "startLine": 3206,
+      "endLine": 3326,
+      "calls": [
+        "SetLastError",
+        "compose_chars",
+        "is_valid_dbcs_mapping"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_sbcs",
+      "startLine": 2988,
+      "endLine": 3050,
+      "calls": [
+        "SetLastError"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "wcstombs_sbcs_slow",
+      "startLine": 3111,
+      "endLine": 3203,
+      "calls": [
+        "SetLastError",
+        "compose_chars",
+        "is_valid_sbcs_mapping"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "NlsValidateLocale",
+      "startLine": 770,
+      "endLine": 798,
+      "calls": [
+        "find_lcid_entry",
+        "find_lcname_entry",
+        "get_locale_data"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "compose_chars",
+      "startLine": 2228,
+      "endLine": 2248,
+      "calls": [
+        "IS_HIGH_SURROGATE"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "is_valid_dbcs_mapping",
+      "startLine": 3095,
+      "endLine": 3108,
+      "calls": [],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "is_valid_sbcs_mapping",
+      "startLine": 3084,
+      "endLine": 3092,
+      "calls": [],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "find_lcid_entry",
+      "startLine": 597,
+      "endLine": 609,
+      "calls": [],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "find_lcname_entry",
+      "startLine": 580,
+      "endLine": 594,
+      "calls": [
+        "compare_locale_names"
+      ],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "get_locale_data",
+      "startLine": 547,
+      "endLine": 551,
+      "calls": [],
+      "source": "dlls/kernelbase/locale.c"
+    },
+    {
+      "name": "compare_locale_names",
+      "startLine": 565,
+      "endLine": 577,
+      "calls": [],
+      "source": "dlls/kernelbase/locale.c"
+    }
+  ],
+  "boundaries": [
+    "ARRAY_SIZE",
+    "ENCODABLE",
+    "ERR",
+    "IS_HIGH_SURROGATE",
+    "NtCurrentTeb",
+    "NtGetNlsSectionPtr",
+    "OUTPUT",
+    "RtlEnterCriticalSection",
+    "RtlInitCodePageTable",
+    "RtlLeaveCriticalSection",
+    "RtlUnicodeToUTF8N",
+    "SetLastError",
+    "TRACE",
+    "debugstr_an",
+    "debugstr_wn",
+    "lstrlenW",
+    "min",
+    "set_ntstatus"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}
