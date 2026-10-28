@@ -1,5 +1,5 @@
 
-all: $(wildcard *.dll)
+all: $(patsubst %.def,%.dll,$(wildcard *.def))
 
 %.dll: %.s %.def
 	clang-cl -fuse-ld=lld -target i586-pc-windows-msvc \
