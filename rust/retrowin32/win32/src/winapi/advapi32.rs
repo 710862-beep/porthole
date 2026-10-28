@@ -104,3 +104,22 @@ pub fn RegSetValueExW(
 ) -> u32 {
     50 // Wide value marshaling is not implemented by this candidate.
 }
+
+/* SPDX-License-Identifier: LGPL-2.1-or-later (this Wine-derived section)
+ * Wine dlls/advapi32/advapi.c:45-71, GetUserNameA/W
+ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
+ * Copyright 1995 Sven Verdoolaege. See LICENSE.Wine.
+ * WINEUSERNAME belongs to the emulated process; not the host OS account.
+ * Added checked guest DWORD access instead of native pointer dereference.
+ */
+fn user_name(machine:&mut Machine,name:u32,size:u32,wide:bool)->bool{
+ let cap={let mem=machine.mem();if size==0||(size as usize).checked_add(4).map_or(true,|e|e>mem.as_slice().len()){super::kernel32::teb_mut(machine).LastErrorValue=87;return false}mem.get_pod::<u32>(size)};
+ let mut len=super::kernel32::query_environment(machine,Some("WINEUSERNAME".into()),name,cap,wide);
+ if len==0{return false}
+ let ret=len<cap;if ret{len+=1}else{super::kernel32::teb_mut(machine).LastErrorValue=122;}
+ machine.mem().sub32_mut(size,4).copy_from_slice(&len.to_le_bytes());ret
+}
+#[win32_derive::dllexport]
+pub fn GetUserNameA(machine:&mut Machine,lpBuffer:u32,pcbBuffer:u32)->bool{user_name(machine,lpBuffer,pcbBuffer,false)}
+#[win32_derive::dllexport]
+pub fn GetUserNameW(machine:&mut Machine,lpBuffer:u32,pcbBuffer:u32)->bool{user_name(machine,lpBuffer,pcbBuffer,true)}

@@ -1,5 +1,10 @@
 #include "common.h"
 void mainCRTStartup(void) {
+    char user[32];DWORD length=1;user[0]='!';REQUIRE(!GetUserNameA(user,&length));REQUIRE(length==9&&GetLastError()==ERROR_INSUFFICIENT_BUFFER&&user[0]=='!');
+    REQUIRE(SetEnvironmentVariableA("WINEUSERNAME","Miner"));length=sizeof(user);REQUIRE(GetUserNameA(user,&length)&&length==6&&user[0]=='M'&&user[4]=='r'&&user[5]==0);
+    WCHAR userW[16];length=16;REQUIRE(GetUserNameW(userW,&length)&&length==6&&userW[0]==L'M'&&userW[5]==0);
+    REQUIRE(GetEnvironmentVariableA("wineusername",user,0)==6);REQUIRE(SetEnvironmentVariableA("WINEUSERNAME",0));length=sizeof(user);REQUIRE(!GetUserNameA(user,&length));REQUIRE(GetLastError()==ERROR_ENVVAR_NOT_FOUND);REQUIRE(SetEnvironmentVariableA("WINEUSERNAME","Porthole"));
+    LPCH env=GetEnvironmentStringsA();REQUIRE(env);REQUIRE(FreeEnvironmentStringsA(env));REQUIRE(!FreeEnvironmentStringsA(env));
     HKEY key; DWORD disposition; BYTE token[128], readback[128];
     for (int i=0;i<128;i++) token[i]=(BYTE)i; /* artificial data, never a real token */
     REQUIRE(RegCreateKeyExA(HKEY_CURRENT_USER,"Software\\Roblox\\Client",0,0,0,KEY_ALL_ACCESS,0,&key,&disposition)==ERROR_SUCCESS);

@@ -208,6 +208,8 @@ pub struct State {
     heaps: HashMap<u32, Heap>,
     pub process_heap: u32,
     pub error_mode:u32,
+    pub env_vars: HashMap<String,String>,
+    pub env_blocks: std::collections::HashSet<u32>,
 
     pub dlls: HashMap<HMODULE, DLL>,
     pub dll_init_order: Vec<HMODULE>,
@@ -273,6 +275,8 @@ impl State {
             teb,
             process_heap: 0,
             error_mode:0,
+            env_vars: [("WINDIR","C:\\Windows"),("USERNAME","Porthole"),("WINEUSERNAME","Porthole")].iter().map(|(k,v)|(k.to_string(),v.to_string())).collect(),
+            env_blocks: Default::default(),
             mappings,
             heaps: HashMap::new(),
             dlls,

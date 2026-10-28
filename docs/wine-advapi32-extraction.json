@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/advapi32/advapi.c",
+  "sourceSha256": "6e2691392dbfdc7554cf76f7c260eac5896de9ee8c88fc6a811805c3252f84ed",
+  "license": "LGPL-2.1-or-later; Copyright Sven Verdoolaege",
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "GetUserNameA",
+  "functions": [
+    {
+      "name": "GetUserNameA",
+      "startLine": 45,
+      "endLine": 55,
+      "calls": [
+        "GetEnvironmentVariableA",
+        "SetLastError"
+      ],
+      "source": "dlls/advapi32/advapi.c"
+    }
+  ],
+  "boundaries": [
+    "GetEnvironmentVariableA",
+    "SetLastError"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

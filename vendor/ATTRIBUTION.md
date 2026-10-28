@@ -31,3 +31,16 @@ No stable runtime promotion is authorized by acquisition or extraction.
 Copyright 1997, 2002 Dimitrie O. Paun, LGPL-2.1-or-later. It implements bounded
 range/position/base/buddy messages and a basic arrow action/guest notification,
 not themes, full buddy subclassing, timers or locale grouping.
+
+### Wine-derived virtual environment and user name
+
+The GetUserNameA/W section in `win32/src/winapi/advapi32.rs` derives from
+`dlls/advapi32/advapi.c:45-71`, Copyright 1995 Sven Verdoolaege.
+`win32/src/winapi/kernel32/env.rs` derives from the environment functions in
+`dlls/kernelbase/process.c`, Copyright 1996, 1998 Alexandre Julliard.
+Both are LGPL-2.1-or-later at the same pinned Wine SHA. NT process environment
+queries become a per-emulated-process map and owned guest heap blocks. The
+configured initial virtual account is **Porthole**, not a claim about the host
+user. Generic ANSI environment encoding is partial (ASCII arguments/Latin-1
+output); the Unicode paths operate on UTF-16. Other registry code in advapi32.rs
+retains its prior licensing; the derived identity section is explicitly marked.

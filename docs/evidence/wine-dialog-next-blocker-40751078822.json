@@ -1,0 +1,15 @@
+{
+  "runId": 40751078822,
+  "sourceSha": "b8d3e95bd9e2af756574c24c4b00f7a6d539a61d",
+  "dllSha256": "57d407804ba2e606082994fcc2fb4ea86932374c62d911bdc398e862028a075f",
+  "runtimeBase": "0x30000",
+  "runtimeIp": "0x37967",
+  "rva": "0x7967",
+  "instructions": [
+    "mov esi, [0x100172f8] at preferred RVA 0x7957",
+    "call esi at RVA 0x7967"
+  ],
+  "iatRva": "0x172f8",
+  "causalImport": "ADVAPI32.dll!GetUserNameA",
+  "lastApiNotCause": "RegOpenKeyA"
+}

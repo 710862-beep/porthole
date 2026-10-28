@@ -32,6 +32,8 @@ jobs:
           node scripts/extract-wine-api.mjs user32 CreateDialogParamA
           node scripts/translate-c-to-rust.mjs
           node scripts/extract-wine-api.mjs comctl32 UpDownWindowProc
+          node scripts/extract-wine-api.mjs advapi32 GetUserNameA
+          node scripts/extract-wine-api.mjs kernelbase GetEnvironmentVariableA
           node --test tests/node/wine-extraction.test.mjs
       - name: Reject startup-only gameplay claims
         run: node --test tests/node/gameplay.test.mjs tests/node/compatibility-gates.test.mjs

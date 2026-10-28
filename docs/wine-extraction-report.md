@@ -61,9 +61,40 @@ https://github.com/710862-beep/porthole/actions/runs/40749913520
 - Próxima dependência causal: classe comctl32 `msctls_updown32`, código em
   `dlls/comctl32/updown.c`, Copyright 1997, 2002 Dimitrie O. Paun,
   LGPL-2.1-or-later no mesmo SHA Wine. Extração adicional em
-  `wine-updown-extraction.json`; código original/corpus preservados em artifacts.
+  `wine-comctl32-extraction.json`; código original/corpus preservados em artifacts.
 - Subset manual adaptado: estado por HWND, range invertido/32-bit, posição,
   buddy edit/base 10/16, ação por seta/click com NM_UPDOWN guest mutável e
   notificação scroll, raster básico. Não equivale ao controle completo:
   faltam timers, aceleração, subclassing, acessibilidade/tema e agrupamento local.
 - Novo candidato exige outro CI; não reutilizar o primeiro como prova de correção.
+
+## Segundo resultado remoto: 40751078822
+
+Fonte `b8d3e95bd9e2af756574c24c4b00f7a6d539a61d`:
+https://github.com/710862-beep/porthole/actions/runs/40751078822
+
+- Build PASS; **18 testes Rust PASS**, **5/5 PEs PASS**.
+- Controles + novo fixture de diálogo/updown **PASS**: 52 presents sintéticos,
+  pixels conferidos e nenhum panic. Isso valida o subset exercitado, não todos
+  os ramos de Wine nem gameplay.
+- DOOM95 criou os filhos, entrou em WM_INITDIALOG e avançou até outro salto nulo:
+  `ip=0x37967`, `call esi`. Foram **48 presents**, 45 mudanças; sem input/loop
+  comprovados, gameplay=false, workflow vermelho, estável intocado.
+- Última API RegOpenKeyA **não é a causa**. Disassembly identifica
+  `mov esi,[0x100172f8]`; import table do DLL verificado identifica
+  **ADVAPI32!GetUserNameA**. Prova: evidence/wine-dialog-next-blocker-40751078822.json.
+- Wine `dlls/advapi32/advapi.c:45-56` consulta WINEUSERNAME. A dependência real
+  GetEnvironmentVariableA está em kernelbase/process.c:1656-1687, não em um
+  syscall copiado para Wasm. Adaptação usa um ambiente virtual por processo,
+  nunca o nome/ambiente do host. GetUserNameA/W preservam buffer/size/error;
+  getters/setters de ambiente e blocos A/W têm armazenamento e liberação reais.
+- Inicialmente WINEUSERNAME/USERNAME=Porthole; fixture altera para Miner, verifica
+  buffer curto, tamanho incluindo NUL, busca case-insensitive, remoção/ausência,
+  restauração e free/double-free de bloco. ANSI genérico permanece parcial.
+- Inventários adicionais: wine-advapi32-extraction.json e
+  wine-kernelbase-extraction.json. RtlQueryEnvironmentVariable_U, conversão ACP,
+  lock do PEB e outras dependências são fronteiras adaptadas/pendentes, não um
+  grafo completo de ntdll traduzido.
+
+Candidato seguinte ainda precisa compilar/executar remotamente; não atribuir
+estes novos resultados ao run anterior.
