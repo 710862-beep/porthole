@@ -15,7 +15,7 @@ export function evaluate({synthetic,doom,integrity,regression}) {
  const installer=by('installer-test').hostEvidence;check('installer directory/file/metadata disk reread',installer?.kind==='node-disk-fresh-registry-store' && installer.directory===true && installer.testFileBytes===15 && installer.uninstallerMarkerBytes===0 && installer.installPath==='C:\\Program Files\\TestApp');
  check('compiled Wasm and initialized binding',integrity?.status==='INTEGRITY_VALIDATED_NOT_COMPATIBILITY' && integrity.bindingInitialized===true);
  check('JS/DOM and syntax regressions',regression?.passed===true);
- check('DOOM95 actually passed without null import',doom?.status==='PASS' && doom.executionAttempted===true && doom.exitCode===0 && !doom.causalImport);
+ check('DOOM95 actually passed without null import',doom?.status==='PASS' && doom.gameplayValidated===true && doom.executionAttempted===true && doom.exitCode===0 && !doom.causalImport);
  return {status:checks.every(c=>c.pass)?'ALL_GATES_PASSED':'COMPATIBILITY_GATES_FAILED',promotable:checks.every(c=>c.pass),checks};
 }
 if(process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url){
