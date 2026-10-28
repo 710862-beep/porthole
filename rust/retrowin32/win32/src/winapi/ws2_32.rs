@@ -94,14 +94,15 @@ pub async fn getaddrinfo(machine:&mut Machine,node:Option<&str>,service:Option<&
     let response=exchange(machine,json!({"op":"lookup","host":node.unwrap_or("localhost")})).await;
     if let Some(code)=response["error"].as_u64() {return code as u32;}
     let ip:Vec<u8>=match serde_json::from_value(response["address"].clone()) {Ok(v)=>v,Err(_)=>return 11001};if ip.len()!=4 {return 11001;}
-    let mem=machine.mem();let ptr=machine.state.scratch.alloc(mem,48);
+    let mut scratch=std::mem::take(&mut machine.state.scratch);
+    let ptr=scratch.alloc(machine.mem(),48);machine.state.scratch=scratch;let mem=machine.mem();
     mem.sub32_mut(ptr,48).fill(0);
     for (offset,value) in [(4,2),(8,1),(12,6),(16,16),(24,ptr+32)] {mem.put_pod::<u32>(ptr+offset,value);}
     mem.put_pod::<u16>(ptr+32,2);mem.sub32_mut(ptr+34,2).copy_from_slice(&port.to_be_bytes());mem.sub32_mut(ptr+36,4).copy_from_slice(&ip);
     machine.state.ws2_32.allocations.insert(ptr);*out=ptr;0
 }
 #[win32_derive::dllexport]
-pub fn freeaddrinfo(machine:&mut Machine,ptr:u32) {if machine.state.ws2_32.allocations.remove(&ptr) {let mem=machine.mem();machine.state.scratch.free(mem,ptr);}}
+pub fn freeaddrinfo(machine:&mut Machine,ptr:u32) {if machine.state.ws2_32.allocations.remove(&ptr) {let mut scratch=std::mem::take(&mut machine.state.scratch);scratch.free(machine.mem(),ptr);machine.state.scratch=scratch;}}
 #[win32_derive::dllexport]
 pub fn htons(_machine:&mut Machine,value:u32)->u32 {(value as u16).to_be() as u32}
 #[win32_derive::dllexport]

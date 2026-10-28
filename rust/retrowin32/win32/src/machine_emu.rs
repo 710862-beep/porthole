@@ -198,6 +198,7 @@ impl MachineX<Emulator> {
 
         // See doc/shims.md for the state of the stack when we get here.
 
+        let diagnostic_mem=self.emu.memory.mem();
         let regs = &mut self.emu.x86.cpu_mut().regs;
 
         // stack[0] is the return address within the shim DLL, after the call instruction.
@@ -213,7 +214,7 @@ impl MachineX<Emulator> {
         };
 
         let stack_args = esp + 8;
-        let entry=format!("{} args={:08x?}",shim.name,(0..4).map(|i|self.mem().get_pod::<u32>(stack_args+i*4)).collect::<Vec<_>>());
+        let entry=format!("{} args={:08x?}",shim.name,(0..4).map(|i|diagnostic_mem.get_pod::<u32>(stack_args+i*4)).collect::<Vec<_>>());
         if self.emu.api_tail.len()==20 {self.emu.api_tail.pop_front();}
         self.emu.api_tail.push_back(entry);
         match shim.func {
