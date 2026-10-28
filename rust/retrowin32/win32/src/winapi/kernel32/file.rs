@@ -1177,7 +1177,7 @@ pub fn SearchPathA(machine: &mut Machine, path: Option<&str>, file: Option<&str>
     if let Some(path)=path {for dir in path.split(';'){dirs.push(cwd.join(dir));}}
     else {
         let exe=machine.exe_path.to_string_lossy();
-        if let Some(parent)=WindowsPath::new(exe.as_ref()).parent(){dirs.push(parent.to_path_buf());}
+        if let Some(parent)=WindowsPath::new(exe.as_bytes()).parent(){dirs.push(parent.to_path_buf());}
         dirs.push(cwd.clone());
         for dir in ["C:\\Windows\\System32","C:\\Windows\\System","C:\\Windows"] {dirs.push(WindowsPath::new(dir).to_path_buf());}
     }
