@@ -704,31 +704,28 @@ pub fn GetFileAttributesA(machine: &mut Machine, lpFileName: Option<&str>) -> Fi
     }
 }
 
+/* SPDX-License-Identifier: LGPL-2.1-or-later (this adapted section)
+ * Wine dlls/kernelbase/file.c:1732-1756,2964-2984
+ * wine-mirror/wine@0738d528db522f52d9d75f2aec712688dd31d1d2
+ * Copyright 1993 John Burton; 1996, 2004 Alexandre Julliard;
+ * 2008 Jeff Zaroyko. See LICENSE.Wine.
+ * RtlSet/GetCurrentDirectory_U -> authorized per-process Host VFS directory.
+ * No host chdir, device paths, UNC or independent per-drive directories.
+ */
 #[win32_derive::dllexport]
-pub fn GetCurrentDirectoryA(machine: &mut Machine, nBufferLength: u32, lpBuffer: u32) -> u32 {
-    let cwd = match machine.host.current_dir() {
-        Ok(value) => value,
-        Err(err) => {
-            log::debug!("GetCurrentDirectoryA failed: {err:?}");
-            set_last_error(machine, err);
-            return 0;
-        }
-    };
-    let out_bytes = cwd.as_bytes();
-
-    let buf = machine.mem().sub32_mut(lpBuffer, nBufferLength);
-
-    if buf.len() < out_bytes.len() + 1 {
-        // not enough space
-        log::debug!("GetCurrentDirectoryA -> size {}", out_bytes.len() + 1);
-        return out_bytes.len() as u32 + 1;
-    }
-
-    buf[..out_bytes.len()].copy_from_slice(out_bytes);
-    buf[out_bytes.len()] = 0;
-
-    set_last_error(machine, ERROR::SUCCESS);
-    out_bytes.len() as u32
+pub fn SetCurrentDirectoryA(machine:&mut Machine,lpPathName:crate::str16::AnsiString)->bool{
+    let Some(path)=lpPathName.0 else{super::teb_mut(machine).LastErrorValue=87;return false};
+    if path.is_empty(){super::teb_mut(machine).LastErrorValue=123;return false}
+    match machine.host.set_current_dir(WindowsPath::new(&path)){Ok(())=>true,Err(e)=>{set_last_error(machine,e);false}}
+}
+#[win32_derive::dllexport]
+pub fn SetCurrentDirectoryW(machine:&mut Machine,lpPathName:Option<&Str16>)->bool{SetCurrentDirectoryA(machine,crate::str16::AnsiString(lpPathName.map(|s|s.to_string())))}
+#[win32_derive::dllexport]
+pub fn GetCurrentDirectoryA(machine:&mut Machine,nBufferLength:u32,lpBuffer:u32)->u32{
+    let cwd=match machine.host.current_dir(){Ok(v)=>v,Err(e)=>{set_last_error(machine,e);return 0}};
+    let bytes=cwd.as_bytes();if nBufferLength as usize<=bytes.len(){return bytes.len()as u32+1}
+    let mem=machine.mem();if lpBuffer==0||(lpBuffer as usize).checked_add(bytes.len()+1).map_or(true,|e|e>mem.as_slice().len()){super::teb_mut(machine).LastErrorValue=87;return 0}
+    let b=mem.sub32_mut(lpBuffer,bytes.len()as u32+1);b[..bytes.len()].copy_from_slice(bytes);b[bytes.len()]=0;bytes.len()as u32
 }
 
 #[repr(C)]

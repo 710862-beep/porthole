@@ -35,6 +35,7 @@ jobs:
           node scripts/extract-wine-api.mjs advapi32 GetUserNameA
           node scripts/extract-wine-api.mjs kernelbase GetEnvironmentVariableA
           node scripts/extract-wine-api.mjs kernelbase WideCharToMultiByte
+          node scripts/extract-wine-api.mjs kernelbase SetCurrentDirectoryA
           node --test tests/node/wine-extraction.test.mjs
       - name: Reject startup-only gameplay claims
         run: node --test tests/node/gameplay.test.mjs tests/node/compatibility-gates.test.mjs

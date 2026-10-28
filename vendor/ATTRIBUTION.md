@@ -55,3 +55,12 @@ CP1252/UTF8 behavior are adapted to checked guest buffers and Rust conversion.
 Full codepage/best-fit/composition tables are not ported. The native export ABI
 has all eight Win32 arguments, including default-character and used-default
 pointers; the earlier upstream declaration omitted one parameter.
+
+### Wine-derived directory API subset
+
+The marked section in kernel32/file.rs derives from Wine
+`dlls/kernelbase/file.c:1732-1756,2964-2984`, Copyright 1993 John Burton;
+1996, 2004 Alexandre Julliard; 2008 Jeff Zaroyko, LGPL-2.1-or-later.
+Nt/Rtl current-directory access becomes a local authorized VFS host operation
+shared by relative file opens/stat and GetCurrentDirectoryA. No host OS chdir,
+UNC/device paths, or independent per-drive current directories are implemented.

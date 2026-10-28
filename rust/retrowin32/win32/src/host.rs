@@ -151,6 +151,8 @@ pub trait Host {
 
     /// Retrieves the absolute (Windows-style) path of the current working directory.
     fn current_dir(&self) -> Result<WindowsPathBuf, ERROR>;
+    /// Change emulated-process directory, never the host OS working directory.
+    fn set_current_dir(&self, _path: &WindowsPath) -> Result<(), ERROR> { Err(ERROR::NOT_SUPPORTED) }
     /// Open a file at the given (Windows-style) path.
     fn open(&self, path: &WindowsPath, options: FileOptions) -> Result<Box<dyn File>, ERROR>;
     /// Retrieve file or directory metadata at the given (Windows-style) path.

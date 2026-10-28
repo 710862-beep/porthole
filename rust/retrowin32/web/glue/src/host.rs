@@ -268,6 +268,8 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn current_dir(this: &JsHost) -> String;
     #[wasm_bindgen(method)]
+    fn set_current_dir(this: &JsHost, path: &str) -> u32;
+    #[wasm_bindgen(method)]
     fn file_info(this:&JsHost,path:&str)->String;
     #[wasm_bindgen(method)]
     fn key_state(this: &JsHost, key: u32) -> u32;
@@ -373,6 +375,12 @@ impl win32::Host for JsHost {
 
     fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
         Ok(win32::WindowsPathBuf::from(JsHost::current_dir(self)))
+    }
+
+    fn set_current_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
+        match JsHost::set_current_dir(self, &path.to_string_lossy()) {
+            0 => Ok(()), code => Err(ERROR::try_from(code).unwrap_or(ERROR::INVALID_PARAMETER)),
+        }
     }
 
     fn create_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {

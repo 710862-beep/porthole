@@ -120,3 +120,23 @@ https://github.com/710862-beep/porthole/actions/runs/40752178802
   port completo. Novos testes Rust e PE conferem euro CP1252, emoji UTF8, consulta
   de tamanho, buffer curto e erro de surrogate inválido.
 - Novo candidato precisa de outra execução remota. Sem promoção.
+
+## Quarto resultado remoto: 40753064900
+
+Fonte `e58574dd3bf33e6338cec3195679eeb9f56286ea`:
+https://github.com/710862-beep/porthole/actions/runs/40753064900
+
+- Build, **20 testes Rust**, **5/5 PEs** e controles/diálogos/updown PASS.
+  Conversão de caracteres e ABI corrigida foram efetivamente executadas no guest.
+- DOOM95 voltou ao launcher, chamou GetUserNameA duas vezes com sucesso e avançou
+  para **kernel32!SetCurrentDirectoryA**, salto nulo direto pela IAT em 0x33825.
+  48 presents, sem gameplay; último GetDlgItem não foi atribuído como causa.
+- Extraída a implementação real em Wine kernelbase/file.c:2964-2972, que chama
+  RtlSetCurrentDirectory_U. Adaptação revisada: novo método Host e ponte Rust/JS
+  atualizam diretório do processo virtual validando diretórios do VFS autorizado.
+  A mesma base passa a resolver opens/stat relativos; não é sucesso vazio nem
+  alteração do diretório do sandbox/host OS.
+- Fixture input adiciona criação de diretório, mudança relativa, arquivo relativo,
+  erro em arquivo/nome ausente, restauração e verificação pelo caminho antigo.
+  Unitário host verifica erro sem alteração de cwd e rejeita drive não autorizado.
+- Próximo candidato ainda depende de ensaio remoto. Sem promoção.

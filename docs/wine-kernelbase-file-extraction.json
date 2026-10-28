@@ -1,0 +1,55 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/kernelbase/file.c",
+  "sourceSha256": "efe946fd5f7059453dbbb65679e469288b8d7f6f3fd8a288bb04570e112e79c6",
+  "license": "LGPL-2.1-or-later; Copyright Alexandre Julliard",
+  "copyrights": [
+    "Copyright 1993 John Burton",
+    "Copyright 1996, 2004 Alexandre Julliard",
+    "Copyright 2008 Jeff Zaroyko"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "SetCurrentDirectoryA",
+  "functions": [
+    {
+      "name": "SetCurrentDirectoryA",
+      "startLine": 2964,
+      "endLine": 2972,
+      "calls": [
+        "RtlInitUnicodeString",
+        "RtlSetCurrentDirectory_U",
+        "file_name_AtoW",
+        "set_ntstatus"
+      ],
+      "source": "dlls/kernelbase/file.c"
+    },
+    {
+      "name": "file_name_AtoW",
+      "startLine": 426,
+      "endLine": 445,
+      "calls": [
+        "NtCurrentTeb",
+        "RtlAnsiStringToUnicodeString",
+        "RtlInitAnsiString",
+        "RtlNtStatusToDosError",
+        "RtlOemStringToUnicodeString",
+        "SetLastError"
+      ],
+      "source": "dlls/kernelbase/file.c"
+    }
+  ],
+  "boundaries": [
+    "NtCurrentTeb",
+    "RtlAnsiStringToUnicodeString",
+    "RtlInitAnsiString",
+    "RtlInitUnicodeString",
+    "RtlNtStatusToDosError",
+    "RtlOemStringToUnicodeString",
+    "RtlSetCurrentDirectory_U",
+    "SetLastError",
+    "set_ntstatus"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}
