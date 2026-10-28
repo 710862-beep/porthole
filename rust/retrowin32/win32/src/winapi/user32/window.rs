@@ -1124,9 +1124,31 @@ pub fn GetCapture(machine: &mut Machine) -> HWND {
     todo!();
 }
 
+/* Wine win32u/window.c:1133-1171,1189-1198; SHA
+ * 0738d528db522f52d9d75f2aec712688dd31d1d2. LGPL-2.1-or-later.
+ * Copyright 1993, 1994 Alexandre Julliard. Native server style updates ->
+ * per-machine HWND state; synchronous messages still call real guest wndprocs.
+ * WinEvent accessibility notifications are not implemented in this profile.
+ */
 #[win32_derive::dllexport]
-pub fn EnableWindow(_machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
-    todo!();
+pub async fn EnableWindow(machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
+    if hWnd.to_raw()==0xffff {winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false}
+    if machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false}
+    if !bEnable {Box::pin(super::message::SendMessageA(machine,hWnd,Err(0x1f),0,0)).await;}
+    // WM_CANCELMODE may destroy/re-enter the HWND: do not hold a Rust borrow across it.
+    let Some(w)=machine.state.user32.windows.get_mut(hWnd)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+    let was_disabled=w.style.contains(WindowStyle::DISABLED);
+    w.style.set(WindowStyle::DISABLED,!bEnable);
+    if let Some(c)=w.control.as_mut(){c.style=(c.style&!0x08000000)|if bEnable{0}else{0x08000000};}
+    if was_disabled==bEnable {
+        if !bEnable&&machine.state.user32.focused==hWnd {SetFocus(machine,HWND::null());Box::pin(super::message::SendMessageA(machine,hWnd,Err(8),0,0)).await;}
+        Box::pin(super::message::SendMessageA(machine,hWnd,Err(0xa),bEnable as u32,0)).await;
+    }
+    was_disabled
+}
+#[win32_derive::dllexport]
+pub fn IsWindowEnabled(machine:&mut Machine,hWnd:HWND)->bool{
+    match machine.state.user32.windows.get(hWnd){Some(w)=>!w.style.contains(WindowStyle::DISABLED),None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;false}}
 }
 
 #[cfg(test)]

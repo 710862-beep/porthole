@@ -59,7 +59,7 @@ pub fn paint(machine:&mut Machine,hwnd:HWND) {
     let mut root=hwnd;let mut ox=0i32;let mut oy=0i32;
     for _ in 0..64 {let Some(w)=machine.state.user32.windows.get(root) else{return};if matches!(w.typ,WindowType::TopLevel(_)){break}ox=ox.saturating_add(w.x);oy=oy.saturating_add(w.y);root=w.parent;}
     let mut px=vec![[240,240,240,255];(width*height) as usize];
-    let black=[20,20,20,255];let blue=[30,80,180,255];let white=[255,255,255,255];
+    let black=if c.style&0x08000000!=0{[128,128,128,255]}else{[20,20,20,255]};let blue=[30,80,180,255];let white=[255,255,255,255];
     let mut dot=|x:i32,y:i32,color:[u8;4]|{if x>=0&&y>=0&&(x as u32)<width&&(y as u32)<height {px[(y as u32*width+x as u32) as usize]=color;}};
     let mut texts:Vec<(i32,i32,Vec<u8>,[u8;4])>=vec![];
     if matches!(c.kind,Kind::Edit|Kind::Listbox|Kind::Combo){for y in 0..height as i32 {for x in 0..width as i32 {dot(x,y,white)}}}
@@ -119,6 +119,7 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
     let mut notify=None;let mut result=0u32;let mut redraw=true;let mut output=None;
     match m {
         1=>{}, 0xf=>{}, 7=>c.focus=true,8=>c.focus=false,
+        0xa=>{if wp==0{c.pressed=false;c.focus=false}},0x1f=>c.pressed=false,
         0xc=>{c.text=incoming;c.start=c.text.len();c.end=c.start;result=1},
         0xd=>{output=Some((lp,wp,c.text.clone()))},0xe=>{result=c.text.len() as u32;redraw=false},
         0x172 if c.kind==Kind::Static=>{result=c.image;c.image=lp},

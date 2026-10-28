@@ -74,3 +74,11 @@ listed above; ntdll/time.c lists Copyright 2002 Rex Jolliff (RtlTimeFields porti
 with special permission), 1999 Juergen Schmied and 2007 Dmitry Timoshkov (see original header in pinned source). Current UTC offset
 comes from the existing host clock, replacing the NT shared time-of-day query;
 this is not a no-op UTC-copy stub or a historical timezone database port.
+
+### Wine-derived window enabling
+
+EnableWindow/IsWindowEnabled marked section in `user32/window.rs` adapts Wine
+`dlls/win32u/window.c:1133-1171,1189-1198` at the pinned SHA, LGPL-2.1-or-later,
+Copyright 1993, 1994 Alexandre Julliard. Server style updates are per-process
+window-table updates; WM_CANCELMODE/WM_ENABLE still reach guest wndprocs.
+Accessibility WinEvents/server/multi-thread window ownership are not ported.

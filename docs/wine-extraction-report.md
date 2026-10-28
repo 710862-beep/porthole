@@ -223,3 +223,21 @@ https://github.com/710862-beep/porthole/actions/runs/40755132096
 - Epoch 1601 é metadado virtual desconhecido/zero; a conversão correta não o
   transforma em timestamp histórico verdadeiro do arquivo DOOM.
 - Próximo candidato ainda deve executar remotamente. Não promover.
+
+## Oitavo resultado remoto: 40755999854
+
+https://github.com/710862-beep/porthole/actions/runs/40755999854
+Fonte `892c06f655309f6ece309a8754c1319aff2b793d`: build/21 Rust tests PASS,
+5/5 PEs PASS e controles PASS. FileTimeToLocalFileTime passou; DOOM95 avançou
+para 51 presents/47 mudanças e panic EnableWindow em window.rs:1129.
+
+A adaptação seguinte vem de NtUserEnableWindow/is_window_enabled em
+win32u/window.c, não de um retorno TRUE incondicional: WS_DISABLED, valor de
+retorno **estado disabled anterior**, WM_CANCELMODE/WM_ENABLE síncronos,
+limpeza de foco e repaint cinza dos controles, validação/revalidação do HWND
+após callback. Revisão manual: não reter referências Rust durante guest calls;
+NULL/broadcast/inválido devem falhar; WM_ENABLE só quando estado muda;
+nenhuma notificação de acessibilidade foi inventada. Fixture exercita
+false/true/repetição, foco/estado observável e handle inválido. Ainda falta
+conformidade completa de foco/capture/WinEvents e ownership entre threads.
+Novo build remoto necessário; gameplay continua não validado.

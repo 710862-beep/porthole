@@ -38,6 +38,7 @@ jobs:
           node scripts/extract-wine-api.mjs kernelbase SetCurrentDirectoryA
           node scripts/extract-wine-api.mjs kernelbase FindFirstFileA
           node scripts/extract-wine-api.mjs kernelbase FileTimeToLocalFileTime
+          node scripts/extract-wine-api.mjs win32u NtUserEnableWindow
           node --test tests/node/wine-extraction.test.mjs
       - name: Reject startup-only gameplay claims
         run: node --test tests/node/gameplay.test.mjs tests/node/compatibility-gates.test.mjs
