@@ -317,3 +317,24 @@ Run 40760294171 (45e2bf7) detectou dois erros de integração Rust antes de
 produzir Wasm: HeapAlloc recebe Result<HeapAllocFlags,u32>, não um inteiro C;
 e Mem::as_slice requer o trait Extensions no escopo. Corrigidos seguindo as
 chamadas já existentes em updown/env; testes não foram pulados/relaxados.
+
+## Resultado 40760564448: inicialização ultrapassou 100 presents, NÃO gameplay
+
+https://github.com/710862-beep/porthole/actions/runs/40760564448
+Fonte `4f1791013b01ccd4664fb0ad0178c3a7a7c21838`: build/24 Rust tests,
+5/5 PEs e controles PASS (62 presents). Fixture de registro executou callbacks
+DirectPlay A/W reais para dois metadados sintéticos e interrompeu no FALSE.
+DOOM95 saiu da enumeração, chegou a **117 presents de inicialização**, mas
+falhou antes da observação de 5s/input/loop em **user32!IsWindowVisible**.
+Portanto **gameplayValidated=false**, apesar de ultrapassar contagem 100.
+
+Adaptação seguinte segue Wine is_window_visible: testar WS_VISIBLE e ancestrais,
+sem confundir owner top-level com parent. Virtual desktop é a raiz; limite64
+protege walk, HWND inválido falha. Fixture verifica own hidden/visible e
+ancestor hidden. ShowWindow/ativação/clipping ainda não são conformidade completa.
+Também completados CB/LB_GET/SETITEMDATA usados pelo launcher para modos de
+vídeo: DWORD opaco paralelo aos itens, alinhado em insert/delete/reset, índice
+inválido retorna -1/1413; LB_SET preserva o TRUE documentado no código Wine.
+Erros do dispatcher são aplicados após soltar o borrow do controle, evitando
+alias de Machine/TEB. Sem dereferenciar item-data ou pintar um ponteiro.
+Novo CI necessário para essas duas correções.

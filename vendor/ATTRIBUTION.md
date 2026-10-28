@@ -113,3 +113,9 @@ Copyright 1996 Alexandre Julliard respectively, LGPL-2.1-or-later. Vector-backed
 string items replace LB storage; ASCII-case prefix/exact search, insertion and
 selection are supported. Locale collation, directory-prefix special cases and
 owner-draw item-data comparisons remain unsupported.
+
+IsWindowVisible additionally adapts Wine `win32u/window.c:1075-1091` (same
+Copyright 1993, 1994 Alexandre Julliard/LGPL), traversing only real parents, not
+top-level owners. Item-data messages use `listbox.c:2776-2792` and the combo
+forwarding at `combo.c:2063-2066`, preserving opaque x86 DWORD data and Wine's
+undocumented TRUE return from LB_SETITEMDATA, not a fabricated pointer/value.

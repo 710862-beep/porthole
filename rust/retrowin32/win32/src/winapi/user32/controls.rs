@@ -13,12 +13,12 @@ pub struct Control {
     pub kind: Kind, pub text: Vec<u8>, pub style: u32,
     pub pressed: bool, pub hover: bool, pub checked: u32,
     pub start: usize, pub end: usize, pub limit: usize,
-    pub items: Vec<Vec<u8>>, pub selected: i32,
+    pub items: Vec<Vec<u8>>, pub item_data:Vec<u32>, pub selected: i32,
     pub low: i32, pub high: i32, pub position: i32, pub step: i32,
     pub focus: bool, pub image:u32, pub updown: Option<super::updown::State>,
 }
 impl Control {
-    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0,updown:if kind==Kind::Updown{Some(super::updown::State::default())}else{None}}}
+    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],item_data:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0,updown:if kind==Kind::Updown{Some(super::updown::State::default())}else{None}}}
     fn replace(&mut self, bytes:&[u8]) {
         let a=self.start.min(self.end).min(self.text.len());let b=self.start.max(self.end).min(self.text.len());
         let n=bytes.len().min(self.limit.saturating_sub(self.text.len()-(b-a)));
@@ -116,7 +116,7 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
     if m==0x172 && (wp!=0 || (lp!=0&&!matches!(machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(lp)),Some(crate::winapi::gdi32::Object::Bitmap(_))))){return error(machine,87)}
     let Some(w)=machine.state.user32.windows.get_mut(hwnd) else{return error(machine,1400)};
     let (parent,id)=(w.parent,w.id);let Some(c)=w.control.as_mut() else{return 0};
-    let mut notify=None;let mut result=0u32;let mut redraw=true;let mut output=None;
+    let mut failure_code=None;let mut notify=None;let mut result=0u32;let mut redraw=true;let mut output=None;
     match m {
         1=>{}, 0xf=>{}, 7=>c.focus=true,8=>c.focus=false,
         0xa=>{if wp==0{c.pressed=false;c.focus=false}},0x1f=>c.pressed=false,
@@ -145,15 +145,20 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         // SHA 0738d528db522f52d9d75f2aec712688dd31d1d2, LGPL-2.1-or-later.
         // Copyright 1997 Alex Korobka; 1996 Alexandre Julliard.
         // String-only ASCII-case profile; no owner-draw/locale collation port.
-        0x181|0x14a if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if wp==u32::MAX{c.items.len()}else{wp as usize};if i>c.items.len(){result=u32::MAX}else{c.items.insert(i,incoming);if c.selected>=i as i32{c.selected+=1}result=i as u32}},
+        0x181|0x14a if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if wp==u32::MAX{c.items.len()}else{wp as usize};if i>c.items.len(){result=u32::MAX}else{c.items.insert(i,incoming);c.item_data.insert(i,0);if c.selected>=i as i32{c.selected+=1}result=i as u32}},
         0x14c|0x14d|0x158 if c.kind==Kind::Combo=>{
             result=u32::MAX;redraw=false;
             if !c.items.is_empty()&&!incoming.is_empty(){let start=if wp==u32::MAX{0}else{(wp as usize+1)%c.items.len()};for n in 0..c.items.len(){let i=(start+n)%c.items.len();let item=&c.items[i];let matched=if m==0x158{item.eq_ignore_ascii_case(&incoming)}else{item.get(..incoming.len()).map_or(false,|p|p.eq_ignore_ascii_case(&incoming))};if matched{result=i as u32;if m==0x14d{c.selected=i as i32;c.text=item.clone();redraw=true}break}}}
         }
-        0x180|0x143 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if c.style & if c.kind==Kind::Combo{0x100}else{2} !=0{c.items.partition_point(|s|s<&incoming)}else{c.items.len()};c.items.insert(i,incoming);if c.selected>=i as i32{c.selected+=1}result=i as u32},
-        0x182|0x144 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if (wp as usize)<c.items.len(){c.items.remove(wp as usize);if c.selected==wp as i32{c.selected=-1}else if c.selected>wp as i32{c.selected-=1}result=c.items.len()as u32}else{result=u32::MAX}},
-        0x184|0x14b if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{c.items.clear();c.selected=-1},
+        0x180|0x143 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{let i=if c.style & if c.kind==Kind::Combo{0x100}else{2} !=0{c.items.partition_point(|s|s<&incoming)}else{c.items.len()};c.items.insert(i,incoming);c.item_data.insert(i,0);if c.selected>=i as i32{c.selected+=1}result=i as u32},
+        0x182|0x144 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if (wp as usize)<c.items.len(){c.items.remove(wp as usize);c.item_data.remove(wp as usize);if c.selected==wp as i32{c.selected=-1}else if c.selected>wp as i32{c.selected-=1}result=c.items.len()as u32}else{result=u32::MAX}},
+        0x184|0x14b if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{c.items.clear();c.item_data.clear();c.selected=-1},
         0x186|0x14e if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{if wp==u32::MAX{c.selected=-1;result=u32::MAX}else if (wp as usize)<c.items.len(){c.selected=wp as i32;if c.kind==Kind::Combo{c.text=c.items[wp as usize].clone()}result=wp}else{result=u32::MAX}},
+        // Wine listbox.c:2776-2792, combo.c:2063-2066 (same pinned SHA,
+        // LGPL-2.1-or-later). Guest item data is opaque DWORD, never dereferenced.
+        // Wine LB_SETITEMDATA returns TRUE (undocumented), propagated by Combo.
+        0x199|0x150 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{redraw=false;result=c.item_data.get(wp as usize).copied().unwrap_or(u32::MAX);if wp as usize>=c.item_data.len(){failure_code=Some(1413)}},
+        0x19a|0x151 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{redraw=false;if let Some(data)=c.item_data.get_mut(wp as usize){*data=lp;result=1}else{result=u32::MAX;failure_code=Some(1413)}},
         0x188|0x147 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.selected as u32;redraw=false},
         0x18b|0x146 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.items.len()as u32;redraw=false},
         0x18a|0x149 if matches!(c.kind,Kind::Listbox|Kind::Combo)=>{result=c.items.get(wp as usize).map_or(u32::MAX,|s|s.len()as u32);redraw=false},
@@ -169,6 +174,7 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         _=>{redraw=false;log::debug!("unsupported control message {:?} {m:x}",c.kind);}
     }
     let scroll_position=c.position as u32;let vertical=c.style&1!=0;
+    if let Some(code)=failure_code{kernel32::teb_mut(machine).LastErrorValue=code;}
     if let Some((ptr,cap,text))=output {result=copy_text(machine,ptr,cap,&text);}
     if redraw {paint(machine,hwnd)}
     if let Some(code)=notify {if !parent.is_null(){let notification=MSG{hwnd:parent,message:if code==0xffff{if vertical{0x115}else{0x114}}else{0x111},wParam:if code==0xffff{4|((scroll_position&0xffff)<<16)}else{(id&0xffff)|((code as u32)<<16)},lParam:hwnd.to_raw(),time:0,pt_x:0,pt_y:0};Box::pin(super::message::dispatch_message(machine,&notification)).await;}}

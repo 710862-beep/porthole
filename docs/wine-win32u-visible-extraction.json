@@ -1,0 +1,328 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/win32u/window.c",
+  "sourceSha256": "68b18b72885cad86001923d39b906cba4899578ccb7334ea00757f4bf57819a6",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1993, 1994 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "is_window_visible",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "is_window_visible",
+      "startLine": 1075,
+      "endLine": 1091,
+      "calls": [
+        "free",
+        "get_desktop_window",
+        "get_window_long",
+        "list_window_parents"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_long",
+      "startLine": 1410,
+      "endLine": 1413,
+      "calls": [
+        "get_window_long_size"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "list_window_parents",
+      "startLine": 902,
+      "endLine": 963,
+      "calls": [
+        "SERVER_START_REQ",
+        "free",
+        "get_win_ptr",
+        "malloc",
+        "realloc",
+        "release_win_ptr",
+        "wine_server_call",
+        "wine_server_ptr_handle",
+        "wine_server_set_reply",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_long_size",
+      "startLine": 1339,
+      "endLine": 1407,
+      "calls": [
+        "NtUserGetAncestor",
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "get_desktop_window",
+        "get_full_window_handle",
+        "get_win_ptr",
+        "get_window_long_shm",
+        "get_window_relative",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_win_ptr",
+      "startLine": 608,
+      "endLine": 617,
+      "calls": [
+        "get_user_handle_ptr",
+        "is_desktop_window"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserGetAncestor",
+      "startLine": 994,
+      "endLine": 1049,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "free",
+        "get_full_window_handle",
+        "get_parent",
+        "get_win_ptr",
+        "is_desktop_window",
+        "list_window_parents",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_ptr_handle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_full_window_handle",
+      "startLine": 566,
+      "endLine": 578,
+      "calls": [
+        "LOWORD",
+        "get_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_long_shm",
+      "startLine": 1272,
+      "endLine": 1316,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "WARN",
+        "get_shared_window",
+        "get_window_proc",
+        "is_current_process_window",
+        "memcpy"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_relative",
+      "startLine": 821,
+      "endLine": 894,
+      "calls": [
+        "NtUserGetAncestor",
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "free",
+        "get_win_ptr",
+        "get_window_relative",
+        "is_window_enabled",
+        "is_window_visible",
+        "list_window_children",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_ptr_handle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_user_handle_ptr",
+      "startLine": 212,
+      "endLine": 228,
+      "calls": [
+        "GetCurrentProcessId",
+        "USER_HANDLE_TO_INDEX",
+        "get_user_entry",
+        "user_lock",
+        "user_unlock"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_desktop_window",
+      "startLine": 585,
+      "endLine": 599,
+      "calls": [
+        "HIWORD",
+        "LOWORD",
+        "get_user_thread_info"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_parent",
+      "startLine": 678,
+      "endLine": 713,
+      "calls": [
+        "RtlSetLastWin32Error",
+        "SERVER_START_REQ",
+        "get_win_ptr",
+        "get_window_long",
+        "release_win_ptr",
+        "wine_server_call_err",
+        "wine_server_ptr_handle",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_user_entry",
+      "startLine": 131,
+      "endLine": 140,
+      "calls": [
+        "USER_HANDLE_FROM_INDEX",
+        "USER_HANDLE_TO_INDEX",
+        "read_acquire_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_shared_window",
+      "startLine": 151,
+      "endLine": 174,
+      "calls": [
+        "CONTAINING_RECORD",
+        "find_shared_session_object",
+        "get_user_entry",
+        "shared_object_acquire_seqlock",
+        "shared_object_release_seqlock"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "get_window_proc",
+      "startLine": 1262,
+      "endLine": 1270,
+      "calls": [
+        "MAKE_WNDPROC",
+        "get_winproc"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_current_process_window",
+      "startLine": 639,
+      "endLine": 647,
+      "calls": [
+        "GetCurrentProcessId",
+        "get_user_entry"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_window_enabled",
+      "startLine": 1189,
+      "endLine": 1197,
+      "calls": [
+        "RtlGetLastWin32Error",
+        "RtlSetLastWin32Error",
+        "get_window_long"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "list_window_children",
+      "startLine": 971,
+      "endLine": 989,
+      "calls": [
+        "NtUserBuildHwndList",
+        "free",
+        "get_window_relative",
+        "malloc"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "read_acquire_user_entry",
+      "startLine": 118,
+      "endLine": 129,
+      "calls": [
+        "ReadAcquire64",
+        "ReadNoFence64",
+        "is_valid_entry_uniq"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "NtUserBuildHwndList",
+      "startLine": 3338,
+      "endLine": 3364,
+      "calls": [
+        "SERVER_START_REQ",
+        "wine_server_call",
+        "wine_server_obj_handle",
+        "wine_server_ptr_handle",
+        "wine_server_set_reply",
+        "wine_server_user_handle"
+      ],
+      "source": "dlls/win32u/window.c"
+    },
+    {
+      "name": "is_valid_entry_uniq",
+      "startLine": 104,
+      "endLine": 108,
+      "calls": [
+        "HIWORD",
+        "LOWORD",
+        "MAKELONG"
+      ],
+      "source": "dlls/win32u/window.c"
+    }
+  ],
+  "boundaries": [
+    "CONTAINING_RECORD",
+    "GetCurrentProcessId",
+    "HIWORD",
+    "LOWORD",
+    "MAKELONG",
+    "MAKE_WNDPROC",
+    "ReadAcquire64",
+    "ReadNoFence64",
+    "RtlGetLastWin32Error",
+    "RtlSetLastWin32Error",
+    "SERVER_START_REQ",
+    "USER_HANDLE_FROM_INDEX",
+    "USER_HANDLE_TO_INDEX",
+    "WARN",
+    "find_shared_session_object",
+    "free",
+    "get_desktop_window",
+    "get_user_thread_info",
+    "get_winproc",
+    "malloc",
+    "memcpy",
+    "realloc",
+    "release_win_ptr",
+    "shared_object_acquire_seqlock",
+    "shared_object_release_seqlock",
+    "user_lock",
+    "user_unlock",
+    "wine_server_call",
+    "wine_server_call_err",
+    "wine_server_obj_handle",
+    "wine_server_ptr_handle",
+    "wine_server_set_reply",
+    "wine_server_user_handle"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

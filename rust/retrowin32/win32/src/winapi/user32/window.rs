@@ -1166,3 +1166,20 @@ mod porthole_style_tests {
 pub fn IsWindow(machine: &mut Machine, hwnd: HWND) -> bool {
     hwnd.to_raw()==0xffff0001 || (!hwnd.is_null() && machine.state.user32.windows.get(hwnd).is_some())
 }
+
+/* Wine win32u/window.c:1075-1091; user32/win.c:1218-1220 wrapper.
+ * SHA 0738d528db522f52d9d75f2aec712688dd31d1d2; LGPL-2.1-or-later.
+ * Copyright 1993, 1994 Alexandre Julliard. list_window_parents -> HWND table;
+ * top-level owners are not parents. Message-only windows are unsupported.
+ */
+#[win32_derive::dllexport]
+pub fn IsWindowVisible(machine:&mut Machine,hWnd:HWND)->bool{
+ let mut current=hWnd;
+ for _ in 0..64{
+  if current.to_raw()==0xffff0001{return true}
+  let Some(w)=machine.state.user32.windows.get(current)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+  if !w.style.contains(WindowStyle::VISIBLE){return false}
+  if matches!(w.typ,WindowType::TopLevel(_)){return true}
+  current=w.parent;
+ }false
+}
