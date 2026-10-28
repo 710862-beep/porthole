@@ -4,6 +4,8 @@ Camada experimental de compatibilidade **Win32 → Web** em Vanilla JS: dynamic 
 
 > **Escopo sem marketing:** o workload D3D9 integrado produz frames/FPS reais. PEs podem ser apenas inspecionados ou executados pelo backend local; estados, stdout, instruções e exit codes são medidos separadamente. DOOM95, .kkrieger, Adobe e Roblox não são apresentados como rodando. Nenhum kernel Windows, BIOS ou imagem de sistema operacional é emulado. Compatibilidade total e suporte a anti-cheat não são alegados; evasão de VM/Wine/anti-cheat não faz parte do projeto.
 
+> **Estado vigente — 2026-10-28:** fonte `6eb2c0eb6207111a5b38c952aa7c1f0bf57b07c1`, [run 40727092030](https://github.com/710862-beep/porthole/actions/runs/40727092030). Build/integridade PASS; **5/5 PEs sintéticos PASS**; input headless injetado e TCP/HTTP/DNS guest Node comprovados. **DOOM95 falha em `comctl32.dll!17` (InitCommonControls), sem gameplay. Workflow vermelho, promotable=false, estável intacto.** [Relatório atual](docs/remaining-blockers.md).
+
 ## Executar
 
 Não há build nem dependências de runtime. Sirva a raiz por HTTP:

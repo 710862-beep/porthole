@@ -155,3 +155,8 @@ real, investigar os traces e repetir CI. Documentação consolidada em
 Eu devo resolver os 3 bloqueios restantes (Input headless, ws2_32, DOOM95) antes de considerar o candidato pronto para promoção. Cada correção deve ser testada no CI remoto.
 
 Honestidade rigorosa: injeção sintética não valida input físico; socket/connect/send não podem retornar sucesso sem transporte real; última API observada não prova causalidade. Instrumentar o caminho Rust guest, não apenas SHIMs JS isolados. Manter estável intacto até os gates reais. Trabalhar exclusivamente na branch arena/6a52f3cb-porthole.
+
+
+## Estado confirmado — CI 40727092030, 2026-10-28
+
+Fonte `6eb2c0eb6207111a5b38c952aa7c1f0bf57b07c1`; [run](https://github.com/710862-beep/porthole/actions/runs/40727092030). Input headless injetado e ws2_32 guest Node passaram; cinco PEs sintéticos PASS. DOOM95 com DLLs/IWAD reais adquiridos falha causalmente em comctl32.dll ordinal 17 (InitCommonControls). Janela/presents/exit 0 não validam gameplay. Gate `promotable=false`, workflow vermelho, vendor intacto. Os resultados de fases anteriores são históricos. Continuar com controles comuns e regressão guest; não considerar os três bloqueios resolvidos. Evidências e limites: [relatório](docs/remaining-blockers.md).

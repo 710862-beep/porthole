@@ -1,5 +1,10 @@
 # Porthole — relatório de compatibilidade real
 
+> **Estado vigente — 2026-10-28:** fonte `6eb2c0eb6207111a5b38c952aa7c1f0bf57b07c1`, [run 40727092030](https://github.com/710862-beep/porthole/actions/runs/40727092030). Build/integridade PASS; **5/5 PEs sintéticos PASS**; input headless injetado e TCP/HTTP/DNS guest Node comprovados. **DOOM95 falha em `comctl32.dll!17` (InitCommonControls), sem gameplay. Workflow vermelho, promotable=false, estável intacto.** [Relatório atual](docs/remaining-blockers.md).
+
+## Histórico — resultados abaixo foram substituídos pelo estado vigente acima
+
+
 > **Atualização 2026-10-28 — CI remoto real:** fonte `1bd21160ae81f88eaaa50c54a8a939bc6545457f`, [run 40714518581](https://github.com/710862-beep/porthole/actions/runs/40714518581). **Wasm produzido, baixado e validado**, inclusive binding. 8 testes Rust passaram; 143 verificações JS/DOM e 59 syntax checks locais. **3/5 contratos sintéticos passaram** (threads, registro e instalação com confirmação em disco Node); input e ws2_32 falham. Probes originais: **6/15**; DOOM95 falha em salto nulo, sem API causal comprovada. **Workflow vermelho; não promovido.** [Relatório atualizado](docs/rust-wasm-integration.md) e [evidência versionada](docs/evidence/remote-candidate-40714518581.json). As seções abaixo são **histórico da etapa anterior**, não o estado atual do candidato.
 
 

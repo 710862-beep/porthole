@@ -29,7 +29,7 @@
 +profile = "minimal"
 --- a/web/glue/src/host.rs
 +++ b/web/glue/src/host.rs
-@@ -253,6 +253,13 @@
+@@ -253,6 +253,23 @@
      pub type JsHost;
  
      #[wasm_bindgen(method)]
@@ -40,13 +40,27 @@
 +    fn registry_call(this: &JsHost, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String;
 +
 +    #[wasm_bindgen(method)]
++    fn api_trace(this: &JsHost, entry: &str);
++    #[wasm_bindgen(method)]
++    fn current_dir(this: &JsHost) -> String;
++    #[wasm_bindgen(method)]
++    fn key_state(this: &JsHost, key: u32) -> u32;
++    #[wasm_bindgen(method)]
++    fn raw_input_events(this: &JsHost) -> String;
++    #[wasm_bindgen(method)]
++    fn network_call(this: &JsHost, request: &str) -> String;
++    #[wasm_bindgen(method)]
      fn log(this: &JsHost, level: u8, msg: String);
  
      #[wasm_bindgen(method)]
-@@ -274,8 +281,11 @@
+@@ -274,8 +291,15 @@
  }
  
  impl win32::Host for JsHost {
++    fn api_trace(&self, entry: &str) { JsHost::api_trace(self,entry) }
++    fn key_state(&self, key: u32) -> u32 { JsHost::key_state(self,key) }
++    fn raw_input_events(&self) -> String { JsHost::raw_input_events(self) }
++    fn network_call(&self, request: &str) -> String { JsHost::network_call(self,request) }
 +    fn registry_call(&self, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String {
 +        JsHost::registry_call(self, op, handle, name, ty, data)
 +    }
@@ -56,7 +70,12 @@
      }
  
      fn system_time(&self) -> chrono::DateTime<chrono::Local> {
-@@ -341,7 +351,10 @@
+@@ -337,11 +361,14 @@
+     }
+ 
+     fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
+-        todo!()
++        Ok(win32::WindowsPathBuf::from(JsHost::current_dir(self)))
      }
  
      fn create_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
@@ -78,6 +97,24 @@
  bitflags = "1.3.2"
  chrono = "0.4.38"
  num-derive = "0.3"
+--- a/win32/Makefile
++++ b/win32/Makefile
+@@ -1,4 +1,4 @@
+-DLL_SRC=advapi32.rs bass.rs ddraw/ dsound.rs gdi32/ kernel32/ ntdll.rs ole32.rs oleaut32.rs retrowin32_test.rs ucrtbase.rs vcruntime140.rs version.rs user32/ wininet.rs winmm/
++DLL_SRC=advapi32.rs bass.rs ddraw/ dsound.rs gdi32/ kernel32/ ntdll.rs ole32.rs oleaut32.rs retrowin32_test.rs ucrtbase.rs vcruntime140.rs version.rs user32/ wininet.rs winmm/ ws2_32.rs
+ DLLS=$(foreach dll,$(DLL_SRC),src/winapi/$(dll))
+ src/winapi/builtin.rs: Makefile derive/src/*.rs src/*.rs src/winapi/* src/winapi/*/*
+ 	cargo run -p win32-derive -- --dll-dir dll --builtins $@ $(DLLS)
+--- a/win32/derive/src/gen.rs
++++ b/win32/derive/src/gen.rs
+@@ -71,6 +71,7 @@
+         defn,
+         quote!(Shim {
+             name: #name_str,
++            stack_bytes: #stack_offset,
+             func: #func,
+         }),
+     )
 --- a/win32/derive/src/main.rs
 +++ b/win32/derive/src/main.rs
 @@ -9,9 +9,11 @@
@@ -118,9 +155,18 @@
 +        std::fs::remove_dir_all(&dir).unwrap();
 +    }
 +}
+--- a/win32/dll/Makefile
++++ b/win32/dll/Makefile
+@@ -1,5 +1,5 @@
+ 
+-all: $(wildcard *.dll)
++all: $(patsubst %.def,%.dll,$(wildcard *.def))
+ 
+ %.dll: %.s %.def
+ 	clang-cl -fuse-ld=lld -target i586-pc-windows-msvc \
 --- a/win32/src/host.rs
 +++ b/win32/src/host.rs
-@@ -129,6 +129,10 @@
+@@ -129,6 +129,14 @@
  pub trait Host {
      /// Get an arbitrary time counter, measured in milliseconds.
      fn ticks(&self) -> u32;
@@ -128,12 +174,32 @@
 +    fn registry_call(&self, _op: &str, _handle: u32, _name: &str, _ty: u32, _data: &[u8]) -> String {
 +        "{\"status\":50}".into()
 +    }
++    fn api_trace(&self, _entry: &str) {}
++    fn key_state(&self, _key: u32) -> u32 { 0 }
++    fn raw_input_events(&self) -> String { "[]".into() }
++    fn network_call(&self, _request: &str) -> String { "{\"error\":10045}".into() }
      fn system_time(&self) -> chrono::DateTime<chrono::Local>;
  
      /// Get the next pending message, or None if no message waiting.
 --- a/win32/src/machine_emu.rs
 +++ b/win32/src/machine_emu.rs
-@@ -151,7 +151,20 @@
+@@ -46,6 +46,7 @@
+     /// Places where we've patched out the instruction with an int3.
+     /// The map values are the bytes from before the breakpoint.
+     breakpoints: HashMap<u32, u8>,
++    api_tail: std::collections::VecDeque<String>,
+ }
+ 
+ pub type MemImpl = BoxMem;
+@@ -65,6 +66,7 @@
+                 memory,
+                 shims,
+                 breakpoints: Default::default(),
++                api_tail: Default::default(),
+             },
+             host,
+             state,
+@@ -151,7 +153,20 @@
          }
      }
  
@@ -154,9 +220,45 @@
          self.emu.x86.schedule();
          match &self.emu.x86.cpu().state {
              x86::CPUState::Running => self.execute_block(),
+@@ -166,7 +181,7 @@
+             }
+             x86::CPUState::Error(message) => {
+                 self.status = Status::Error {
+-                    message: message.clone(),
++                    message: format!("{} causal_import={:?} LAST20_API={:?}",message,self.emu.x86.cpu().fault_operand.and_then(|addr|self.labels.get(&addr)),self.emu.api_tail),
+                 };
+             }
+             state => unimplemented!("{state:?}"),
+@@ -183,6 +198,7 @@
+ 
+         // See doc/shims.md for the state of the stack when we get here.
+ 
++        let diagnostic_mem=self.emu.memory.mem();
+         let regs = &mut self.emu.x86.cpu_mut().regs;
+ 
+         // stack[0] is the return address within the shim DLL, after the call instruction.
+@@ -198,6 +214,10 @@
+         };
+ 
+         let stack_args = esp + 8;
++        let entry=format!("{} args={:08x?}",shim.name,(0..(shim.stack_bytes.min(16)/4)).map(|i|diagnostic_mem.get_pod::<u32>(stack_args+i*4)).collect::<Vec<_>>());
++        if self.emu.api_tail.len()==20 {self.emu.api_tail.pop_front();}
++        self.host.api_trace(&entry);
++        self.emu.api_tail.push_back(entry);
+         match shim.func {
+             Handler::Sync(func) => {
+                 let ret = unsafe { func(self, stack_args) };
 --- a/win32/src/shims.rs
 +++ b/win32/src/shims.rs
-@@ -50,7 +50,10 @@
+@@ -25,6 +25,7 @@
+ #[derive(Debug)]
+ pub struct Shim {
+     pub name: &'static str,
++    pub stack_bytes: u32,
+     pub func: Handler,
+ }
+ 
+@@ -50,7 +51,10 @@
  /// Synchronously evaluate a Future, under the assumption that it is always immediately Ready.
  #[allow(deref_nullptr)]
  pub fn call_sync<T>(future: std::pin::Pin<&mut impl std::future::Future<Output = T>>) -> T {
@@ -325,6 +427,50 @@
      ACCESS_DENIED = 5,
      INVALID_HANDLE = 6,
      INVALID_ACCESS = 12,
+--- a/win32/src/winapi/kernel32/file.rs
++++ b/win32/src/winapi/kernel32/file.rs
+@@ -12,7 +12,7 @@
+     FileOptions, ReadDir, ReadDirEntry, Stat, StatKind,
+ };
+ use bitflags::bitflags;
+-use memory::ExtensionsMut;
++use memory::{Extensions, ExtensionsMut};
+ use typed_path::WindowsPath;
+ 
+ const TRACE_CONTEXT: &'static str = "kernel32/file";
+@@ -1164,3 +1164,32 @@
+ pub fn FlushFileBuffers(machine: &mut Machine, hFile: HFILE) -> bool {
+     todo!();
+ }
++
++/// ASCII virtual-profile search. Only authorized, preloaded readable files exist
++/// here; the virtual environment has no PATH entries beyond the explicit dirs.
++#[win32_derive::dllexport]
++pub fn SearchPathA(machine: &mut Machine, path: Option<&str>, file: Option<&str>, extension: Option<&str>, capacity: u32, buffer: u32, part: Option<&mut u32>) -> u32 {
++    let file=match file {Some(name) if !name.is_empty() && name.is_ascii()=>name,_=>{set_last_error(machine,ERROR::INVALID_PARAMETER);return 0;}};
++    let mut name=file.to_string();
++    if !file.rsplit(|c|c=='\\'||c=='/').next().unwrap_or(file).contains('.') {if let Some(ext)=extension {if !ext.is_ascii(){set_last_error(machine,ERROR::NOT_SUPPORTED);return 0;}name.push_str(ext);}}
++    let cwd=match machine.host.current_dir(){Ok(path)=>path,Err(error)=>{set_last_error(machine,error);return 0;}};
++    let mut dirs=Vec::new();
++    if let Some(path)=path {for dir in path.split(';'){dirs.push(cwd.join(dir));}}
++    else {
++        let exe=machine.exe_path.to_string_lossy();
++        if let Some(parent)=WindowsPath::new(exe.as_bytes()).parent(){dirs.push(parent.to_path_buf());}
++        dirs.push(cwd.clone());
++        for dir in ["C:\\Windows\\System32","C:\\Windows\\System","C:\\Windows"] {dirs.push(WindowsPath::new(dir).to_path_buf());}
++    }
++    for dir in dirs {
++        let candidate=dir.join(&name).normalize();
++        if machine.host.open(&candidate,FileOptions::read()).is_err(){continue;}
++        let bytes=candidate.as_bytes();let needed=bytes.len() as u32+1;
++        if capacity<needed {return needed;}
++        if buffer==0 || buffer.checked_add(capacity).map_or(true,|end|end as usize>machine.mem().as_slice().len()) {set_last_error(machine,ERROR::INVALID_PARAMETER);return 0;}
++        let mem=machine.mem();let output=mem.sub32_mut(buffer,needed);output[..bytes.len()].copy_from_slice(bytes);output[bytes.len()]=0;
++        if let Some(part)=part {*part=buffer+bytes.iter().rposition(|b|*b==b'\\').map_or(0,|index|index as u32+1);}
++        set_last_error(machine,ERROR::SUCCESS);return needed-1;
++    }
++    set_last_error(machine,ERROR::FILE_NOT_FOUND);0
++}
 --- a/win32/src/winapi/kernel32/init.rs
 +++ b/win32/src/winapi/kernel32/init.rs
 @@ -214,6 +214,8 @@
@@ -677,6 +823,449 @@
          machine.emu.x86.cpu_mut().block(Some(until)).await;
      }
  
+--- a/win32/src/winapi/mod.rs
++++ b/win32/src/winapi/mod.rs
+@@ -25,6 +25,7 @@
+ mod version;
+ mod wininet;
+ mod winmm;
++mod ws2_32;
+ 
+ pub use error::ERROR;
+ 
+@@ -42,7 +43,7 @@
+     }
+ }
+ 
+-pub const DLLS: [builtin::BuiltinDLL; 16] = [
++pub const DLLS: [builtin::BuiltinDLL; 17] = [
+     builtin::advapi32::DLL,
+     builtin::bass::DLL,
+     builtin::ddraw::DLL,
+@@ -58,6 +59,7 @@
+     builtin::version::DLL,
+     builtin::wininet::DLL,
+     builtin::winmm::DLL,
++    builtin::ws2_32::DLL,
+     builtin::retrowin32_test::DLL,
+ ];
+ 
+@@ -89,6 +91,7 @@
+     pub gdi32: gdi32::State,
+     pub kernel32: kernel32::State,
+     pub user32: user32::State,
++    pub ws2_32: ws2_32::State,
+ }
+ 
+ impl State {
+@@ -102,6 +105,7 @@
+             gdi32: gdi32::State::default(),
+             kernel32,
+             user32: user32::State::default(),
++            ws2_32: ws2_32::State::default(),
+         }
+     }
+ }
+--- a/win32/src/winapi/user32/message.rs
++++ b/win32/src/winapi/user32/message.rs
+@@ -222,6 +222,7 @@
+ ) -> bool {
+     let lpMsg = lpMsg.unwrap();
+ 
++    super::raw_input::pump(machine);
+     let _ = fill_message_queue(machine, hWnd);
+ 
+     if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
+@@ -318,15 +319,10 @@
+ }
+ 
+ pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
+-    assert!(!msg.hwnd.is_null());
+-    let wndproc = machine
+-        .state
+-        .user32
+-        .windows
+-        .get(msg.hwnd)
+-        .unwrap()
+-        .wndclass
+-        .wndproc;
++    let wndproc = match machine.state.user32.windows.get(msg.hwnd) {
++        Some(window) if !msg.hwnd.is_null() => window.wndclass.wndproc,
++        _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}
++    };
+     if wndproc == 0 {
+         log::error!("window has no wndproc, skipping message dispatch");
+         return 0;
+@@ -342,9 +338,7 @@
+                 msg.lParam,
+             ],
+         )
+-        .await;
+-    // TODO: copy eax to return value
+-    0
++        .await
+ }
+ 
+ #[win32_derive::dllexport]
+@@ -416,7 +410,7 @@
+ ) -> u32 {
+     let msg = MSG {
+         hwnd: hWnd,
+-        message: Msg.unwrap() as u32,
++        message: match Msg {Ok(value)=>value as u32,Err(value)=>value},
+         wParam,
+         lParam,
+         time: 0,
+@@ -449,3 +443,14 @@
+     // TODO: implement me
+     258 // WAIT_TIMEOUT
+ }
++
++#[cfg(test)]
++mod porthole_message_tests {
++    use super::*;
++    #[test]
++    fn class_specific_messages_are_not_required_to_be_enum_members() {
++        let value=WM::try_from(0x30);
++        let number=match value {Ok(value)=>value as u32,Err(value)=>value};
++        assert_eq!(number,0x30);
++    }
++}
+--- a/win32/src/winapi/user32/misc.rs
++++ b/win32/src/winapi/user32/misc.rs
+@@ -154,3 +154,22 @@
+ pub fn SetCursorPos(_machine: &mut Machine, x: i32, y: i32) -> bool {
+     todo!();
+ }
++
++// SHORT result: bit 15 is current down state; bit 0 is pressed since last query.
++#[win32_derive::dllexport]
++pub fn GetAsyncKeyState(machine: &mut Machine, key: i32) -> u32 {
++    if key<0 || key>255 {return 0;}
++    machine.host.key_state(key as u32) & 0x8001
++}
++
++// Virtual desktop work-area queries. No host OS settings are modified.
++#[win32_derive::dllexport]
++pub fn SystemParametersInfoA(machine: &mut Machine, action: u32, param: u32, data: u32, flags: u32) -> bool {
++    if action!=0x30 {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=50;return false;}
++    if data==0 || data.checked_add(16).map_or(true,|end|end as usize>machine.mem().as_slice().len()) {
++        crate::winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;
++    }
++    let right=GetSystemMetrics(machine,Ok(SystemMetric::CXSCREEN));
++    let bottom=GetSystemMetrics(machine,Ok(SystemMetric::CYSCREEN));
++    let mem=machine.mem();mem.put_pod::<i32>(data,0);mem.put_pod::<i32>(data+4,0);mem.put_pod::<u32>(data+8,right);mem.put_pod::<u32>(data+12,bottom);true
++}
+--- a/win32/src/winapi/user32/mod.rs
++++ b/win32/src/winapi/user32/mod.rs
+@@ -6,6 +6,8 @@
+ mod misc;
+ mod paint;
+ mod rect;
++mod raw_input;
++pub use raw_input::*;
+ mod resource;
+ mod timer;
+ mod window;
+@@ -27,6 +29,9 @@
+ 
+ #[derive(Default)]
+ pub struct State {
++    raw_registered: bool,
++    raw_next: u32,
++    raw_packets: std::collections::HashMap<u32,(i32,i32)>,
+     wndclasses: Vec<std::rc::Rc<WndClass>>,
+     pub user_window_message_count: u32,
+     pub windows: Handles<HWND, Window>,
+--- a/win32/src/winapi/user32/raw_input.rs
++++ b/win32/src/winapi/user32/raw_input.rs
+@@ -0,0 +1,46 @@
++//! x86 RAWINPUT mouse subset. Host injection is synthetic, not physical input.
++use crate::{Machine, winapi::types::HWND};
++use memory::{Extensions, ExtensionsMut};
++use super::MSG;
++const TRACE_CONTEXT: &str = "user32/raw_input";
++fn error(machine: &mut Machine, code: u32) -> u32 {
++    crate::winapi::kernel32::teb_mut(machine).LastErrorValue=code; u32::MAX
++}
++fn valid(machine: &Machine, ptr: u32, size: u32) -> bool {
++    ptr!=0 && ptr.checked_add(size).map_or(false, |end| end as usize<=machine.mem().as_slice().len())
++}
++#[win32_derive::dllexport]
++pub fn RegisterRawInputDevices(machine: &mut Machine, devices: u32, count: u32, size: u32) -> bool {
++    if count!=1 || size!=12 || !valid(machine,devices,12) {error(machine,87);return false;}
++    let mem=machine.mem();
++    let page=mem.get_pod::<u16>(devices);let usage=mem.get_pod::<u16>(devices+2);
++    let flags=mem.get_pod::<u32>(devices+4);let hwnd=mem.get_pod::<u32>(devices+8);
++    if page!=1 || usage!=2 || (flags!=0 && flags!=1) || hwnd!=0 {error(machine,50);return false;}
++    machine.state.user32.raw_registered=flags==0;
++    true
++}
++pub fn pump(machine: &mut Machine) {
++    if !machine.state.user32.raw_registered {return;}
++    let data=machine.host.raw_input_events();
++    let events: Vec<(i32,i32)>=match serde_json::from_str(&data) {Ok(v)=>v,Err(_)=>return};
++    for (dx,dy) in events.into_iter().take(256) {
++        if machine.state.user32.raw_packets.len()>=1024 {break;}
++        machine.state.user32.raw_next=machine.state.user32.raw_next.wrapping_add(1).max(1);
++        let handle=machine.state.user32.raw_next;
++        machine.state.user32.raw_packets.insert(handle,(dx,dy));
++        machine.state.user32.messages.push_back(MSG {hwnd:HWND::null(),message:0xff,wParam:0,lParam:handle,time:machine.host.ticks(),pt_x:0,pt_y:0});
++    }
++}
++#[win32_derive::dllexport]
++pub fn GetRawInputData(machine: &mut Machine, handle: u32, command: u32, data: u32, size: u32, header_size: u32) -> u32 {
++    if header_size!=16 || !valid(machine,size,4) || (command!=0x10000003 && command!=0x10000005) {return error(machine,87);}
++    let (dx,dy)=match machine.state.user32.raw_packets.get(&handle) {Some(v)=>*v,None=>return error(machine,6)};
++    let required=if command==0x10000005 {16}else{40};
++    let mem=machine.mem();let capacity=mem.get_pod::<u32>(size);mem.put_pod::<u32>(size,required);
++    if data==0 {return 0;}
++    if capacity<required {return error(machine,122);}
++    if !valid(machine,data,required) {return error(machine,87);}
++    mem.sub32_mut(data,required).fill(0);mem.put_pod::<u32>(data+4,40);mem.put_pod::<u32>(data+8,1);
++    if required==40 {mem.put_pod::<i32>(data+28,dx);mem.put_pod::<i32>(data+32,dy);machine.state.user32.raw_packets.remove(&handle);}
++    required
++}
+--- a/win32/src/winapi/user32/window.rs
++++ b/win32/src/winapi/user32/window.rs
+@@ -292,6 +292,9 @@
+ 
+ bitflags! {
+     pub struct WindowStyle: u32 {
++        // Low 16 bits belong to the window class (e.g. ES_* for EDIT),
++        // not CS_* flags. Preserve them rather than panicking in CreateWindow.
++        const CLASS_SPECIFIC  = 0x0000ffff;
+         const POPUP           = 0x80000000;
+         const CHILD           = 0x40000000;
+         const MINIMIZE        = 0x20000000;
+@@ -429,12 +432,10 @@
+     {
+         Some(wndclass) => wndclass.clone(),
+         None => {
+-            log::warn!("unknown wndclass {class_name:?}, using empty");
+-            Rc::new(WndClass {
+-                name: class_name,
+-                wndproc: 0,
+-                background: HBRUSH::null(),
+-            })
++            log::error!("UNSUPPORTED_WINDOW_CLASS {class_name:?}: no registered procedure/control implementation");
++            // Do not fabricate a working EDIT/BUTTON control with a zero proc.
++            winapi::kernel32::teb_mut(machine).LastErrorValue=1407;
++            return HWND::null();
+         }
+     };
+ 
+@@ -512,7 +513,8 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn GetDesktopWindow(_machine: &mut Machine) -> HWND {
+-    HWND::null()
++    // Reserved virtual desktop handle, not a physical host desktop.
++    HWND::from_raw(0xffff0001)
+ }
+ 
+ #[win32_derive::dllexport]
+@@ -941,8 +943,9 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn GetClientRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
+-    let window = machine.state.user32.windows.get(hWnd).unwrap();
+-    let rect = lpRect.unwrap();
++    if hWnd.to_raw()==0xffff0001 {return GetWindowRect(machine,hWnd,lpRect);}
++    let rect=match lpRect {Some(rect)=>rect,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;}};
++    let window=match machine.state.user32.windows.get(hWnd) {Some(window)=>window,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false;}};
+     *rect = RECT {
+         left: 0,
+         top: 0,
+@@ -954,7 +957,12 @@
+ 
+ #[win32_derive::dllexport]
+ pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
+-    let window = machine.state.user32.windows.get(hWnd).unwrap();
++    let rect=match lpRect {Some(rect)=>rect,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;}};
++    if hWnd.to_raw()==0xffff0001 {
++        // Same virtual monitor profile as GetSystemMetrics, never host hardware identity.
++        *rect=RECT {left:0,top:0,right:super::GetSystemMetrics(machine,Ok(super::SystemMetric::CXSCREEN)) as i32,bottom:super::GetSystemMetrics(machine,Ok(super::SystemMetric::CYSCREEN)) as i32};return true;
++    }
++    let window=match machine.state.user32.windows.get(hWnd) {Some(window)=>window,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false;}};
+ 
+     let mut result = RECT {
+         left: 0,
+@@ -976,7 +984,6 @@
+     result.top += offset_y;
+     result.bottom += offset_y;
+ 
+-    let rect = lpRect.unwrap();
+     *rect = result;
+     true
+ }
+@@ -1109,3 +1116,19 @@
+ pub fn EnableWindow(_machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
+     todo!();
+ }
++
++#[cfg(test)]
++mod porthole_style_tests {
++    use super::*;
++    #[test]
++    fn edit_control_style_preserves_class_specific_low_bits() {
++        let style=WindowStyle::try_from(0x54001844).unwrap();
++        assert!(style.contains(WindowStyle::CHILD));
++        assert_eq!(style.bits(),0x54001844);
++    }
++}
++
++#[win32_derive::dllexport]
++pub fn IsWindow(machine: &mut Machine, hwnd: HWND) -> bool {
++    hwnd.to_raw()==0xffff0001 || (!hwnd.is_null() && machine.state.user32.windows.get(hwnd).is_some())
++}
+--- a/win32/src/winapi/ws2_32.rs
++++ b/win32/src/winapi/ws2_32.rs
+@@ -0,0 +1,126 @@
++//! Guest WinSock2 TCP/IPv4 subset, backed by a real authorized host transport.
++//! No JS Promise crosses the DWORD ABI: pending jobs yield through guest Sleep.
++#![allow(non_snake_case)]
++use crate::Machine;
++use memory::{Extensions,ExtensionsMut};
++use serde_json::{json,Value};
++use std::collections::HashSet;
++const TRACE_CONTEXT: &str="ws2_32";
++#[derive(Default)]
++pub struct State {started:u32,sockets:HashSet<u32>,allocations:HashSet<u32>,last_error:i32,hostent:Option<u32>}
++fn fail(machine:&mut Machine,code:i32)->u32 {machine.state.ws2_32.last_error=code;u32::MAX}
++fn valid(machine:&Machine,ptr:u32,len:u32)->bool {ptr!=0 && ptr.checked_add(len).map_or(false,|end|end as usize<=machine.mem().as_slice().len())}
++fn host(machine:&Machine,value:Value)->Value {serde_json::from_str(&machine.host.network_call(&value.to_string())).unwrap_or(json!({"error":10022}))}
++async fn exchange(machine:&mut Machine,value:Value)->Value {
++    let mut response=host(machine,value);let start=machine.host.ticks();
++    while response["pending"].as_bool()==Some(true) {
++        if machine.host.ticks().wrapping_sub(start)>10000 {return json!({"error":10060});}
++        let id=response["job"].clone();
++        crate::winapi::kernel32::Sleep(machine,1).await;
++        response=host(machine,json!({"op":"poll","job":id}));
++    }
++    response
++}
++fn result(machine:&mut Machine,response:&Value)->u32 {
++    if let Some(code)=response["error"].as_i64() {return fail(machine,code as i32);}
++    response["result"].as_u64().map(|v|v as u32).unwrap_or_else(||fail(machine,10022))
++}
++#[win32_derive::dllexport]
++pub fn WSAStartup(machine:&mut Machine,version:u32,data:u32)->u32 {
++    if version&0xffff!=0x202 {return 10092;}
++    if !valid(machine,data,400) {return 10014;}
++    let mem=machine.mem();mem.sub32_mut(data,400).fill(0);mem.put_pod::<u16>(data,0x202);mem.put_pod::<u16>(data+2,0x202);
++    machine.state.ws2_32.started+=1;0
++}
++#[win32_derive::dllexport]
++pub fn WSAGetLastError(machine:&mut Machine)->u32 {machine.state.ws2_32.last_error as u32}
++#[win32_derive::dllexport]
++pub fn WSACleanup(machine:&mut Machine)->u32 {
++    if machine.state.ws2_32.started==0 {return fail(machine,10093);}
++    machine.state.ws2_32.started-=1;
++    if machine.state.ws2_32.started==0 {for socket in std::mem::take(&mut machine.state.ws2_32.sockets) {host(machine,json!({"op":"close","socket":socket}));}}
++    0
++}
++#[win32_derive::dllexport]
++pub fn socket(machine:&mut Machine,af:u32,ty:u32,protocol:u32)->u32 {
++    if machine.state.ws2_32.started==0 {return fail(machine,10093);}
++    if af!=2 || ty!=1 || (protocol!=0 && protocol!=6) {return fail(machine,10043);}
++    let response=host(machine,json!({"op":"socket"}));let handle=result(machine,&response);
++    if handle!=u32::MAX {machine.state.ws2_32.sockets.insert(handle);}handle
++}
++#[win32_derive::dllexport]
++pub async fn connect(machine:&mut Machine,s:u32,name:u32,len:u32)->u32 {
++    if !machine.state.ws2_32.sockets.contains(&s) {return fail(machine,10038);}
++    if len!=16 || !valid(machine,name,16) {return fail(machine,10014);}
++    let mem=machine.mem();if mem.get_pod::<u16>(name)!=2 {return fail(machine,10047);}
++    let bytes=mem.sub32(name+2,6).to_vec();let port=u16::from_be_bytes([bytes[0],bytes[1]]);
++    let ip=format!("{}.{}.{}.{}",bytes[2],bytes[3],bytes[4],bytes[5]);
++    let response=exchange(machine,json!({"op":"connect","socket":s,"host":ip,"port":port})).await;result(machine,&response)
++}
++#[win32_derive::dllexport]
++pub async fn send(machine:&mut Machine,s:u32,buf:u32,len:i32,flags:u32)->u32 {
++    if !machine.state.ws2_32.sockets.contains(&s) {return fail(machine,10038);}
++    if flags!=0 {return fail(machine,10045);}
++    if len<0 || len>1048576 || !valid(machine,buf,len as u32) {return fail(machine,10014);}
++    let bytes=machine.mem().sub32(buf,len as u32).to_vec();
++    let response=exchange(machine,json!({"op":"send","socket":s,"data":bytes})).await;result(machine,&response)
++}
++#[win32_derive::dllexport]
++pub async fn recv(machine:&mut Machine,s:u32,buf:u32,len:i32,flags:u32)->u32 {
++    if !machine.state.ws2_32.sockets.contains(&s) {return fail(machine,10038);}
++    if flags!=0 {return fail(machine,10045);}
++    if len<=0 || len>1048576 || !valid(machine,buf,len as u32) {return fail(machine,10014);}
++    let response=exchange(machine,json!({"op":"recv","socket":s,"length":len})).await;
++    if response["error"].is_number() {return result(machine,&response);}
++    let bytes:Vec<u8>=match serde_json::from_value(response["data"].clone()) {Ok(v)=>v,Err(_)=>return fail(machine,10022)};
++    if bytes.len()>len as usize {return fail(machine,10014);}
++    machine.mem().sub32_mut(buf,bytes.len() as u32).copy_from_slice(&bytes);bytes.len() as u32
++}
++#[win32_derive::dllexport]
++pub fn closesocket(machine:&mut Machine,s:u32)->u32 {
++    if !machine.state.ws2_32.sockets.remove(&s) {return fail(machine,10038);}
++    let response=host(machine,json!({"op":"close","socket":s}));result(machine,&response)
++}
++#[win32_derive::dllexport]
++pub async fn getaddrinfo(machine:&mut Machine,node:Option<&str>,service:Option<&str>,hints:u32,out:Option<&mut u32>)->u32 {
++    if machine.state.ws2_32.started==0 {return 10093;}
++    let out=match out {Some(v)=>v,None=>return 10014};*out=0;
++    let port=match service.unwrap_or("0").parse::<u16>() {Ok(v)=>v,Err(_)=>return 10109};
++    if hints!=0 {
++        if !valid(machine,hints,32) {return 10014;}
++        let mem=machine.mem();
++        if mem.get_pod::<u32>(hints)!=0 || ![0,2].contains(&mem.get_pod::<u32>(hints+4)) || ![0,1].contains(&mem.get_pod::<u32>(hints+8)) || ![0,6].contains(&mem.get_pod::<u32>(hints+12)) {return 10047;}
++    }
++    let response=exchange(machine,json!({"op":"lookup","host":node.unwrap_or("localhost")})).await;
++    if let Some(code)=response["error"].as_u64() {return code as u32;}
++    let ip:Vec<u8>=match serde_json::from_value(response["address"].clone()) {Ok(v)=>v,Err(_)=>return 11001};if ip.len()!=4 {return 11001;}
++    let mut scratch=std::mem::take(&mut machine.state.scratch);
++    let ptr=scratch.alloc(machine.mem(),48);machine.state.scratch=scratch;let mem=machine.mem();
++    mem.sub32_mut(ptr,48).fill(0);
++    for (offset,value) in [(4,2),(8,1),(12,6),(16,16),(24,ptr+32)] {mem.put_pod::<u32>(ptr+offset,value);}
++    mem.put_pod::<u16>(ptr+32,2);mem.sub32_mut(ptr+34,2).copy_from_slice(&port.to_be_bytes());mem.sub32_mut(ptr+36,4).copy_from_slice(&ip);
++    machine.state.ws2_32.allocations.insert(ptr);*out=ptr;0
++}
++#[win32_derive::dllexport]
++pub fn freeaddrinfo(machine:&mut Machine,ptr:u32) {if machine.state.ws2_32.allocations.remove(&ptr) {let mut scratch=std::mem::take(&mut machine.state.scratch);scratch.free(machine.mem(),ptr);machine.state.scratch=scratch;}}
++#[win32_derive::dllexport]
++pub fn htons(_machine:&mut Machine,value:u32)->u32 {(value as u16).to_be() as u32}
++#[win32_derive::dllexport]
++pub fn inet_addr(_machine:&mut Machine,value:Option<&str>)->u32 {value.and_then(|v|v.parse::<std::net::Ipv4Addr>().ok()).map(|v|u32::from_le_bytes(v.octets())).unwrap_or(u32::MAX)}
++
++#[win32_derive::dllexport]
++pub async fn gethostbyname(machine:&mut Machine,name:Option<&str>)->u32 {
++    if machine.state.ws2_32.started==0 {fail(machine,10093);return 0;}
++    let name=name.unwrap_or("localhost");if name.len()>253 {fail(machine,11001);return 0;}
++    let response=exchange(machine,json!({"op":"lookup","host":name})).await;
++    if let Some(code)=response["error"].as_i64() {fail(machine,code as i32);return 0;}
++    let ip:Vec<u8>=match serde_json::from_value(response["address"].clone()) {Ok(v)=>v,Err(_)=>{fail(machine,11001);return 0;}};
++    if ip.len()!=4 {fail(machine,11001);return 0;}
++    let ptr=if let Some(ptr)=machine.state.ws2_32.hostent {ptr}else{
++        let mut scratch=std::mem::take(&mut machine.state.scratch);let ptr=scratch.alloc(machine.mem(),288);machine.state.scratch=scratch;machine.state.ws2_32.hostent=Some(ptr);ptr
++    };
++    let mem=machine.mem();mem.sub32_mut(ptr,288).fill(0);
++    mem.put_pod::<u32>(ptr,ptr+32);mem.put_pod::<u32>(ptr+4,ptr+20);
++    mem.put_pod::<u16>(ptr+8,2);mem.put_pod::<u16>(ptr+10,4);mem.put_pod::<u32>(ptr+12,ptr+24);
++    mem.sub32_mut(ptr+16,4).copy_from_slice(&ip);mem.put_pod::<u32>(ptr+24,ptr+16);mem.sub32_mut(ptr+32,name.len() as u32).copy_from_slice(name.as_bytes());ptr
++}
+--- a/x86/src/ops/control.rs
++++ b/x86/src/ops/control.rs
+@@ -12,6 +12,7 @@
+ pub fn call_rm32(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+     // call dword ptr [addr]
+     let target = rm32(cpu, mem, instr).get();
++    if target<0x1000 {cpu.fault_operand=if instr.op0_kind()==iced_x86::OpKind::Memory {Some(x86_addr(cpu,instr))}else{None};cpu.err(format!("NULL_INDIRECT_CALL ip={:x} operand={:?} target={:x}",instr.ip32(),cpu.fault_operand,target));return;}
+     push(cpu, mem, cpu.regs.eip);
+     x86_jmp(cpu, target)
+ }
+@@ -33,6 +34,7 @@
+ 
+ pub fn jmp_rm32(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+     let target = rm32(cpu, mem, instr).get();
++    if target<0x1000 {cpu.fault_operand=if instr.op0_kind()==iced_x86::OpKind::Memory {Some(x86_addr(cpu,instr))}else{None};cpu.err(format!("NULL_INDIRECT_JMP ip={:x} operand={:?} target={:x}",instr.ip32(),cpu.fault_operand,target));return;}
+     x86_jmp(cpu, target)
+ }
+ 
 --- a/x86/src/x86.rs
 +++ b/x86/src/x86.rs
 @@ -20,6 +20,8 @@
@@ -688,7 +1277,23 @@
  }
  
  impl CPUState {
-@@ -121,7 +123,10 @@
+@@ -35,6 +37,7 @@
+ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
+ 
+ pub struct CPU {
++    pub fault_operand: Option<u32>,
+     pub regs: Registers,
+     // Flags are in principle a register but we moved it outside of regs for lifetime reasons,
+     // because there are operations we want to do over mut regs and flags at the same time.
+@@ -55,6 +58,7 @@
+             ops::init_op_tab();
+         }
+         CPU {
++            fault_operand: None,
+             regs: Registers::default(),
+             flags: Flags::empty(),
+             fpu: FPU::default(),
+@@ -121,7 +125,10 @@
          // here but it seems like nothing accesses it(?).
          //let c = unsafe { std::task::Context::from_waker(&Waker::from_raw(std::task::RawWaker::)) };
          #[allow(deref_nullptr)]
@@ -700,7 +1305,7 @@
          let poll = future.as_mut().poll(context);
          match poll {
              Poll::Ready(()) => {
-@@ -244,7 +249,7 @@
+@@ -244,7 +251,7 @@
          let mut soonest = None;
          for (i, cpu) in self.cpus.iter().enumerate() {
              match cpu.state {
@@ -709,7 +1314,7 @@
                  CPUState::DebugBreak | CPUState::Error(_) | CPUState::SysCall => {
                      self.cur_cpu = i;
                      return;
-@@ -259,7 +264,7 @@
+@@ -259,7 +266,7 @@
                  },
              }
          }
@@ -718,7 +1323,7 @@
  
          // if self.cur_cpu != prev || !self.cpu().state.is_running() {
          //     log::info!("cpu {prev}=>{} {:?}", self.cur_cpu, self.cpu().state);
-@@ -294,3 +299,23 @@
+@@ -294,3 +301,23 @@
          }
      }
  }

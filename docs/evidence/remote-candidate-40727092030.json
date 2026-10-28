@@ -1,0 +1,981 @@
+{
+  "sourceSha": "6eb2c0eb6207111a5b38c952aa7c1f0bf57b07c1",
+  "runId": 40727092030,
+  "url": "https://github.com/710862-beep/porthole/actions/runs/40727092030",
+  "promoted": false,
+  "integrity": {
+    "bindingInitialized": true,
+    "status": "INTEGRITY_VALIDATED_NOT_COMPATIBILITY",
+    "bytes": 1796309,
+    "wasmSha256": "fd259a13df684bc64ac6f7dfbaccf9c93933830bde0f8d1e1b27784f0821f1a8",
+    "glueSha256": "cbdfdabdeed9d007a4938a05cf09c05499d3964ae6440f314f85e7aa8907cfdb",
+    "exports": 42,
+    "imports": 65
+  },
+  "validation": {
+    "status": "COMPATIBILITY_GATES_FAILED",
+    "promotable": false,
+    "checks": [
+      {
+        "name": "exactly five distinct required PEs",
+        "pass": true
+      },
+      {
+        "name": "thread-validation guest exit and flush",
+        "pass": true
+      },
+      {
+        "name": "input-test guest exit and flush",
+        "pass": true
+      },
+      {
+        "name": "network-test guest exit and flush",
+        "pass": true
+      },
+      {
+        "name": "registry-test guest exit and flush",
+        "pass": true
+      },
+      {
+        "name": "installer-test guest exit and flush",
+        "pass": true
+      },
+      {
+        "name": "three workers and ten loops",
+        "pass": true
+      },
+      {
+        "name": "exact signed injected mouse deltas (NOT physical)",
+        "pass": true
+      },
+      {
+        "name": "real request and response through guest sockets",
+        "pass": true
+      },
+      {
+        "name": "registry disk reread",
+        "pass": true
+      },
+      {
+        "name": "installer directory/file/metadata disk reread",
+        "pass": true
+      },
+      {
+        "name": "compiled Wasm and initialized binding",
+        "pass": true
+      },
+      {
+        "name": "JS/DOM and syntax regressions",
+        "pass": true
+      },
+      {
+        "name": "DOOM95 actually passed without null import",
+        "pass": false
+      }
+    ]
+  },
+  "synthetic": {
+    "kind": "synthetic-pe32-guest-execution",
+    "tests": [
+      {
+        "name": "thread-validation",
+        "sha256": "b2a1c46261ab0ba449fe611b19d47ea64dc1c8b64536680fd2930cf84f58b37a",
+        "logs": [
+          {
+            "scope": "retrowin32",
+            "kind": "success",
+            "message": "Backend x86 user-mode carregado (1796309 bytes Wasm)."
+          },
+          {
+            "scope": "retrowin32-host",
+            "kind": "info",
+            "message": "thread-validation.exe: cache de 1 arquivo(s), 3584 bytes."
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/init.rs:37 CommandLine: thread-validation.exe"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/thread.rs:107 Porthole CreateThread cpu=1 handle=40000002"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/thread.rs:107 Porthole CreateThread cpu=2 handle=40000003"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/thread.rs:107 Porthole CreateThread cpu=3 handle=40000004"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/sync.rs:45 Porthole wait count=3 all=true timeout=10000"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/machine_emu.rs:158 Porthole ExitThread cpu=1 code=0"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/machine_emu.rs:158 Porthole ExitThread cpu=2 code=0"
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/machine_emu.rs:158 Porthole ExitThread cpu=3 code=0"
+          }
+        ],
+        "backendSha256": "fd259a13df684bc64ac6f7dfbaccf9c93933830bde0f8d1e1b27784f0821f1a8",
+        "result": {
+          "status": "exited",
+          "exitCode": 0,
+          "error": null,
+          "instructions": 766,
+          "stdout": "WORKER_DONE\nWORKER_DONE\nWORKER_DONE\nSUCCESS\n",
+          "volatileWrites": false,
+          "flushError": null
+        },
+        "status": "PASS",
+        "hostEvidence": null,
+        "guestContract": {
+          "workers": 3,
+          "loopsPerWorker": 10,
+          "tlsAssertions": 30,
+          "completedMarkers": 3
+        }
+      },
+      {
+        "name": "input-test",
+        "sha256": "227e9f58c1a981ba69059adec1ab4d294479750aa34ab90802908b92c199d9ff",
+        "logs": [
+          {
+            "scope": "retrowin32",
+            "kind": "success",
+            "message": "Backend x86 user-mode carregado (1796309 bytes Wasm)."
+          },
+          {
+            "scope": "retrowin32-host",
+            "kind": "info",
+            "message": "input-test.exe: cache de 1 arquivo(s), 6144 bytes."
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/init.rs:37 CommandLine: input-test.exe"
+          }
+        ],
+        "backendSha256": "fd259a13df684bc64ac6f7dfbaccf9c93933830bde0f8d1e1b27784f0821f1a8",
+        "result": {
+          "status": "exited",
+          "exitCode": 0,
+          "error": null,
+          "instructions": 531,
+          "stdout": "RAW_DELTA_VERIFIED\nRAW_DELTA_VERIFIED\nRAW_DELTA_VERIFIED\nSUCCESS: 3 injected mouse events (synthetic, not physical)\n",
+          "volatileWrites": false,
+          "flushError": null
+        },
+        "status": "PASS",
+        "hostEvidence": null,
+        "guestContract": {
+          "kind": "synthetic-injected-raw-input",
+          "events": 3,
+          "deltas": [
+            [
+              10,
+              5
+            ],
+            [
+              -5,
+              15
+            ],
+            [
+              20,
+              -10
+            ]
+          ],
+          "physicalInputValidated": false
+        }
+      },
+      {
+        "name": "network-test",
+        "sha256": "f3cc19670c4f097bdc6040fad5cc6fb61178f0a5e7fd25e822b3cf441f22d934",
+        "logs": [
+          {
+            "scope": "retrowin32",
+            "kind": "success",
+            "message": "Backend x86 user-mode carregado (1796309 bytes Wasm)."
+          },
+          {
+            "scope": "retrowin32-host",
+            "kind": "info",
+            "message": "network-test.exe: cache de 1 arquivo(s), 21504 bytes."
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/init.rs:37 CommandLine: network-test.exe 38127"
+          }
+        ],
+        "backendSha256": "fd259a13df684bc64ac6f7dfbaccf9c93933830bde0f8d1e1b27784f0821f1a8",
+        "result": {
+          "status": "exited",
+          "exitCode": 0,
+          "error": null,
+          "instructions": 1613,
+          "stdout": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: Wed, 28 Oct 2026 16:34:55 GMT\r\nConnection: close\r\n\r\nPORTHOLE_NETWORK_OK\nSUCCESS\n",
+          "volatileWrites": false,
+          "flushError": null
+        },
+        "status": "PASS",
+        "hostEvidence": null,
+        "guestContract": {
+          "kind": "real-node-loopback-http",
+          "requestSeen": true,
+          "connections": 1,
+          "sentBytes": 54,
+          "receivedBytes": 120
+        }
+      },
+      {
+        "name": "registry-test",
+        "sha256": "8cc60dbcf7dd724f6c0c729b308bb1f9b8ebb90c4b735dcd27fdd0602fbbeb34",
+        "logs": [
+          {
+            "scope": "retrowin32",
+            "kind": "success",
+            "message": "Backend x86 user-mode carregado (1796309 bytes Wasm)."
+          },
+          {
+            "scope": "retrowin32-host",
+            "kind": "info",
+            "message": "registry-test.exe: cache de 1 arquivo(s), 4608 bytes."
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/init.rs:37 CommandLine: registry-test.exe"
+          }
+        ],
+        "backendSha256": "fd259a13df684bc64ac6f7dfbaccf9c93933830bde0f8d1e1b27784f0821f1a8",
+        "result": {
+          "status": "exited",
+          "exitCode": 0,
+          "error": null,
+          "instructions": 1309,
+          "stdout": "SUCCESS (same-process reopen only)\n",
+          "volatileWrites": false,
+          "flushError": null
+        },
+        "status": "PASS",
+        "hostEvidence": {
+          "kind": "node-disk-fresh-registry-store",
+          "tokenBytes": 128,
+          "userId": 12345
+        }
+      },
+      {
+        "name": "installer-test",
+        "sha256": "be8f88ba4c2839c174f2c75ec7f9135381e62ffb28d0c20d636a301a840c749b",
+        "logs": [
+          {
+            "scope": "retrowin32",
+            "kind": "success",
+            "message": "Backend x86 user-mode carregado (1796309 bytes Wasm)."
+          },
+          {
+            "scope": "retrowin32-host",
+            "kind": "info",
+            "message": "installer-test.exe: cache de 1 arquivo(s), 21504 bytes."
+          },
+          {
+            "scope": "retrowin32",
+            "kind": "info",
+            "message": "win32/src/winapi/kernel32/init.rs:37 CommandLine: installer-test.exe"
+          }
+        ],
+        "backendSha256": "fd259a13df684bc64ac6f7dfbaccf9c93933830bde0f8d1e1b27784f0821f1a8",
+        "result": {
+          "status": "exited",
+          "exitCode": 0,
+          "error": null,
+          "instructions": 377,
+          "stdout": "SUCCESS (requires host persistence verification)\n",
+          "volatileWrites": false,
+          "flushError": null
+        },
+        "status": "PASS",
+        "hostEvidence": {
+          "kind": "node-disk-fresh-registry-store",
+          "directory": true,
+          "testFileBytes": 15,
+          "uninstallerMarkerBytes": 0,
+          "installPath": "C:\\Program Files\\TestApp"
+        }
+      }
+    ]
+  },
+  "doom95Browser": {
+    "backend": "retrowin32-wasm-x86",
+    "apiTrace": [
+      "DefWindowProcA args=[00000001, 00000047, 00000000, 00002044]",
+      "DefWindowProcA args=[00000001, 00000005, 00000000, 00400040]",
+      "DefWindowProcA args=[00000001, 00000003, 00000000, 00000000]",
+      "UpdateWindow args=[00000001]",
+      "BeginPaint args=[00000001, 0002f6c4]",
+      "FindResourceA args=[00400000, 00000084, 00000002]",
+      "FindResourceA args=[00400000, 00000084, 0000000a]",
+      "EndPaint args=[00000001, 0002f6c4]",
+      "DefWindowProcA args=[00000001, 00000047, 00000000, 00002064]",
+      "DefWindowProcA args=[00000001, 00000005, 00000000, 00400040]",
+      "DefWindowProcA args=[00000001, 00000003, 00000000, 00000000]",
+      "IsWindow args=[00000001]",
+      "LoadStringA args=[00400000, 00009c43, 00616f60, 00000100]",
+      "IsWindow args=[00000001]",
+      "LoadStringA args=[00400000, 00009c4f, 00616f60, 00000100]",
+      "IsWindow args=[00000001]",
+      "SearchPathA args=[00000000, 00457a50, 00457a4b, 00000200]",
+      "GetLastError args=[]",
+      "LoadLibraryA args=[0002f63c]",
+      "GetProcAddress args=[00030000, 00457ac8]"
+    ],
+    "name": "doom95.exe",
+    "path": "C:\\Tests\\doom95.exe",
+    "status": "BACKEND_FAILURE",
+    "started": true,
+    "instructions": 5009,
+    "instructionCounterValid": false,
+    "runBatches": 2,
+    "executionAttempted": true,
+    "exitCode": null,
+    "error": "NULL_INDIRECT_CALL ip=32ab7 operand=Some(291604) target=0 causal_import=Some(\"comctl32.dll!17@IAT\") LAST20_API=[\"DefWindowProcA args=[00000001, 00000047, 00000000, 00002044]\", \"DefWindowProcA args=[00000001, 00000005, 00000000, 00400040]\", \"DefWindowProcA args=[00000001, 00000003, 00000000, 00000000]\", \"UpdateWindow args=[00000001]\", \"BeginPaint args=[00000001, 0002f6c4]\", \"FindResourceA args=[00400000, 00000084, 00000002]\", \"FindResourceA args=[00400000, 00000084, 0000000a]\", \"EndPaint args=[00000001, 0002f6c4]\", \"DefWindowProcA args=[00000001, 00000047, 00000000, 00002064]\", \"DefWindowProcA args=[00000001, 00000005, 00000000, 00400040]\", \"DefWindowProcA args=[00000001, 00000003, 00000000, 00000000]\", \"IsWindow args=[00000001]\", \"LoadStringA args=[00400000, 00009c43, 00616f60, 00000100]\", \"IsWindow args=[00000001]\", \"LoadStringA args=[00400000, 00009c4f, 00616f60, 00000100]\", \"IsWindow args=[00000001]\", \"SearchPathA args=[00000000, 00457a50, 00457a4b, 00000200]\", \"GetLastError args=[]\", \"LoadLibraryA args=[0002f63c]\", \"GetProcAddress args=[00030000, 00457ac8]\"]",
+    "stdout": "",
+    "stdoutBytes": 0,
+    "outputTruncatedBytes": 0,
+    "outputTruncated": false,
+    "windows": 1,
+    "presents": 2,
+    "preload": {
+      "files": 7,
+      "bytes": 5264001,
+      "skipped": 0,
+      "complete": true
+    },
+    "volatileWrites": false,
+    "pendingWrites": 0,
+    "writeErrors": [],
+    "canvas": "ref: <Node>",
+    "flushError": null,
+    "logs": [
+      {
+        "scope": "retrowin32",
+        "message": "Backend x86 user-mode carregado (1796309 bytes Wasm).",
+        "kind": "success"
+      },
+      {
+        "scope": "retrowin32-host",
+        "message": "doom95.exe: cache de 7 arquivo(s), 5264001 bytes.",
+        "kind": "info"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/kernel32/init.rs:37 CommandLine: doom95.exe",
+        "kind": "info"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!DeviceIoControl",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!GetSystemInfo",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol advapi32.dll!RegOpenKeyA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!joyGetDevCapsA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!joyGetNumDevs",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!joyGetPosEx",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiOutGetNumDevs",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiOutPrepareHeader",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiOutReset",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiOutSetVolume",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiOutUnprepareHeader",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiStreamClose",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiStreamOpen",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiStreamOut",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiStreamPause",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiStreamProperty",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol winmm.dll!midiStreamRestart",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol gdi32.dll!CreateDCA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol gdi32.dll!CreateDIBitmap",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol gdi32.dll!GetSystemPaletteEntries",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol gdi32.dll!RealizePalette",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol gdi32.dll!SelectPalette",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol gdi32.dll!UnrealizeObject",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!CallNextHookEx",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!CallWindowProcA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!ClipCursor",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!CreateDialogParamA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!IsDialogMessageA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!PostMessageA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!SetWindowLongA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!SetWindowsHookExA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!UnhookWindowsHookEx",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!CreateMutexA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!DosDateTimeToFileTime",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!FileTimeToDosDateTime",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!FileTimeToLocalFileTime",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!LocalFileTimeToFileTime",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!ReadConsoleInputA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!ReleaseMutex",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!SetConsoleMode",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/kernel32/dll.rs:174 load_library(\"dplay.dll\"): not found",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol dplay.dll!1",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/kernel32/file.rs:202 CreateFileA(\"\\\\\\\\.\\\\mailslot\\\\debugout\") failed: FILE_NOT_FOUND",
+        "kind": "info"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/user32/window.rs:435 UNSUPPORTED_WINDOW_CLASS \"EDIT\": no registered procedure/control implementation",
+        "kind": "error"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/kernel32/dll.rs:174 load_library(\"dplay.dll\"): not found",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol dplay.dll!2",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol dplay.dll!1",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/kernel32/dll.rs:174 load_library(\"comctl32.dll\"): not found",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol comctl32.dll!PropertySheetA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol comctl32.dll!17",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!ReleaseMutex",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!CreateMutexA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!SetCurrentDirectoryA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!SetErrorMode",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!lstrcatA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!CompareStringW",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!CompareStringA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!FileTimeToLocalFileTime",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!WinHelpA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!SetWindowLongA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!PostMessageA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!PostThreadMessageA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!IsWindowVisible",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!SetWindowPlacement",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!GetParent",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!CreateDialogParamA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!IsDialogMessageA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol user32.dll!GetDlgItemTextA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/winapi/kernel32/dll.rs:174 load_library(\"comdlg32.dll\"): not found",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol comdlg32.dll!GetOpenFileNameA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol comdlg32.dll!CommDlgExtendedError",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol comdlg32.dll!GetSaveFileNameA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol advapi32.dll!GetUserNameA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32",
+        "message": "win32/src/pe/loader.rs:135 missing symbol advapi32.dll!RegOpenKeyA",
+        "kind": "warning"
+      },
+      {
+        "scope": "retrowin32-host",
+        "message": "Execu\u00e7\u00e3o x86 falhou: Error: NULL_INDIRECT_CALL ip=32ab7 operand=Some(291604) target=0 causal_import=Some(\"comctl32.dll!17@IAT\") LAST20_API=[\"DefWindowProcA args=[00000001, 00000047, 00000000, 00002044]\", \"DefWindowProcA args=[00000001, 00000005, 00000000, 00400040]\", \"DefWindowProcA args=[00000001, 00000003, 00000000, 00000000]\", \"UpdateWindow args=[00000001]\", \"BeginPaint args=[00000001, 0002f6c4]\", \"FindResourceA args=[00400000, 00000084, 00000002]\", \"FindResourceA args=[00400000, 00000084, 0000000a]\", \"EndPaint args=[00000001, 0002f6c4]\", \"DefWindowProcA args=[00000001, 00000047, 00000000, 00002064]\", \"DefWindowProcA args=[00000001, 00000005, 00000000, 00400040]\", \"DefWindowProcA args=[00000001, 00000003, 00000000, 00000000]\", \"IsWindow args=[00000001]\", \"LoadStringA args=[00400000, 00009c43, 00616f60, 00000100]\", \"IsWindow args=[00000001]\", \"LoadStringA args=[00400000, 00009c4f, 00616f60, 00000100]\", \"IsWindow args=[00000001]\", \"SearchPathA args=[00000000, 00457a50, 00457a4b, 00000200]\", \"GetLastError args=[]\", \"LoadLibraryA args=[0002f63c]\", \"GetProcAddress args=[00030000, 00457ac8]\"]\n    at imports.wbg.__wbindgen_error_new (http://127.0.0.1:45263/artifacts/wasm-candidate/glue.mjs?portholeInstance=1:754:21)\n    at glue.wasm.emulator_run (wasm://wasm/glue.wasm-006da356:wasm-function[1267]:0xd9824)\n    at Emulator.run (http://127.0.0.1:45263/artifacts/wasm-candidate/glue.mjs?portholeInstance=1:393:18)\n    at Retrowin32Process._tick (http://127.0.0.1:45263/js/retrowin32-backend.js:572:27)\n    at Retrowin32Process._boundTick (http://127.0.0.1:45263/js/retrowin32-backend.js:152:14)",
+        "kind": "error"
+      }
+    ],
+    "unsupportedControl": "win32/src/winapi/user32/window.rs:435 UNSUPPORTED_WINDOW_CLASS \"EDIT\": no registered procedure/control implementation",
+    "processStatus": "error",
+    "causalImport": "comctl32.dll!17",
+    "lastApi": {
+      "api": "GetProcAddress",
+      "args": "[00030000, 00457ac8]",
+      "origin": "rust-guest",
+      "timestamp": 1793205337411
+    },
+    "last20": [
+      {
+        "api": "DefWindowProcA",
+        "args": "[00000001, 00000047, 00000000, 00002044]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "DefWindowProcA",
+        "args": "[00000001, 00000005, 00000000, 00400040]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "DefWindowProcA",
+        "args": "[00000001, 00000003, 00000000, 00000000]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "UpdateWindow",
+        "args": "[00000001]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "BeginPaint",
+        "args": "[00000001, 0002f6c4]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "FindResourceA",
+        "args": "[00400000, 00000084, 00000002]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "FindResourceA",
+        "args": "[00400000, 00000084, 0000000a]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "EndPaint",
+        "args": "[00000001, 0002f6c4]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "DefWindowProcA",
+        "args": "[00000001, 00000047, 00000000, 00002064]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "DefWindowProcA",
+        "args": "[00000001, 00000005, 00000000, 00400040]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "DefWindowProcA",
+        "args": "[00000001, 00000003, 00000000, 00000000]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "IsWindow",
+        "args": "[00000001]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "LoadStringA",
+        "args": "[00400000, 00009c43, 00616f60, 00000100]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "IsWindow",
+        "args": "[00000001]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "LoadStringA",
+        "args": "[00400000, 00009c4f, 00616f60, 00000100]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "IsWindow",
+        "args": "[00000001]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "SearchPathA",
+        "args": "[00000000, 00457a50, 00457a4b, 00000200]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "GetLastError",
+        "args": "[]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "LoadLibraryA",
+        "args": "[0002f63c]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      },
+      {
+        "api": "GetProcAddress",
+        "args": "[00030000, 00457ac8]",
+        "origin": "rust-guest",
+        "timestamp": 1793205337411
+      }
+    ],
+    "causality": "Only a decoded fault operand matching an IAT slot identifies the null import; lastApi alone is not causal.",
+    "environment": "real-headless-chromium",
+    "gameplayValidated": false
+  },
+  "resources": {
+    "repository": "mshoger/doom95",
+    "tree": "bbd1b4d96986ba6351ae2012697ae3a5a0153a08",
+    "provenance": "Public mirror, not authenticated official distribution",
+    "files": [
+      {
+        "name": "doomlnch.dll",
+        "url": "https://api.github.com/repos/mshoger/doom95/git/blobs/78b1ad671bb05a95570193e94dbfb64c62c0b0fe",
+        "gitBlob": "78b1ad671bb05a95570193e94dbfb64c62c0b0fe",
+        "bytes": 110080,
+        "sha256": "57d407804ba2e606082994fcc2fb4ea86932374c62d911bdc398e862028a075f",
+        "format": {
+          "machine": 332,
+          "size": 110080
+        }
+      },
+      {
+        "name": "doomcfg.dll",
+        "url": "https://api.github.com/repos/mshoger/doom95/git/blobs/31148e78ef00c41643e65fdc11208cf0e0b8ffd1",
+        "gitBlob": "31148e78ef00c41643e65fdc11208cf0e0b8ffd1",
+        "bytes": 50176,
+        "sha256": "88b74ab161b024f7e624557951813e58278886c133060d1dda037bb97a36748e",
+        "format": {
+          "machine": 332,
+          "size": 50176
+        }
+      },
+      {
+        "name": "doomipx.dll",
+        "url": "https://api.github.com/repos/mshoger/doom95/git/blobs/c6cbcecd0b0829daac71de35e9d6e80ca779517f",
+        "gitBlob": "c6cbcecd0b0829daac71de35e9d6e80ca779517f",
+        "bytes": 22528,
+        "sha256": "35c1ac9557d74fb693748969468b4a49f53d7ede042b79a2697ac9febc80cc64",
+        "format": {
+          "machine": 332,
+          "size": 22528
+        }
+      },
+      {
+        "name": "doommdm.dll",
+        "url": "https://api.github.com/repos/mshoger/doom95/git/blobs/e3b6161fb755f2b1425179e6120b3b59a5ce2ab3",
+        "gitBlob": "e3b6161fb755f2b1425179e6120b3b59a5ce2ab3",
+        "bytes": 72704,
+        "sha256": "d499dd25d18d44ec801b16258761677d22150e2f205d2e79935b4fe8edcf7060",
+        "format": {
+          "machine": 332,
+          "size": 72704
+        }
+      },
+      {
+        "name": "doomser.dll",
+        "url": "https://api.github.com/repos/mshoger/doom95/git/blobs/c1d93d2432fda272dff770965208c0ea915707db",
+        "gitBlob": "c1d93d2432fda272dff770965208c0ea915707db",
+        "bytes": 37376,
+        "sha256": "c498af590cd126e9d1a38ce1192277d8f508af1757642f5949a142130fc2bec4",
+        "format": {
+          "machine": 332,
+          "size": 37376
+        }
+      },
+      {
+        "name": "doom1.wad",
+        "url": "https://api.github.com/repos/mshoger/doom95/git/blobs/1a58f66277d6bc869dfeb701591bd39f25eaacd0",
+        "gitBlob": "1a58f66277d6bc869dfeb701591bd39f25eaacd0",
+        "bytes": 4196020,
+        "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+        "format": {
+          "kind": "IWAD",
+          "lumps": 1264
+        }
+      }
+    ],
+    "errors": []
+  },
+  "originalSummary": {
+    "executed": 15,
+    "passed": 6,
+    "failed": 9
+  }
+}

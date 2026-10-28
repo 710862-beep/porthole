@@ -1,3 +1,9 @@
+# Estado vigente
+
+Ver [relatório dos três bloqueios](remaining-blockers.md): 5/5 sintéticos PASS, DOOM95 bloqueado em comctl32 ordinal 17, não promovido.
+
+## Histórico da integração anterior (não representa o estado vigente)
+
 # Integração Rust/Wasm — build remoto real, 2026-10-28
 
 ## Estado: compilado e baixado, compatibilidade incompleta — NÃO PROMOVIDO
