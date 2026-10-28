@@ -319,15 +319,10 @@ pub fn TranslateMessage(_machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
 }
 
 pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
-    assert!(!msg.hwnd.is_null());
-    let wndproc = machine
-        .state
-        .user32
-        .windows
-        .get(msg.hwnd)
-        .unwrap()
-        .wndclass
-        .wndproc;
+    let wndproc = match machine.state.user32.windows.get(msg.hwnd) {
+        Some(window) if !msg.hwnd.is_null() => window.wndclass.wndproc,
+        _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}
+    };
     if wndproc == 0 {
         log::error!("window has no wndproc, skipping message dispatch");
         return 0;
@@ -343,9 +338,7 @@ pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
                 msg.lParam,
             ],
         )
-        .await;
-    // TODO: copy eax to return value
-    0
+        .await
 }
 
 #[win32_derive::dllexport]
@@ -417,7 +410,7 @@ pub async fn SendMessageA(
 ) -> u32 {
     let msg = MSG {
         hwnd: hWnd,
-        message: Msg.unwrap() as u32,
+        message: match Msg {Ok(value)=>value as u32,Err(value)=>value},
         wParam,
         lParam,
         time: 0,
@@ -449,4 +442,15 @@ pub fn MsgWaitForMultipleObjects(
 ) -> u32 {
     // TODO: implement me
     258 // WAIT_TIMEOUT
+}
+
+#[cfg(test)]
+mod porthole_message_tests {
+    use super::*;
+    #[test]
+    fn class_specific_messages_are_not_required_to_be_enum_members() {
+        let value=WM::try_from(0x30);
+        let number=match value {Ok(value)=>value as u32,Err(value)=>value};
+        assert_eq!(number,0x30);
+    }
 }
