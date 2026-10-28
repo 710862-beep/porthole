@@ -161,3 +161,15 @@ pub fn GetAsyncKeyState(machine: &mut Machine, key: i32) -> u32 {
     if key<0 || key>255 {return 0;}
     machine.host.key_state(key as u32) & 0x8001
 }
+
+// Virtual desktop work-area queries. No host OS settings are modified.
+#[win32_derive::dllexport]
+pub fn SystemParametersInfoA(machine: &mut Machine, action: u32, param: u32, data: u32, flags: u32) -> bool {
+    if action!=0x30 {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=50;return false;}
+    if data==0 || data.checked_add(16).map_or(true,|end|end as usize>machine.mem().as_slice().len()) {
+        crate::winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;
+    }
+    let right=GetSystemMetrics(machine,Ok(SystemMetric::CXSCREEN));
+    let bottom=GetSystemMetrics(machine,Ok(SystemMetric::CYSCREEN));
+    let mem=machine.mem();mem.put_pod::<i32>(data,0);mem.put_pod::<i32>(data+4,0);mem.put_pod::<u32>(data+8,right);mem.put_pod::<u32>(data+12,bottom);true
+}
