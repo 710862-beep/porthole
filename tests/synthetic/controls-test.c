@@ -2,6 +2,29 @@
 #include <commctrl.h>
 static int clicked=0,changes=0;
 static LRESULT CALLBACK parent_proc(HWND h,UINT m,WPARAM w,LPARAM l){if(m==WM_COMMAND){if(LOWORD(w)==101 && HIWORD(w)==BN_CLICKED)clicked++;if(LOWORD(w)==102&&HIWORD(w)==EN_CHANGE)changes++;return 0;}return DefWindowProcA(h,m,w,l);}
+/* Authored regression for the Wine-derived modeless dialog path. */
+static int dialogInit=0,dialogCommand=0;
+static INT_PTR CALLBACK dialog_proc(HWND h,UINT m,WPARAM w,LPARAM l){
+ if(m==WM_INITDIALOG){REQUIRE(l==0x123abc);REQUIRE((HWND)w==GetDlgItem(h,1));REQUIRE(SetDlgItemTextA(h,102,"wine"));dialogInit++;return TRUE;}
+ if(m==WM_COMMAND){if(LOWORD(w)==1)dialogCommand++;return TRUE;}return FALSE;
+}
+static BYTE dialogBytes[512];static unsigned dp;
+static void word(WORD v){dialogBytes[dp++]=(BYTE)v;dialogBytes[dp++]=(BYTE)(v>>8);}
+static void dword(DWORD v){word((WORD)v);word((WORD)(v>>16));}
+static void align_dialog(void){while(dp&3)dialogBytes[dp++]=0;}
+static void item(DWORD style,WORD id,WORD atom,const char* text){align_dialog();dword(style|WS_CHILD|WS_VISIBLE|WS_TABSTOP);dword(0);word(5);word(id==1?5:25);word(70);word(16);word(id);word(0xffff);word(atom);while(*text)word((BYTE)*text++);word(0);word(0);}
+static void dialog_regression(void){
+ dp=0;dword(WS_POPUP|WS_VISIBLE|WS_CAPTION);dword(0);word(2);word(0);word(0);word(120);word(80);word(0);word(0);word('D');word(0);
+ item(BS_DEFPUSHBUTTON,1,0x80,"OK");item(0,102,0x81,"old");
+ HWND h=CreateDialogIndirectParamA(0,(const DLGTEMPLATE*)dialogBytes,0,dialog_proc,0x123abc);REQUIRE(h&&dialogInit==1);
+ REQUIRE(GetFocus()==GetDlgItem(h,1));char text[16];REQUIRE(GetDlgItemTextA(h,102,text,sizeof(text))==4);REQUIRE(text[0]=='w'&&text[3]=='e');
+ SendDlgItemMessageA(h,1,BM_CLICK,0,0);REQUIRE(dialogCommand==1);
+ MSG msg={0};msg.hwnd=GetDlgItem(h,1);msg.message=WM_KEYDOWN;msg.wParam=VK_TAB;REQUIRE(IsDialogMessageA(h,&msg));REQUIRE(GetFocus()==GetDlgItem(h,102));
+ msg.hwnd=GetDlgItem(h,102);msg.wParam=VK_RETURN;REQUIRE(IsDialogMessageA(h,&msg));REQUIRE(dialogCommand==2);
+ REQUIRE(DestroyWindow(h));REQUIRE(!IsWindow(h));
+ REQUIRE(!CreateDialogParamA(0,(LPCSTR)65530,0,dialog_proc,0));REQUIRE(GetLastError()==ERROR_RESOURCE_NAME_NOT_FOUND);
+ REQUIRE(!CreateDialogIndirectParamA(0,0,0,dialog_proc,0));REQUIRE(GetLastError()==ERROR_INVALID_PARAMETER);
+}
 void mainCRTStartup(void){
  HMODULE attached=LoadLibraryA("dll-attach.dll");REQUIRE(attached);DWORD (WINAPI *count)(void)=(DWORD(WINAPI*)(void))GetProcAddress(attached,"AttachCount");REQUIRE(count&&count()==1);REQUIRE(LoadLibraryA("dll-attach.dll")==attached);REQUIRE(count()==1);REQUIRE(!LoadLibraryA("dll-fail.dll"));REQUIRE(GetLastError()==ERROR_DLL_INIT_FAILED);REQUIRE(!GetModuleHandleA("dll-fail.dll"));
  INITCOMMONCONTROLSEX ex={sizeof(ex),ICC_STANDARD_CLASSES};REQUIRE(InitCommonControlsEx(&ex));
@@ -31,5 +54,6 @@ void mainCRTStartup(void){
  REQUIRE(GetParent(button)==parent&&GetDlgCtrlID(button)==101);SetFocus(edit);REQUIRE(GetFocus()==edit);
  REQUIRE(UpdateWindow(parent));REQUIRE(UpdateWindow(button));REQUIRE(UpdateWindow(edit));REQUIRE(UpdateWindow(list));
  REQUIRE(DestroyWindow(edit));REQUIRE(!IsWindow(edit));REQUIRE(DestroyWindow(parent));REQUIRE(!IsWindow(button));
+ dialog_regression();
  SAY("SUCCESS COMMON_CONTROLS_STATE_MESSAGES_NOTIFICATIONS\n");ExitProcess(0);
 }

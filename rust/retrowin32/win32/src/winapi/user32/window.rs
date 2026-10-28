@@ -72,6 +72,7 @@ pub struct UpdateRegion {
 }
 
 pub struct Window {
+    pub dialog: Option<super::dialog_helpers::DialogInfo>,
     pub title: String,
     pub parent: HWND,
     pub id: u32,
@@ -497,6 +498,7 @@ pub async fn CreateWindowExW(
     let raw_style = match dwStyle {Ok(value)=>value.bits(),Err(value)=>value};
     let control = if wndclass.wndproc==super::controls::NATIVE_PROC {super::controls::kind(&class_name).map(|kind|super::controls::Control::new(kind,&lpWindowName.map(|s|s.to_string()).unwrap_or_default(),raw_style))}else{None};
     let window = Window {
+        dialog: None,
         title:lpWindowName.map(|s|s.to_string()).unwrap_or_default(),parent:hWndParent,id:hMenu,x:X as i32,y:Y as i32,control,
         hwnd,
         typ,

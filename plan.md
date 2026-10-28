@@ -1,5 +1,103 @@
 # plan.md — Porthole Runtime v3.0
 
+## Fase 0 vigente — plano de mineração e adaptação do Wine · 2026-10-28
+
+### Objetivo e ponto de partida
+
+Aproveitar implementações Wine com proveniência verificável, adaptar suas dependências ao retrowin32 e avançar DOOM95 sem regressões. O bloqueio mais recente documentado é `user32!CreateDialogParamA` (run 40736781228), não comctl32 ordinal 17. O pedido completo e a promoção continuam pendentes. Os trechos C/Rust do pedido são exemplos a verificar, não fonte upstream já autenticada.
+
+### 0. Documentação antes do código — esta entrega
+
+- [x] Atualizar agents.md com compromisso literal de mineração, honestidade, licença, limites e autoevolução.
+- [x] Registrar o plano, o estado histórico e critérios de aceite.
+- [ ] Etapas 1–9: execução posterior; nenhuma extração/tradução nova comprovada nesta etapa.
+
+### 1. Aquisição reproduzível
+
+1. Examinar estado Git e convenções de ignore sem sobrescrever trabalho preexistente.
+2. Criar `scripts/fetch-wine-source.mjs`: tentar clone shallow em `vendor/wine-source`, fora dos artefatos versionados, com tratamento de falha e sem credenciais em logs.
+3. Fixar SHA completo do checkout em `docs/wine-commit.txt` e manifesto. Reexecuções/CI devem obter esse SHA, não seguir master silenciosamente.
+4. Se clone falhar, usar GitHub API/codeload para o mesmo commit, com inventário, hashes e diagnósticos; nunca fingir que download parcial é clone completo.
+5. Manter checkout, corpus extraído e grandes artefatos fora do Git; versionar manifestos, ferramentas, avisos/licenças e adaptações necessárias.
+
+Aceite: checkout/arquivo verificável, SHA real, origem e política de reprodução documentados.
+
+### 2. Navegação, inventário e licenciamento
+
+1. Localizar implementações e exports reais em comctl32, user32, win32u, gdi32, kernel32/kernelbase, advapi32, ws2_32 e dependências ntdll/server relevantes.
+2. Rastrear CreateDialogParamA e criação de diálogo: parsing RT_DIALOG, templates normais/estendidos, IDs, DLGPROC, WM_INITDIALOG, foco, GetDlgItem e roteamento. Expandir apenas conforme dependências e trace.
+3. Inventariar as APIs solicitadas de controles, janela/input, GDI, threads/arquivos, registro e sockets. Registrar wrappers/forwarders e origem efetiva, sem inventar funções inexistentes no módulo pedido.
+4. Verificar COPYRIGHT/cabeçalho por arquivo e COPYING.LIB do commit. Documentar se é LGPL-2.1-or-later ou outra licença efetiva; preservar avisos. Definir separação e condições de distribuição do código derivado e Wasm antes da integração distribuída.
+
+Aceite: mapa de origem/dependências e situação de licença explícitos, sem alegar que Wine inteiro é portável para browser.
+
+### 3. Extração automatizada e relatório
+
+1. Criar `scripts/extract-wine-api.mjs` com análise lexical de comentários/literais, limites de função e diagnósticos de macros/ambiguidade.
+2. Criar `scripts/batch-extract-wine.mjs` para o inventário pedido e o bloqueio atual. Não escrever diretamente sobre módulos Rust existentes.
+3. Gerar corpus isolado e `docs/wine-extraction-report.json` com SHA, arquivo/hash, função, linhas, licença, dependências, destino previsto e status por API.
+4. Testar comentários com chaves, strings, chamadas versus definições, múltiplas definições, macros, entradas ausentes e caminhos inválidos. Ausência não vira EXTRAÍDO.
+
+Aceite: extrações auditáveis e repetíveis, com testes de falhas e sem sobrescrita do runtime.
+
+### 4. Tradução assistida e revisão C→Rust
+
+1. Criar `scripts/translate-c-to-rust.mjs` como gerador de rascunhos e diagnóstico, não substituição textual declarada funcional.
+2. Preservar C original e proveniência; identificar tipos/ABI, fluxo de controle, macros, dependências Wine, syscalls e acessos de memória que precisam de adaptação humana.
+3. Revisar semântica, erros, ownership, callbacks/reentrância, ciclo de vida e assincronia. Mapear estruturas guest por APIs de memória do emulador, nunca por cast direto do endereço guest para ponteiro host.
+4. Traduzir primeiro o caminho causal de diálogos; auditar implementações já existentes de Common Controls, GetAsyncKeyState e sockets contra Wine sem substituir comportamento aprovado por um rascunho incompleto.
+5. Não gerar sucesso vazio, funções incompletas integradas ou uma falsa árvore `rust/retrowin32/src`: usar os módulos reais em `rust/retrowin32/win32/src/winapi/` e a arquitetura real do workspace.
+
+Aceite: adaptação revisada, com origem exata e lista explícita de diferenças; EXTRACTED não significa TRANSLATED, e TRANSLATED não significa VALIDATED.
+
+### 5. Integração incremental e regressões
+
+1. Integrar à resolução DLL/IAT, janelas, procedimentos, recursos e callbacks existentes; manter fonte derivada e avisos de licença identificáveis.
+2. Acrescentar fixtures PE para template de diálogo, filhos/IDs, WM_INITDIALOG, callbacks/foco, fechamento/erros e casos malformados, conforme funcionalidades integradas.
+3. Manter teste gráfico de controles e cinco contratos originais: threads, input injetado, TCP/HTTP/DNS, registro e instalação em VFS.
+4. Rodar unitários e syntax checks, compilar fixtures e validar candidatos no Wasm real. Classificar testes próprios versus testes Wine; não chamar fixtures próprias de suíte Wine completa.
+
+Aceite: candidato compila e novos contratos efetivamente executam no guest, sem regressão nos cinco PEs.
+
+### 6. CI/CD reproduzível
+
+1. Atualizar workflows existentes, sem substituir a infraestrutura real pelos caminhos ilustrativos do pedido.
+2. Adicionar aquisição fixada, extração, checagem de manifestos/licença e testes das ferramentas antes do build.
+3. Usar toolchain Rust/wasm-bindgen compatível já fixada; compilar candidato em artifacts, nunca copiar diretamente para vendor estável.
+4. Executar cinco PEs, controles Chromium e DOOM95; verificar integridade do Wasm e correspondência entre SHA de fonte, build e evidências.
+5. Publicar manifestos, extrações/avisos permitidos, logs, hashes, screenshots e resultados com `if: always()`; erros de download, extração, build ou teste não viram skips verdes.
+
+Aceite: execução remota rastreável; vermelho quando qualquer gate obrigatório falhar.
+
+### 7. Ciclo DOOM95 até gameplay ou limite comprovado
+
+1. Rodar DOOM95 original com recursos verificados e trace do candidato.
+2. Distinguir import causal, última API, callback inválido e falha do emulador; usar disassembly e IAT quando o salto for por registrador.
+3. Localizar caminho equivalente no Wine, extrair com proveniência, revisar/adaptar, acrescentar regressão e repetir o CI.
+4. Se launcher exigir interação, registrar input controlado e confirmação de processamento pelo guest; não contornar critérios com contadores host.
+5. Exigir janela, observação de 5 segundos, >=100 presents/frames reais, mudanças de imagem, input consumido e loop comprovado. Janela, saída 0 ou init do launcher não bastam.
+6. Só declarar limitação fundamental com reprodução, evidência técnica e dependência arquitetural identificada. API faltante e tradução incompleta são trabalho pendente.
+
+Aceite: gameplay comprovado ou relatório de limite efetivamente demonstrado, nunca declaração de sucesso parcial como conclusão.
+
+### 8. Relatório e proveniência finais
+
+Atualizar `COMPATIBILITY_REPORT.md`, `docs/wine-extraction-report.json`, `docs/wine-commit.txt`, avisos de terceiros e proveniência/patch Rust. Incluir:
+
+- SHA Wine, arquivos/funções/linhas/hashes, licença e adaptações por API;
+- estados separados: encontrada, extraída, rascunho, revisada, integrada, compilada e validada;
+- SHA fonte Porthole, URL/run CI, bytes e SHA do Wasm/glue, exports e testes efetivos;
+- cinco PEs, controles, métricas DOOM, bloqueio causal seguinte e limitações;
+- resultado real dos gates, decisão de promoção e condições de redistribuição.
+
+Não preencher tabelas com checkmarks antecipados. O SHA Wine será publicado após aquisição real; esta Fase 0 não inventa um.
+
+### 9. Promoção e preservação
+
+Somente após todos os gates e requisitos de licença estarem atendidos: promoção explícita pelo mecanismo existente. Caso contrário, manter candidato separado, estável preservado e relatório vermelho. Commit/push apenas em `arena/6a52f3cb-porthole`, com escopo revisado e sem incluir alterações preexistentes por engano.
+
+---
+
 > Fase de maturidade, compatibilidade e automação · 2026-10-27
 > Branch: `arena/6a52f3cb-porthole`
 

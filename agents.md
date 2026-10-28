@@ -1,5 +1,43 @@
 # agents.md — Porthole Runtime
 
+## Fase 0 vigente — mineração do Wine · 2026-10-28
+
+### Persona e compromisso obrigatório
+
+Atuo como Engenheiro de Software Sênior e Arquiteto de Sistemas especializado em Wine/retrowin32, engenharia reversa PE32, Rust/Wasm e CI/CD. A referência de compatibilidade será código upstream verificável, sem confundir extração de fonte com implementação funcional.
+
+> Eu devo minerar o código-fonte do Wine para extrair implementações maduras de APIs Windows, em vez de reimplementar do zero. Cada extração deve ser documentada com proveniência (commit SHA, arquivo, linha) e adaptada ao nosso ambiente Rust/Wasm.
+
+### Estado de partida e limites de evidência
+
+- Última execução documentada: fonte `757abeba1c995af55a2cd7eab689483cabb943df`, run `40736781228`; build, cinco contratos PE e controles Chromium passaram; DOOM95 falhou em `user32.dll!CreateDialogParamA` após 5 presents.
+- Esses resultados são históricos, não resultados desta nova fase. InitCommonControls/ordinal 17 não é o último bloqueio conhecido.
+- Gameplay não comprovado; nenhuma limitação fundamental demonstrada; backend estável não autorizado para promoção.
+- A árvore local contém muitas alterações preexistentes. Preservá-las; não fazer reset/clean, nem commit abrangente que as atribua a esta fase. Toda operação Git deve permanecer em `arena/6a52f3cb-porthole`.
+
+### Regras para mineração, tradução e integração
+
+1. Concluir e exibir esta Fase 0 antes de escrever ferramentas, código de produto, testes ou CI.
+2. Obter Wine de `https://github.com/wine-mirror/wine.git`, fixar SHA completo e verificar o conteúdo. Não usar `master` como identificação final nem inventar SHA, arquivo, função ou linha.
+3. Verificar a árvore real: implementações podem estar em user32, win32u, kernelbase, ntdll ou outros módulos, não necessariamente nos caminhos exemplificados no pedido. Catalogar encaminhamentos, dependências e funções não encontradas.
+4. Priorizar o bloqueio causal atual e suas dependências. Conservar as APIs próprias já aprovadas até haver adaptação de referência efetivamente validada; não rotular código preexistente como extraído do Wine.
+5. Cada extração deve registrar repositório, commit, caminho, função, intervalo de linhas, hash do arquivo, licença/copyright originais, dependências, destino e alterações. Manter EXTRACTED, DRAFT, REVIEWED, INTEGRATED e VALIDATED separados.
+6. Preservar licença e atribuições reais de cada arquivo. Examinar COPYING.LIB e cabeçalhos; não presumir uma licença uniforme nem apresentar tradução derivada de LGPL como Apache-2.0. Documentar componentes derivados, fontes correspondentes, modificações e requisitos de redistribuição/relinkagem antes de distribuir um Wasm que os contenha. Se houver obrigação não atendida, bloquear distribuição/promoção, não remover avisos.
+7. Extração precisa reconhecer comentários, strings, caracteres, macros e definições repetidas/condicionais. Ambiguidade deve gerar diagnóstico; expressão regular ou chaves balanceadas sem análise lexical não bastam.
+8. Tradução heurística é ferramenta de rascunho, nunca compilador C→Rust comprovado. Não substituir BOOL por bool indiscriminadamente, nem converter ponteiros guest em ponteiros nativos Rust. Preservar ABI Win32, tamanhos, signedness, alinhamento, calling convention e limites da memória guest.
+9. Adaptar chamadas Wine a servidor Unix, driver, objetos, handles, mensagens e recursos para a arquitetura real de retrowin32. Não simular dependências ausentes com retornos de sucesso. Usar o mecanismo DLL/IAT existente; não criar exports wasm-bindgen paralelos sem necessidade arquitetural.
+10. Cada adaptação exige revisão semântica, testes de contrato, compilação e execução guest no candidato. O fato de o C original passar no Wine não valida sua tradução.
+11. Usar Actions como build server quando Rust/Wasm local estiver indisponível. Fixar toolchain, preservar logs e verificar SHA/tamanho/bindings do Wasm baixado.
+12. Preservar cinco PEs aprovados; exigir controles com pixels reais, input consumido pelo guest e gameplay de pelo menos 100 presents/frames em 5 segundos com loop real. Eventos host enviados e janela isolada não são gameplay.
+13. Não copiar candidato para vendor estável no passo de build. CI mantém upload always(), falha fechada e gate de promoção; não aceita verde sem gameplay.
+14. Autoevolução: falha → evidência causal → consulta/extração Wine → adaptação revisada → regressão → CI remoto → relatório. Não declarar conclusão antes dos gates, nem chamar API ainda não implementada de limitação fundamental.
+
+### Entrega desta etapa
+
+Esta atualização é exclusivamente documental. Clone, extrações, traduções, novo build e novo teste DOOM95 ainda não foram realizados nesta fase. O plano abaixo governa as próximas alterações; o histórico anterior permanece como referência, não como autorização para enfraquecer estes critérios.
+
+---
+
 > Versão 3.0 · Fase de maturidade e compatibilidade · 2026-10-27
 > Branch obrigatória: `arena/6a52f3cb-porthole`
 

@@ -122,15 +122,7 @@ pub fn DialogBoxIndirectParamA(
     -1 // error
 }
 
-#[win32_derive::dllexport]
-pub fn SetDlgItemTextA(
-    _machine: &mut Machine,
-    hDlg: HWND,
-    nIDDlgItem: i32,
-    lpString: Option<&str>,
-) -> bool {
-    todo!();
-}
+
 
 #[win32_derive::dllexport]
 pub fn SetDlgItemTextW(
@@ -153,10 +145,7 @@ pub fn SetDlgItemInt(
     todo!();
 }
 
-#[win32_derive::dllexport]
-pub fn GetDlgItem(machine: &mut Machine, hDlg: HWND, nIDDlgItem: i32) -> HWND {
-    todo!();
-}
+
 
 #[win32_derive::dllexport]
 pub fn GetDlgItemTextW(
@@ -179,26 +168,11 @@ pub fn GetDlgItemInt(
     todo!();
 }
 
-#[win32_derive::dllexport]
-pub fn CheckRadioButton(
-    _machine: &mut Machine,
-    hDlg: HWND,
-    nIDFirstButton: i32,
-    nIDLastButton: i32,
-    nIDCheckButton: i32,
-) -> bool {
-    todo!();
-}
 
-#[win32_derive::dllexport]
-pub fn CheckDlgButton(_machine: &mut Machine, hDlg: HWND, nIDButton: i32, uCheck: u32) -> bool {
-    todo!();
-}
 
-#[win32_derive::dllexport]
-pub fn IsDlgButtonChecked(_machine: &mut Machine, hDlg: HWND, nIDButton: i32) -> u32 {
-    todo!();
-}
+
+
+
 
 #[win32_derive::dllexport]
 pub fn EndDialog(_machine: &mut Machine, hDlg: HWND, nResult: Option<&mut u32>) -> bool {

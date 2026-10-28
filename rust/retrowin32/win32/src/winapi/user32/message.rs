@@ -330,6 +330,7 @@ pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
         Some(window) if !msg.hwnd.is_null() => window.wndclass.wndproc,
         _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}
     };
+    if wndproc == super::dialog_helpers::DIALOG_PROC {return Box::pin(super::dialog_helpers::dispatch(machine,msg)).await;}
     if wndproc == super::controls::NATIVE_PROC {return Box::pin(super::controls::dispatch(machine,msg)).await;}
     if wndproc == 0 {
         log::error!("window has no wndproc, skipping message dispatch");

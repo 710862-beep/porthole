@@ -23,6 +23,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Acquire and audit pinned Wine dialog source
+        run: |
+          node scripts/fetch-wine-source.mjs
+          node scripts/extract-wine-api.mjs user32 CreateDialogParamA
+          node scripts/translate-c-to-rust.mjs
+          node --test tests/node/wine-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.81.0
         with:
           targets: wasm32-unknown-unknown

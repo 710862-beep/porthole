@@ -26,6 +26,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Acquire and audit pinned Wine dialog source
+        run: |
+          node scripts/fetch-wine-source.mjs
+          node scripts/extract-wine-api.mjs user32 CreateDialogParamA
+          node scripts/translate-c-to-rust.mjs
+          node --test tests/node/wine-extraction.test.mjs
       - name: Reject startup-only gameplay claims
         run: node --test tests/node/gameplay.test.mjs tests/node/compatibility-gates.test.mjs
       - name: Install pinned PE32 compiler

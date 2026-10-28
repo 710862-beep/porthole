@@ -3,6 +3,9 @@
 pub(crate) mod controls;
 mod control_font;
 mod dialog;
+mod dialog_template;
+mod dialog_helpers;
+pub use dialog_helpers::*;
 mod menu;
 mod message;
 mod misc;

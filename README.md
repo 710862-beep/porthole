@@ -252,3 +252,11 @@ sintéticos: **3/5** (threads, registro e instalação em disco Node); input e r
 falham. Probes originais: **6/15**, DOOM95 ainda falha. O workflow continua vermelho,
 **não houve promoção** e o estável está intacto. Raw Input/ws2_32 continuam lacunas.
 Suíte local: **143 verificações JS/DOM**, **59 scripts** sintaticamente válidos.
+
+### Wine-derived source
+
+The experimental dialog adaptation derives from pinned Wine sources under
+**LGPL-2.1-or-later**, not the Apache license of the surrounding upstream runtime.
+See [LICENSE.Wine](LICENSE.Wine), [attribution](vendor/ATTRIBUTION.md), and
+[the extraction report](docs/wine-extraction-report.md). Extraction alone does
+not imply a validated port, complete Wine support, or permission to promote.
