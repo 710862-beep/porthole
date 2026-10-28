@@ -292,6 +292,9 @@ pub fn RegisterClassExW(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXW
 
 bitflags! {
     pub struct WindowStyle: u32 {
+        // Low 16 bits belong to the window class (e.g. ES_* for EDIT),
+        // not CS_* flags. Preserve them rather than panicking in CreateWindow.
+        const CLASS_SPECIFIC  = 0x0000ffff;
         const POPUP           = 0x80000000;
         const CHILD           = 0x40000000;
         const MINIMIZE        = 0x20000000;
@@ -429,12 +432,10 @@ pub async fn CreateWindowExW(
     {
         Some(wndclass) => wndclass.clone(),
         None => {
-            log::warn!("unknown wndclass {class_name:?}, using empty");
-            Rc::new(WndClass {
-                name: class_name,
-                wndproc: 0,
-                background: HBRUSH::null(),
-            })
+            log::error!("UNSUPPORTED_WINDOW_CLASS {class_name:?}: no registered procedure/control implementation");
+            // Do not fabricate a working EDIT/BUTTON control with a zero proc.
+            winapi::kernel32::teb_mut(machine).LastErrorValue=1407;
+            return HWND::null();
         }
     };
 
@@ -1108,4 +1109,15 @@ pub fn GetCapture(machine: &mut Machine) -> HWND {
 #[win32_derive::dllexport]
 pub fn EnableWindow(_machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
     todo!();
+}
+
+#[cfg(test)]
+mod porthole_style_tests {
+    use super::*;
+    #[test]
+    fn edit_control_style_preserves_class_specific_low_bits() {
+        let style=WindowStyle::try_from(0x54001844).unwrap();
+        assert!(style.contains(WindowStyle::CHILD));
+        assert_eq!(style.bits(),0x54001844);
+    }
 }
