@@ -268,6 +268,8 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn current_dir(this: &JsHost) -> String;
     #[wasm_bindgen(method)]
+    fn file_info(this:&JsHost,path:&str)->String;
+    #[wasm_bindgen(method)]
     fn key_state(this: &JsHost, key: u32) -> u32;
     #[wasm_bindgen(method)]
     fn raw_input_events(this: &JsHost) -> String;
@@ -340,7 +342,12 @@ impl win32::Host for JsHost {
     }
 
     fn stat(&self, path: &WindowsPath) -> Result<Stat, ERROR> {
-        todo!("stat {path}")
+        let raw=JsHost::file_info(self,&path.to_string_lossy());
+        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|_|ERROR::INVALID_DATA)?;
+        let status=value["status"].as_u64().ok_or(ERROR::INVALID_DATA)? as u32;
+        if status!=0{return Err(ERROR::try_from(status).unwrap_or(ERROR::INVALID_DATA))}
+        let kind=match value["kind"].as_str(){Some("file")=>StatKind::File,Some("directory")=>StatKind::Directory,_=>return Err(ERROR::INVALID_DATA)};
+        Ok(Stat{kind,size:value["size"].as_u64().ok_or(ERROR::INVALID_DATA)?,atime:0,ctime:0,mtime:0})
     }
 
     fn read_dir(&self, path: &WindowsPath) -> Result<Box<dyn ReadDir>, ERROR> {

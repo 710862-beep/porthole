@@ -244,6 +244,7 @@
           return;
         }
         const entries = await this.vfs.listDirectory(path.win32);
+        this.directories.add(path.key);
         for (const entry of entries) {
           const child = Porthole.VFSUtils.normalizePath(`C:\\${path.segments.concat(entry.name).join('\\')}`);
           if (entry.kind === 'directory') {
@@ -327,6 +328,17 @@
         this.outputTruncated = true;
       }
       this._emit('stdout', { text, process: this });
+    }
+
+    file_info(request) {
+      if (typeof request !== 'string' || !request.trim() || request.includes('\0')) return JSON.stringify({status:123});
+      const path=this._normalizeGuestPath(request);
+      if(!path)return JSON.stringify({status:5});
+      const file=this.files.get(path.key);
+      if(file)return JSON.stringify({status:0,kind:'file',size:file.bytes.byteLength});
+      if(this.directories.has(path.key))return JSON.stringify({status:0,kind:'directory',size:0});
+      const parent=path.segments.slice(0,-1).join('/').toLocaleLowerCase('en-US');
+      return JSON.stringify({status:this.directories.has(parent)?2:3});
     }
 
     open(request, fileOptions) {
