@@ -1,0 +1,515 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/comctl32/updown.c",
+  "sourceSha256": "8cb4cd35e02f59ad2f00218df3279de605f5e5c78438fd84780aa07011a493a8",
+  "license": "LGPL-2.1-or-later; original copyright Dimitrie O. Paun",
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "UpDownWindowProc",
+  "functions": [
+    {
+      "name": "UpDownWindowProc",
+      "startLine": 980,
+      "endLine": 1261,
+      "calls": [
+        "Alloc",
+        "COMCTL32_CloseThemeForWindow",
+        "COMCTL32_IsReflectedMessage",
+        "COMCTL32_OpenThemeForWindow",
+        "COMCTL32_ThemeChanged",
+        "DefWindowProcW",
+        "ERR",
+        "Free",
+        "GetCapture",
+        "GetWindow",
+        "HIWORD",
+        "InvalidateRect",
+        "KillTimer",
+        "LOWORD",
+        "MAKELONG",
+        "SendMessageW",
+        "SetTimer",
+        "SetWindowLongPtrW",
+        "SetWindowLongW",
+        "SetWindowPos",
+        "TRACE",
+        "TRACE_ON",
+        "UPDOWN_CancelMode",
+        "UPDOWN_DoAction",
+        "UPDOWN_GetInfoPtr",
+        "UPDOWN_GetPos",
+        "UPDOWN_HandleMouseEvent",
+        "UPDOWN_IsBuddyEdit",
+        "UPDOWN_IsEnabled",
+        "UPDOWN_KeyPressed",
+        "UPDOWN_MouseWheel",
+        "UPDOWN_Paint",
+        "UPDOWN_ResetSubclass",
+        "UPDOWN_SetBuddy",
+        "UPDOWN_SetBuddyInt",
+        "UPDOWN_SetPos",
+        "UPDOWN_SetRange",
+        "memcpy",
+        "min"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_CancelMode",
+      "startLine": 866,
+      "endLine": 881,
+      "calls": [
+        "GetCapture",
+        "InvalidateRect",
+        "KillTimer",
+        "ReleaseCapture"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_DoAction",
+      "startLine": 808,
+      "endLine": 841,
+      "calls": [
+        "GetWindowLongPtrW",
+        "MAKELONG",
+        "SendMessageW",
+        "TRACE",
+        "UPDOWN_OffsetVal",
+        "UPDOWN_SetBuddyInt"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetPos",
+      "startLine": 571,
+      "endLine": 588,
+      "calls": [
+        "UPDOWN_GetBuddyInt",
+        "UPDOWN_InBounds"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_HandleMouseEvent",
+      "startLine": 890,
+      "endLine": 975,
+      "calls": [
+        "ERR",
+        "InvalidateRect",
+        "SetCapture",
+        "SetFocus",
+        "SetTimer",
+        "TRACE",
+        "TrackMouseEvent",
+        "UPDOWN_DoAction",
+        "UPDOWN_GetArrowFromPoint",
+        "UPDOWN_GetBuddyInt",
+        "UPDOWN_IsBuddyEdit",
+        "wine_dbgstr_point"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsBuddyEdit",
+      "startLine": 97,
+      "endLine": 100,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsEnabled",
+      "startLine": 849,
+      "endLine": 856,
+      "calls": [
+        "IsWindowEnabled"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_KeyPressed",
+      "startLine": 553,
+      "endLine": 569,
+      "calls": [
+        "InvalidateRect",
+        "SetTimer",
+        "UPDOWN_DoAction",
+        "UPDOWN_GetBuddyInt"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_MouseWheel",
+      "startLine": 643,
+      "endLine": 657,
+      "calls": [
+        "GET_WHEEL_DELTA_WPARAM",
+        "UPDOWN_DoAction",
+        "UPDOWN_GetBuddyInt",
+        "abs"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_Paint",
+      "startLine": 538,
+      "endLine": 546,
+      "calls": [
+        "BeginPaint",
+        "EndPaint",
+        "UPDOWN_Draw"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_ResetSubclass",
+      "startLine": 698,
+      "endLine": 701,
+      "calls": [
+        "SetWindowSubclass"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_SetBuddy",
+      "startLine": 713,
+      "endLine": 796,
+      "calls": [
+        "ARRAY_SIZE",
+        "GetClassNameW",
+        "GetParent",
+        "GetWindowRect",
+        "IsWindow",
+        "MapWindowPoints",
+        "SetWindowPos",
+        "SetWindowSubclass",
+        "TRACE",
+        "UPDOWN_HasBuddyBorder",
+        "UPDOWN_ResetSubclass",
+        "lstrcmpiW"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_SetBuddyInt",
+      "startLine": 319,
+      "endLine": 362,
+      "calls": [
+        "ARRAY_SIZE",
+        "GetWindowTextW",
+        "IsWindow",
+        "SendMessageW",
+        "SetWindowTextW",
+        "TRACE",
+        "UPDOWN_GetThousandSep",
+        "UPDOWN_IsBuddyListbox",
+        "lstrcmpiW",
+        "memcpy",
+        "wsprintfW"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_SetPos",
+      "startLine": 590,
+      "endLine": 614,
+      "calls": [
+        "NotifyWinEvent",
+        "UPDOWN_InBounds",
+        "UPDOWN_SetBuddyInt"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_SetRange",
+      "startLine": 627,
+      "endLine": 636,
+      "calls": [
+        "TRACE"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_OffsetVal",
+      "startLine": 129,
+      "endLine": 148,
+      "calls": [
+        "UPDOWN_InBounds"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetBuddyInt",
+      "startLine": 275,
+      "endLine": 309,
+      "calls": [
+        "ARRAY_SIZE",
+        "GetWindowTextW",
+        "IsWindow",
+        "SendMessageW",
+        "TRACE",
+        "UPDOWN_GetThousandSep",
+        "UPDOWN_InBounds",
+        "UPDOWN_IsBuddyListbox",
+        "wcstol"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_InBounds",
+      "startLine": 115,
+      "endLine": 121,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetArrowFromPoint",
+      "startLine": 241,
+      "endLine": 250,
+      "calls": [
+        "PtInRect",
+        "UPDOWN_GetArrowRect"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_Draw",
+      "startLine": 517,
+      "endLine": 530,
+      "calls": [
+        "UPDOWN_DrawBuddyBackground",
+        "UPDOWN_DrawDownArrow",
+        "UPDOWN_DrawUpArrow",
+        "UPDOWN_NeedBuddyBackground"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_HasBuddyBorder",
+      "startLine": 156,
+      "endLine": 160,
+      "calls": [
+        "UPDOWN_IsBuddyEdit"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetThousandSep",
+      "startLine": 257,
+      "endLine": 265,
+      "calls": [
+        "GetLocaleInfoW"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsBuddyListbox",
+      "startLine": 106,
+      "endLine": 109,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetArrowRect",
+      "startLine": 187,
+      "endLine": 233,
+      "calls": [
+        "GetClientRect",
+        "InflateRect",
+        "IsWindow",
+        "UPDOWN_GetBuddyBorderSize",
+        "UPDOWN_GetBuddySpacerSize",
+        "UPDOWN_HasBuddyBorder",
+        "assert"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_DrawBuddyBackground",
+      "startLine": 369,
+      "endLine": 396,
+      "calls": [
+        "DrawEdge",
+        "DrawThemeBackground",
+        "GetClientRect",
+        "GetWindowRect",
+        "GetWindowTheme",
+        "MapWindowPoints"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_DrawDownArrow",
+      "startLine": 487,
+      "endLine": 510,
+      "calls": [
+        "DrawFrameControl",
+        "DrawThemeBackground",
+        "GetWindowTheme",
+        "UPDOWN_GetArrowRect",
+        "UPDOWN_GetDownArrowThemePartAndState",
+        "UPDOWN_IsDownArrowHot",
+        "UPDOWN_IsDownArrowPressed"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_DrawUpArrow",
+      "startLine": 462,
+      "endLine": 485,
+      "calls": [
+        "DrawFrameControl",
+        "DrawThemeBackground",
+        "GetWindowTheme",
+        "UPDOWN_GetArrowRect",
+        "UPDOWN_GetUpArrowThemePartAndState",
+        "UPDOWN_IsUpArrowHot",
+        "UPDOWN_IsUpArrowPressed"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_NeedBuddyBackground",
+      "startLine": 440,
+      "endLine": 460,
+      "calls": [
+        "GetWindowTheme",
+        "IsThemeBackgroundPartiallyTransparent",
+        "IsWindow",
+        "UPDOWN_GetDownArrowThemePartAndState",
+        "UPDOWN_GetUpArrowThemePartAndState",
+        "UPDOWN_HasBuddyBorder"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetBuddyBorderSize",
+      "startLine": 162,
+      "endLine": 169,
+      "calls": [
+        "GetWindowTheme"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetBuddySpacerSize",
+      "startLine": 171,
+      "endLine": 178,
+      "calls": [
+        "GetWindowTheme"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetDownArrowThemePartAndState",
+      "startLine": 429,
+      "endLine": 437,
+      "calls": [
+        "UPDOWN_IsDownArrowHot",
+        "UPDOWN_IsDownArrowPressed"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsDownArrowHot",
+      "startLine": 413,
+      "endLine": 416,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsDownArrowPressed",
+      "startLine": 408,
+      "endLine": 411,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_GetUpArrowThemePartAndState",
+      "startLine": 419,
+      "endLine": 427,
+      "calls": [
+        "UPDOWN_IsUpArrowHot",
+        "UPDOWN_IsUpArrowPressed"
+      ],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsUpArrowHot",
+      "startLine": 403,
+      "endLine": 406,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    },
+    {
+      "name": "UPDOWN_IsUpArrowPressed",
+      "startLine": 398,
+      "endLine": 401,
+      "calls": [],
+      "source": "dlls/comctl32/updown.c"
+    }
+  ],
+  "boundaries": [
+    "ARRAY_SIZE",
+    "Alloc",
+    "BeginPaint",
+    "COMCTL32_CloseThemeForWindow",
+    "COMCTL32_IsReflectedMessage",
+    "COMCTL32_OpenThemeForWindow",
+    "COMCTL32_ThemeChanged",
+    "DefWindowProcW",
+    "DrawEdge",
+    "DrawFrameControl",
+    "DrawThemeBackground",
+    "ERR",
+    "EndPaint",
+    "Free",
+    "GET_WHEEL_DELTA_WPARAM",
+    "GetCapture",
+    "GetClassNameW",
+    "GetClientRect",
+    "GetLocaleInfoW",
+    "GetParent",
+    "GetWindow",
+    "GetWindowLongPtrW",
+    "GetWindowRect",
+    "GetWindowTextW",
+    "GetWindowTheme",
+    "HIWORD",
+    "InflateRect",
+    "InvalidateRect",
+    "IsThemeBackgroundPartiallyTransparent",
+    "IsWindow",
+    "IsWindowEnabled",
+    "KillTimer",
+    "LOWORD",
+    "MAKELONG",
+    "MapWindowPoints",
+    "NotifyWinEvent",
+    "PtInRect",
+    "ReleaseCapture",
+    "SendMessageW",
+    "SetCapture",
+    "SetFocus",
+    "SetTimer",
+    "SetWindowLongPtrW",
+    "SetWindowLongW",
+    "SetWindowPos",
+    "SetWindowSubclass",
+    "SetWindowTextW",
+    "TRACE",
+    "TRACE_ON",
+    "TrackMouseEvent",
+    "UPDOWN_GetInfoPtr",
+    "abs",
+    "assert",
+    "lstrcmpiW",
+    "memcpy",
+    "min",
+    "wcstol",
+    "wine_dbgstr_point",
+    "wsprintfW"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

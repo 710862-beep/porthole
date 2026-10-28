@@ -28,6 +28,7 @@ jobs:
           node scripts/fetch-wine-source.mjs
           node scripts/extract-wine-api.mjs user32 CreateDialogParamA
           node scripts/translate-c-to-rust.mjs
+          node scripts/extract-wine-api.mjs comctl32 UpDownWindowProc
           node --test tests/node/wine-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.81.0
         with:
@@ -148,6 +149,7 @@ jobs:
           path: |
             artifacts/*.json
             artifacts/*.log
+            artifacts/wine-extraction/
           if-no-files-found: warn
           retention-days: 14
 

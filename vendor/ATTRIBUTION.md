@@ -24,3 +24,10 @@ satisfy applicable LGPL source/relinking and notice requirements; a repository
 link alone is not asserted to satisfy every distribution scenario.
 
 No stable runtime promotion is authorized by acquisition or extraction.
+
+### Wine-derived updown subset
+
+`user32/updown.rs` derives from `dlls/comctl32/updown.c` at the same pinned SHA,
+Copyright 1997, 2002 Dimitrie O. Paun, LGPL-2.1-or-later. It implements bounded
+range/position/base/buddy messages and a basic arrow action/guest notification,
+not themes, full buddy subclassing, timers or locale grouping.

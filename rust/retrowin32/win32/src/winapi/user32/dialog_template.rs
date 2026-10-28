@@ -35,7 +35,7 @@ pub fn parse(bytes:&[u8])->Result<Template,u32>{
   let id=if extended{c.d()?}else{c.w()? as u32};
   let class=c.name()?;let title=c.name()?;
   // Wine advances past count WORD plus count bytes of creation data.
-  let n=c.w()? as usize;let data=c.take(n)?.to_vec();
+  let n=c.w()? as usize;let data=c.take(n/2*2)?.to_vec();
   if cx<0||cy<0{return Err(13)}
   items.push(Item{style,ex,id,x,y,cx,cy,class,title,data});
  }

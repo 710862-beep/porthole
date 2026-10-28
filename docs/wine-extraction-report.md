@@ -44,3 +44,26 @@ Source acquired and verified. Same-file closure extracted. Manual Rust subset in
 **Remote compile and DOOM95 execution pending for this new candidate.** Historical five-PE/controls results are not reused as proof. Stable is not promoted.
 
 See [porting guide](wine-porting-guide.md) and [attribution](../vendor/ATTRIBUTION.md).
+
+## Primeiro resultado remoto: 40749913520
+
+Fonte Porthole `5eda61b7b03d8786b66be45cfdf2dabd1ea694b9`:
+https://github.com/710862-beep/porthole/actions/runs/40749913520
+
+- Build Rust/Wasm PASS; cinco PEs PASS.
+- DOOM95 resolveu a API e começou criação real do launcher (RT_DIALOG em
+  297884..300556). 14 presents/11 mudanças; exit 0 após falha de criação do filho
+  `msctls_updown32`. **Não gameplay**, workflow vermelho e promoção bloqueada.
+- Controles chegaram às novas asserções, mas o teste de recurso inexistente
+  encontrou panic no parser PE preexistente quando .rsrc era vazio. Correção:
+  leitura bounds-checked e erros None, com regressões de seção ausente/truncada e
+  contagem maliciosa. Este run não valida o fixture completo de diálogos.
+- Próxima dependência causal: classe comctl32 `msctls_updown32`, código em
+  `dlls/comctl32/updown.c`, Copyright 1997, 2002 Dimitrie O. Paun,
+  LGPL-2.1-or-later no mesmo SHA Wine. Extração adicional em
+  `wine-updown-extraction.json`; código original/corpus preservados em artifacts.
+- Subset manual adaptado: estado por HWND, range invertido/32-bit, posição,
+  buddy edit/base 10/16, ação por seta/click com NM_UPDOWN guest mutável e
+  notificação scroll, raster básico. Não equivale ao controle completo:
+  faltam timers, aceleração, subclassing, acessibilidade/tema e agrupamento local.
+- Novo candidato exige outro CI; não reutilizar o primeiro como prova de correção.

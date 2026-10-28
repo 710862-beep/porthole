@@ -21,6 +21,10 @@ static void dialog_regression(void){
  SendDlgItemMessageA(h,1,BM_CLICK,0,0);REQUIRE(dialogCommand==1);
  MSG msg={0};msg.hwnd=GetDlgItem(h,1);msg.message=WM_KEYDOWN;msg.wParam=VK_TAB;REQUIRE(IsDialogMessageA(h,&msg));REQUIRE(GetFocus()==GetDlgItem(h,102));
  msg.hwnd=GetDlgItem(h,102);msg.wParam=VK_RETURN;REQUIRE(IsDialogMessageA(h,&msg));REQUIRE(dialogCommand==2);
+ HWND up=CreateWindowExA(0,UPDOWN_CLASSA,"",WS_CHILD|WS_VISIBLE|UDS_SETBUDDYINT|UDS_ARROWKEYS,100,5,16,32,h,(HMENU)200,0,0);REQUIRE(up);
+ SendMessageA(up,UDM_SETRANGE32,0,10);SendMessageA(up,UDM_SETBUDDY,(WPARAM)GetDlgItem(h,102),0);SendMessageA(up,UDM_SETPOS32,0,5);BOOL invalid=TRUE;REQUIRE(SendMessageA(up,UDM_GETPOS32,0,(LPARAM)&invalid)==5&&!invalid);
+ SendMessageA(up,UDM_SETPOS32,0,999);REQUIRE(SendMessageA(up,UDM_GETPOS32,0,(LPARAM)&invalid)==10&&!invalid);
+ SendMessageA(up,WM_KEYDOWN,VK_DOWN,0);REQUIRE(SendMessageA(up,UDM_GETPOS32,0,(LPARAM)&invalid)==9&&!invalid);
  REQUIRE(DestroyWindow(h));REQUIRE(!IsWindow(h));
  REQUIRE(!CreateDialogParamA(0,(LPCSTR)65530,0,dialog_proc,0));REQUIRE(GetLastError()==ERROR_RESOURCE_NAME_NOT_FOUND);
  REQUIRE(!CreateDialogIndirectParamA(0,0,0,dialog_proc,0));REQUIRE(GetLastError()==ERROR_INVALID_PARAMETER);

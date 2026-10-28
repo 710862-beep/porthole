@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 pub const NATIVE_PROC: u32 = 0xffff0010;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { Button, Edit, Static, Listbox, Combo, Scroll, Progress, Tab }
+pub enum Kind { Button, Edit, Static, Listbox, Combo, Scroll, Progress, Tab, Updown }
 #[derive(Clone)]
 pub struct Control {
     pub kind: Kind, pub text: Vec<u8>, pub style: u32,
@@ -15,10 +15,10 @@ pub struct Control {
     pub start: usize, pub end: usize, pub limit: usize,
     pub items: Vec<Vec<u8>>, pub selected: i32,
     pub low: i32, pub high: i32, pub position: i32, pub step: i32,
-    pub focus: bool, pub image:u32,
+    pub focus: bool, pub image:u32, pub updown: Option<super::updown::State>,
 }
 impl Control {
-    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0}}
+    pub fn new(kind:Kind,text:&str,style:u32)->Self {Self {kind,text:text.as_bytes().to_vec(),style,pressed:false,hover:false,checked:0,start:0,end:0,limit:32767,items:vec![],selected:-1,low:0,high:100,position:0,step:10,focus:false,image:0,updown:if kind==Kind::Updown{Some(super::updown::State::default())}else{None}}}
     fn replace(&mut self, bytes:&[u8]) {
         let a=self.start.min(self.end).min(self.text.len());let b=self.start.max(self.end).min(self.text.len());
         let n=bytes.len().min(self.limit.saturating_sub(self.text.len()-(b-a)));
@@ -33,7 +33,7 @@ pub fn register(machine:&mut Machine,name:&str, _kind:Kind) {
 pub fn standard(machine:&mut Machine) {
     for (name,kind) in [("BUTTON",Kind::Button),("EDIT",Kind::Edit),("STATIC",Kind::Static),("LISTBOX",Kind::Listbox),("COMBOBOX",Kind::Combo),("SCROLLBAR",Kind::Scroll)] {register(machine,name,kind);}
 }
-pub fn kind(name:&str)->Option<Kind> {Some(match name.to_ascii_uppercase().as_str(){"BUTTON"=>Kind::Button,"EDIT"=>Kind::Edit,"STATIC"=>Kind::Static,"LISTBOX"=>Kind::Listbox,"COMBOBOX"=>Kind::Combo,"SCROLLBAR"=>Kind::Scroll,"MSCTLS_PROGRESS32"=>Kind::Progress,"SYSTABCONTROL32"=>Kind::Tab,_=>return None})}
+pub fn kind(name:&str)->Option<Kind> {Some(match name.to_ascii_uppercase().as_str(){"BUTTON"=>Kind::Button,"EDIT"=>Kind::Edit,"STATIC"=>Kind::Static,"LISTBOX"=>Kind::Listbox,"COMBOBOX"=>Kind::Combo,"SCROLLBAR"=>Kind::Scroll,"MSCTLS_PROGRESS32"=>Kind::Progress,"MSCTLS_UPDOWN32"=>Kind::Updown,"SYSTABCONTROL32"=>Kind::Tab,_=>return None})}
 fn error(machine:&mut Machine,code:u32)->u32{kernel32::teb_mut(machine).LastErrorValue=code;0}
 fn string(machine:&Machine,ptr:u32)->Option<Vec<u8>> {
     if ptr==0{return Some(vec![])}
@@ -87,6 +87,7 @@ pub fn paint(machine:&mut Machine,hwnd:HWND) {
             if c.kind==Kind::Progress {for y in 2..height as i32-2{for x in 2..p+2{dot(x,y,blue)}}}
             else {for y in 2..height as i32-2{for x in p..p+8{dot(x.min(width as i32-2),y,blue)}}}
         }
+        Kind::Updown=>{let mid=height as i32/2;for x in 1..width as i32-1{dot(x,mid,black);}for dy in 0..4{for dx in -dy..=dy{dot(width as i32/2+dx,mid/2-2+dy,black);dot(width as i32/2+dx,mid+mid/2+2-dy,black);}}}
         Kind::Tab=>{let mut x=2;for (i,text) in c.items.iter().enumerate(){texts.push((x,3,text.clone(),if i as i32==c.selected{blue}else{black}));x+=text.len() as i32*8+12;}}
         Kind::Static=>{
             if c.image==0 {texts.push((2,2,c.text.clone(),black));}
@@ -109,6 +110,7 @@ pub fn paint(machine:&mut Machine,hwnd:HWND) {
 pub fn paint_children(machine:&mut Machine,parent:HWND){let mut children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.control.is_some()).map(|w|w.hwnd).collect();children.sort_by_key(|h|h.to_raw());for child in children {paint(machine,child)}}
 
 pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
+    if machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.control.as_ref()).map_or(false,|c|c.kind==Kind::Updown){return Box::pin(super::updown::dispatch(machine,msg)).await;}
     let (hwnd,m,wp,lp)=(msg.hwnd,msg.message,msg.wParam,msg.lParam);
     let incoming=if matches!(m,0xc|0xc2|0x180|0x143|0x181|0x14a){match string(machine,lp){Some(v)=>v,None=>return error(machine,87)}}else{vec![]};
     if m==0x172 && (wp!=0 || (lp!=0&&!matches!(machine.state.gdi32.objects.get(crate::winapi::gdi32::HGDIOBJ::from_raw(lp)),Some(crate::winapi::gdi32::Object::Bitmap(_))))){return error(machine,87)}

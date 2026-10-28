@@ -7,6 +7,7 @@ const TRACE_CONTEXT: &str = "comctl32";
 pub fn InitCommonControls(machine:&mut Machine) {
     controls::standard(machine);
     controls::register(machine,"msctls_progress32",controls::Kind::Progress);
+    controls::register(machine,"msctls_updown32",controls::Kind::Updown);
     // Legacy API has no return value. Do not claim unsupported Win95 classes exist.
     log::warn!("COMMON_CONTROLS_PARTIAL: progress and standard controls registered; other ICC_WIN95 classes unavailable");
 }
@@ -17,8 +18,9 @@ pub fn InitCommonControlsEx(machine:&mut Machine,icex:u32)->bool {
     let bytes=&mem.as_slice()[icex as usize..end as usize];
     let size=u32::from_le_bytes(bytes[..4].try_into().unwrap());let flags=u32::from_le_bytes(bytes[4..8].try_into().unwrap());
     // ICC_PROGRESS_CLASS=0x20, ICC_STANDARD_CLASSES=0x4000. Reject unsupported flags atomically.
-    if size!=8 || flags & !0x4020 !=0 {kernel32::teb_mut(machine).LastErrorValue=87;return false}
+    if size!=8 || flags & !0x4030 !=0 {kernel32::teb_mut(machine).LastErrorValue=87;return false}
     if flags&0x4000!=0 {controls::standard(machine)}
     if flags&0x20!=0 {controls::register(machine,"msctls_progress32",controls::Kind::Progress)}
+    if flags&0x10!=0 {controls::register(machine,"msctls_updown32",controls::Kind::Updown)}
     true
 }

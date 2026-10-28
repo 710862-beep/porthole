@@ -5,6 +5,7 @@ mod control_font;
 mod dialog;
 mod dialog_template;
 mod dialog_helpers;
+mod updown;
 pub use dialog_helpers::*;
 mod menu;
 mod message;

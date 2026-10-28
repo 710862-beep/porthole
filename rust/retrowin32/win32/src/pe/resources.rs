@@ -106,29 +106,32 @@ pub fn find_resource(
     query_type: ResourceName,
     query_id: ResourceName,
 ) -> Option<Range<u32>> {
-    // Resources are structured as generic nested directories, but in practice there
-    // are always exactly three levels with known semantics.
-    let mut dir = IMAGE_RESOURCE_DIRECTORY::entries(section);
-
-    let etype = dir.find(|entry| entry.name(section) == query_type)?;
-    let mut dir = match etype.value(section) {
-        ResourceValue::Dir(dir) => IMAGE_RESOURCE_DIRECTORY::entries(dir),
-        _ => todo!(),
-    };
-
-    let eid = dir.find(|entry| entry.name(section) == query_id)?;
-    let mut dir = match eid.value(section) {
-        ResourceValue::Dir(dir) => IMAGE_RESOURCE_DIRECTORY::entries(dir),
-        _ => todo!(),
-    };
-
-    let first = dir.next()?;
-    if dir.next().is_some() {
-        log::warn!("multiple res entries, picking first");
+    fn word(b:&[u8],p:usize)->Option<u16>{let s=b.get(p..p.checked_add(2)?)?;Some(u16::from_le_bytes([s[0],s[1]]))}
+    fn dword(b:&[u8],p:usize)->Option<u32>{let s=b.get(p..p.checked_add(4)?)?;Some(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
+    fn entries(b:&[u8],off:usize)->Option<Vec<(u32,u32)>>{
+        let n=word(b,off.checked_add(12)?)? as usize+word(b,off.checked_add(14)?)? as usize;
+        let start=off.checked_add(16)?;b.get(start..start.checked_add(n.checked_mul(8)?)?)?;
+        (0..n).map(|i|Some((dword(b,start+i*8)?,dword(b,start+i*8+4)?))).collect()
     }
-    let data = match first.value(section) {
-        ResourceValue::Data(data) => data,
-        _ => todo!(),
-    };
-    Some(data.OffsetToData..(data.OffsetToData + data.Size))
+    fn matches(b:&[u8],raw:u32,q:&ResourceName)->Option<bool>{
+        if raw&0x80000000==0{return Some(*q==ResourceName::Id(raw))}
+        let p=(raw&0x7fffffff)as usize;let len=word(b,p)? as usize;
+        let chars:Vec<_>=(0..len).map(|i|word(b,p+2+i*2)).collect::<Option<Vec<_>>>()?;
+        Some(match q{ResourceName::Name(n)=>n.to_string()==String::from_utf16_lossy(&chars),_=>false})
+    }
+    let mut offset=0usize;
+    for query in [&query_type,&query_id]{
+        let mut next=None;
+        for (name,value) in entries(section,offset)?{if matches(section,name,query)?{if value&0x80000000==0{return None}next=Some((value&0x7fffffff)as usize);break}}
+        offset=next?;
+    }
+    let (_,value)=entries(section,offset)?.into_iter().next()?;
+    if value&0x80000000!=0{return None}
+    let start=dword(section,value as usize)?;let size=dword(section,value as usize+4)?;
+    Some(start..start.checked_add(size)?)
+}
+#[cfg(test)]mod tests{
+ use super::*;
+ #[test]fn missing_and_truncated_resource_sections(){for n in 0..32{assert!(find_resource(&vec![0;n],ResourceName::Id(5),ResourceName::Id(1)).is_none());}}
+ #[test]fn malicious_entry_count(){let mut b=vec![0;16];b[14]=255;b[15]=255;assert!(find_resource(&b,ResourceName::Id(5),ResourceName::Id(1)).is_none());}
 }

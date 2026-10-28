@@ -39,16 +39,16 @@ export function definitions(source){
  return result;
 }
 export function extract(dll='user32',entry='CreateDialogParamA'){
- if(dll!=='user32')throw Error('This audited extractor currently supports user32/dialog.c only');
+ const sourceFile={user32:'dialog.c',comctl32:'updown.c'}[dll];if(!sourceFile)throw Error('This audited extractor supports user32/dialog.c and comctl32/updown.c only');
  if(!/^[A-Za-z_]\w*$/.test(entry))throw Error('Invalid function');
- const commit=fetchWine(),file='dlls/user32/dialog.c',source=fs.readFileSync(`vendor/wine-source/${file}`,'utf8'),defs=definitions(source);
+ const commit=fetchWine(),file=`dlls/${dll}/${sourceFile}`,source=fs.readFileSync(`vendor/wine-source/${file}`,'utf8'),defs=definitions(source);
  if(!defs.has(entry))throw Error(`Definition not found: ${entry}`);
  const queue=[entry],seen=new Set(),functions=[];
  while(queue.length){const name=queue.shift();if(seen.has(name))continue;seen.add(name);const fn=defs.get(name);functions.push({...fn,source:file});for(const dep of fn.calls)if(defs.has(dep))queue.push(dep);}
  const boundaries=[...new Set(functions.flatMap(f=>f.calls).filter(x=>!seen.has(x)))].sort();
  const out='artifacts/wine-extraction';fs.mkdirSync(out,{recursive:true});
- fs.writeFileSync(`${out}/dialog-functions.c`,functions.map(f=>`/* ${file}:${f.startLine}-${f.endLine} ${commit} */\n${f.code}`).join('\n\n'));
- const report={repository:'https://github.com/wine-mirror/wine',commit,source:file,sourceSha256:crypto.createHash('sha256').update(source).digest('hex'),license:'LGPL-2.1-or-later; original copyright Alexandre Julliard',scope:'Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph',entry,functions:functions.map(({code,...f})=>f),boundaries,unresolvedIndirectCalls:true,status:'EXTRACTED_NOT_TRANSLATED_OR_VALIDATED'};
- fs.writeFileSync('docs/wine-extraction-report.json',JSON.stringify(report,null,2)+'\n');fs.copyFileSync('LICENSE.Wine',`${out}/COPYING.LIB`);fs.copyFileSync(`vendor/wine-source/${file}`,`${out}/dialog.c`);console.log(`Extracted ${functions.length} functions; ${boundaries.length} explicit external/macro boundaries`);return report;
+ fs.writeFileSync(`${out}/${dll}-functions.c`,functions.map(f=>`/* ${file}:${f.startLine}-${f.endLine} ${commit} */\n${f.code}`).join('\n\n'));
+ const report={repository:'https://github.com/wine-mirror/wine',commit,source:file,sourceSha256:crypto.createHash('sha256').update(source).digest('hex'),license:dll==='user32'?'LGPL-2.1-or-later; original copyright Alexandre Julliard':'LGPL-2.1-or-later; original copyright Dimitrie O. Paun',scope:'Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph',entry,functions:functions.map(({code,...f})=>f),boundaries,unresolvedIndirectCalls:true,status:'EXTRACTED_NOT_TRANSLATED_OR_VALIDATED'};
+ fs.writeFileSync(dll==='user32'?'docs/wine-extraction-report.json':'docs/wine-updown-extraction.json',JSON.stringify(report,null,2)+'\n');fs.copyFileSync('LICENSE.Wine',`${out}/COPYING.LIB`);fs.copyFileSync(`vendor/wine-source/${file}`,`${out}/${sourceFile}`);console.log(`Extracted ${functions.length} functions; ${boundaries.length} explicit external/macro boundaries`);return report;
 }
 if(process.argv[1]===fileURLToPath(import.meta.url))extract(process.argv[2],process.argv[3]);
