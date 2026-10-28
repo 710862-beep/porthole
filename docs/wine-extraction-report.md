@@ -472,3 +472,21 @@ sem alterar caudas DX3 ou canários. Ponteiros de ambos destinos validados antes
 de escrita; ambosNULL→E_INVALIDARG, HRESULT/stdcall/3 argumentos COM intactos.
 Fixture PE usa vtable real slot11 e confere capacidades, memória, dois tamanhos,
 HEL-only, ambosNULL e canários. Não constitui implementação completa DirectDraw.
+
+## CI 40768537784: GetCaps funcional passou; cadeia tripla causal
+
+https://github.com/710862-beep/porthole/actions/runs/40768537784
+Fonte a24f243: build/24 Rust/5 PEs/controles PASS, inclusive GetCaps por COM,
+HAL+HEL/tamanhos/memória real/canários. DOOM avançou para CreateSurface e
+panic em ddraw1.rs:93, guard `surfaces.len()>2`: pedido criou três buffers CPU
+mas backend recusou ligá-los. Ainda268 startup/86 mudanças, sem gameplay.
+
+Extração Wine surface.c ddraw_surface_create (8 funções/45 fronteiras lexicais).
+Revisada/adaptada a seção de construção da cadeia: valida saída/outer/descritor,
+cria TODOS buffers pedidos (helper CPU existente já faz isso), liga cada nó e
+fecha última ligação no root, como surface.c:7127-7171. Limite explícito16
+backbuffers→E_NOTIMPL, não sucesso falso. Fixture de controles usa HWND real,
+cria front+2 backbuffers, verifica três ponteiros distintos e retorno ao root;
+não desenha pixels artificiais no gate de controles. CreateSurface completo,
+refcounts, mipmaps, overlays e rotação/flags de Flip ainda não estão portados;
+NÃO se declara conformidade DirectDraw. CI seguinte deve testar a cadeia real.

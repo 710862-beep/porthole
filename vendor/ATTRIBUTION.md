@@ -168,3 +168,9 @@ PHYSDEV/display lookup replaced by the documented virtual Canvas profile.
 Dösinger, 2008 Denver Gingerich, 2007-2008/2011/2013 Stefan Dösinger for
 CodeWeavers. Wined3D/physical hardware queries replaced by documented software
 surface/palette capabilities and actual reserved allocator/free-list sizes.
+
+The CreateSurface complex-chain section in `ddraw/ddraw1.rs` additionally adapts
+Wine `dlls/ddraw/surface.c:6692+,7127-7171` at the same pinned SHA, LGPL-2.1-or-later.
+Copyright 1997-2000 Marcus Meissner, 1998-2000 Lionel Ulmer, 2000-2001 TransGaming
+Technologies Inc., 2006 Stefan Dösinger, 2011 Ričardas Barkauskas for CodeWeavers.
+Only chain construction/error handling is adapted, not complete Wined3D textures.

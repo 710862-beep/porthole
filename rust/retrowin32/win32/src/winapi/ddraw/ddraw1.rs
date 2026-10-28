@@ -76,6 +76,12 @@ pub mod IDirectDraw {
         }
     }
 
+    // Wine-derived complex-chain section, LGPL-2.1-or-later.
+    // Wine 0738d528db522f52d9d75f2aec712688dd31d1d2, surface.c:6692+,7127-7171.
+    // Copyright 1997-2000 Marcus Meissner; 1998-2000 Lionel Ulmer;
+    // 2000-2001 TransGaming; 2006 Stefan Dösinger; 2011 Ričardas Barkauskas.
+    // Wined3D resource creation replaced by existing CPU surfaces; not a full
+    // port of texture/mipmap/overlay/refcount/flip scheduling semantics.
     #[win32_derive::dllexport]
     pub fn CreateSurface(
         machine: &mut Machine,
@@ -84,24 +90,29 @@ pub mod IDirectDraw {
         lplpDDSurface: Option<&mut u32>,
         pUnkOuter: u32,
     ) -> u32 {
-        let surfaces = ddraw::Surface::create(
-            machine,
-            machine.state.ddraw.hwnd,
-            &DDSURFACEDESC2::from_desc(desc.unwrap()),
-        );
-        if surfaces.len() > 2 {
-            todo!()
-        }
-
+        // Wine surface.c:6692+,7127-7171: validate and construct all back
+        // buffers, closing the complex attachment chain to its root.
+        let Some(out)=lplpDDSurface else{return 0x80004003};
+        *out=0;
+        if pUnkOuter!=0{return 0x80040110}
+        let Some(desc)=desc else{return 0x80070057};
+        if desc.dwSize!=std::mem::size_of::<DDSURFACEDESC>() as u32{return 0x80070057}
+        let desc2=DDSURFACEDESC2::from_desc(desc);
+        if desc2.back_buffer_count().unwrap_or(0)>16{return 0x80004001}
+        let surfaces = ddraw::Surface::create(machine,machine.state.ddraw.hwnd,&desc2);
+        let complex=surfaces.len()>1;
+        let mut last=0;
         let mut prev = 0;
         for mut surface in surfaces.into_iter().rev() {
             let ptr = IDirectDrawSurface::new(machine);
+            if last==0{last=ptr;}
             surface.attached = prev;
             machine.state.ddraw.surfaces.insert(ptr, surface);
             prev = ptr;
         }
 
-        *lplpDDSurface.unwrap() = prev;
+        if complex{machine.state.ddraw.surfaces.get_mut(&last).unwrap().attached=prev;}
+        *out = prev;
 
         DD_OK
     }

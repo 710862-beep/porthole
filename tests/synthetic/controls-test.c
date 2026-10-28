@@ -1,4 +1,6 @@
+#define DIRECTDRAW_VERSION 0x0300
 #include "common.h"
+#include <ddraw.h>
 #include <commctrl.h>
 static int clicked=0,changes=0;
 static LRESULT CALLBACK parent_proc(HWND h,UINT m,WPARAM w,LPARAM l){if(m==WM_COMMAND){if(LOWORD(w)==101 && HIWORD(w)==BN_CLICKED)clicked++;if(LOWORD(w)==102&&HIWORD(w)==EN_CHANGE)changes++;return 0;}return DefWindowProcA(h,m,w,l);}
@@ -61,6 +63,7 @@ void mainCRTStartup(void){
  REQUIRE(GetParent(button)==parent&&GetDlgCtrlID(button)==101);SetFocus(edit);REQUIRE(GetFocus()==edit);
  WINDOWPLACEMENT placement={0};placement.length=sizeof(placement);REQUIRE(!SetWindowPlacement(0,&placement)&&GetLastError()==ERROR_INVALID_WINDOW_HANDLE);placement.showCmd=SW_SHOWNOACTIVATE;placement.rcNormalPosition=(RECT){7,9,407,309};REQUIRE(SetWindowPlacement(parent,&placement));WINDOWPLACEMENT got={0};got.length=sizeof(got);REQUIRE(GetWindowPlacement(parent,&got)&&got.rcNormalPosition.left==7&&got.rcNormalPosition.top==9&&got.rcNormalPosition.right==407&&got.rcNormalPosition.bottom==309);placement.length=1;REQUIRE(!SetWindowPlacement(parent,&placement)&&GetLastError()==ERROR_INVALID_PARAMETER);
  REQUIRE(UpdateWindow(parent));REQUIRE(UpdateWindow(button));REQUIRE(UpdateWindow(edit));REQUIRE(UpdateWindow(list));
+ HMODULE ddlib=LoadLibraryA("ddraw.dll");HRESULT(WINAPI*createDD)(void*,void**,void*)=(HRESULT(WINAPI*)(void*,void**,void*))GetProcAddress(ddlib,"DirectDrawCreate");IDirectDraw*ddraw=0;REQUIRE(createDD&&createDD(0,(void**)&ddraw,0)==0);REQUIRE(ddraw->lpVtbl->SetCooperativeLevel(ddraw,parent,DDSCL_NORMAL)==0);DDSURFACEDESC desc={0};desc.dwSize=sizeof(desc);desc.dwFlags=DDSD_CAPS|DDSD_WIDTH|DDSD_HEIGHT|DDSD_BACKBUFFERCOUNT;desc.dwWidth=16;desc.dwHeight=16;desc.dwBackBufferCount=2;desc.ddsCaps.dwCaps=DDSCAPS_COMPLEX|DDSCAPS_FLIP|DDSCAPS_OFFSCREENPLAIN;IDirectDrawSurface*front=0,*back=0,*third=0,*again=0;REQUIRE(ddraw->lpVtbl->CreateSurface(ddraw,&desc,&front,0)==0&&front);DDSCAPS request={0};REQUIRE(front->lpVtbl->GetAttachedSurface(front,&request,&back)==0&&back&&back!=front);REQUIRE(back->lpVtbl->GetAttachedSurface(back,&request,&third)==0&&third&&third!=back&&third!=front);REQUIRE(third->lpVtbl->GetAttachedSurface(third,&request,&again)==0&&again==front);
  REQUIRE(DestroyWindow(edit));REQUIRE(!IsWindow(edit));REQUIRE(DestroyWindow(parent));REQUIRE(!IsWindow(button));
  dialog_regression();
  SAY("SUCCESS COMMON_CONTROLS_STATE_MESSAGES_NOTIFICATIONS\n");ExitProcess(0);

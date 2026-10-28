@@ -43,6 +43,7 @@ jobs:
           node scripts/extract-wine-api.mjs kernelbase GetSystemInfo
           node scripts/extract-wine-api.mjs gdi32 GetDeviceCaps
           node scripts/extract-wine-api.mjs ddraw ddraw1_GetCaps
+          node scripts/extract-wine-api.mjs ddraw ddraw_surface_create
           node scripts/extract-wine-api.mjs win32u NtGdiGetDeviceCaps
           node scripts/extract-wine-api.mjs win32u nulldrv_GetDeviceCaps
           node scripts/extract-wine-api.mjs kernelbase CreateMutexA
