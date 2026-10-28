@@ -137,3 +137,15 @@ Fonte Rust histórica vendoreada com licença/procedência e patch auditável de
 > Quando o ambiente local não pode compilar Rust/Wasm, eu DEVO usar o GitHub Actions como build server remoto. Vou fazer commit das alterações, acionar o workflow, e validar o Wasm gerado antes de substituir o backend estável.
 
 Usar exclusivamente a branch de sessão arena/6a52f3cb-porthole. Autorizados commits/push e execução remota pelo pedido atual. Registrar SHA, run ID, logs e integridade; nenhum placeholder de sucesso, nenhum relaxamento dos contratos guest e nenhuma promoção baseada somente em magic bytes.
+
+
+## Resultado remoto confirmado — 2026-10-28
+
+Fonte publicada `1bd21160ae81f88eaaa50c54a8a939bc6545457f`; run 40714518581:
+https://github.com/710862-beep/porthole/actions/runs/40714518581
+Build e 8 testes Rust passaram. Candidato/binding recuperados por API e
+validados localmente; 3/5 sintéticos passaram, 6/15 probes originais passaram.
+Raw Input/ws2_32 e DOOM95 continuam pendentes. Workflow vermelho, estável intacto,
+**sem promoção**. Próximo gate: implementar ABI guest de input/rede com prova
+real, investigar os traces e repetir CI. Documentação consolidada em
+`docs/rust-wasm-integration.md`; não inferir compatibilidade de integridade.

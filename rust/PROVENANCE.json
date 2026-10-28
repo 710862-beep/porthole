@@ -28,11 +28,14 @@
   "localBuildStatus": "BUILD_BLOCKED: missing cargo",
   "promoted": false,
   "remoteBuild": {
-    "sha": "e872de720385b4301a5167c3391b0f4f7571aeb4",
-    "runId": 40712277632,
-    "url": "https://github.com/710862-beep/porthole/actions/runs/40712277632",
+    "sha": "1bd21160ae81f88eaaa50c54a8a939bc6545457f",
+    "runId": 40714518581,
+    "url": "https://github.com/710862-beep/porthole/actions/runs/40714518581",
     "build": "PASS",
-    "integrity": "PASS on CI",
-    "guests": "FAIL; not promoted"
+    "integrity": "PASS on CI and local download; binding instantiated",
+    "rustTestsPassed": 8,
+    "synthetic": "3 PASS; 2 GUEST_FAILURE",
+    "originals": "6 PASS; 9 BACKEND_FAILURE",
+    "promoted": false
   }
 }

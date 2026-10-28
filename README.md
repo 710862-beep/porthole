@@ -240,9 +240,11 @@ Estado atual: **126 verificações locais**, **53 scripts** com sintaxe válida.
 A fonte histórica foi integrada em `rust/retrowin32`, com alterações candidatas
 no scheduler, waits, TEB/handles e pontes de registro ANSI/diretórios. Veja
 [rust/README.md](rust/README.md) e [estado da integração](docs/rust-wasm-integration.md).
-`npm run build:wasm` regenera as DLLs de SHIM, executa testes Rust e produz um
-candidato fora de vendor. O build local **não concluiu**: cargo ausente, e a
-instalação ativa da toolchain falhou em static.rust-lang.org. O Wasm estável está
-intacto. Nenhum 5/5 guest é alegado; Raw Input e WinSock guest ainda não foram
-integrados. Estado local: **133 verificações JS/DOM**, **55 scripts** sintaticamente
-válidos; isso não valida compilação nem execução do Rust candidato.
+`npm run build:wasm` regenera as DLLs, executa testes Rust e produz um candidato
+fora de vendor. O build remoto agora **compilou**: [run 40714518581](https://github.com/710862-beep/porthole/actions/runs/40714518581),
+commit `1bd21160ae81f88eaaa50c54a8a939bc6545457f`. O Wasm/binding foi baixado pela
+API e validado, inclusive inicialização. **8 testes Rust passaram**; contratos
+sintéticos: **3/5** (threads, registro e instalação em disco Node); input e rede
+falham. Probes originais: **6/15**, DOOM95 ainda falha. O workflow continua vermelho,
+**não houve promoção** e o estável está intacto. Raw Input/ws2_32 continuam lacunas.
+Suíte local: **143 verificações JS/DOM**, **59 scripts** sintaticamente válidos.

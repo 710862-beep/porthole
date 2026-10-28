@@ -295,3 +295,15 @@ Uma etapa só termina quando:
 3. Commit → push da branch da sessão → identificar/acionar run por SHA exato → acompanhar conclusão → capturar logs completos, inclusive falhas de infraestrutura.
 4. Corrigir erros concretos e repetir com novo SHA quando possível. Baixar artifacts pelo run ID e verificar SHA256, magic/version e WebAssembly.compile antes dos testes locais.
 5. Reexecutar PEs/DOOM95 com Wasm e binding correspondentes, preservar falhas e atualizar relatório com URLs reais. Só promover com contratos completos e regressões aprovados; Raw Input/rede ausentes não serão substituídos por success stubs.
+
+
+## Resultado remoto confirmado — 2026-10-28
+
+Fonte publicada `1bd21160ae81f88eaaa50c54a8a939bc6545457f`; run 40714518581:
+https://github.com/710862-beep/porthole/actions/runs/40714518581
+Build e 8 testes Rust passaram. Candidato/binding recuperados por API e
+validados localmente; 3/5 sintéticos passaram, 6/15 probes originais passaram.
+Raw Input/ws2_32 e DOOM95 continuam pendentes. Workflow vermelho, estável intacto,
+**sem promoção**. Próximo gate: implementar ABI guest de input/rede com prova
+real, investigar os traces e repetir CI. Documentação consolidada em
+`docs/rust-wasm-integration.md`; não inferir compatibilidade de integridade.

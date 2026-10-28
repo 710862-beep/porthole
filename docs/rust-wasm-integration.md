@@ -1,61 +1,112 @@
-# Integração Rust/Wasm — 2026-10-28
+# Integração Rust/Wasm — build remoto real, 2026-10-28
 
-## Estado: candidato de fonte, não backend validado
+## Estado: compilado e baixado, compatibilidade incompleta — NÃO PROMOVIDO
 
-A etapa deixou de ser apenas diagnóstico/SHIM JS: há alterações efetivas em
-`rust/retrowin32` e uma ponte Rust Host → wasm-bindgen → JS para registro ANSI e
-diretórios. O build local foi tentado e bloqueou por falta de cargo. A aquisição
-ativa de Rustup por PyPI funcionou, mas o download da toolchain Rust falhou no
-host static.rust-lang.org. Não há novo .wasm e não há resultado guest novo.
+Fonte medida: **`1bd21160ae81f88eaaa50c54a8a939bc6545457f`**, branch
+`arena/6a52f3cb-porthole`. [Run 40714518581](https://github.com/710862-beep/porthole/actions/runs/40714518581).
+O job compilou o núcleo e produziu o candidato, mas terminou em **failure** pelos
+contratos guest e recursos externos ainda faltantes. Não existe resultado 5/5.
 
-| Item | Estado desta etapa |
-|---|---|
-| Scheduler e waits | Fonte Rust alterada; sem compilação/execução comprovadas |
-| Registro ANSI | Fonte Rust + host JS integrado no runner; 4 testes JS aprovados |
-| Diretórios/relógio | Fonte host Rust delegada + overlay JS; 3 testes JS aprovados |
-| Raw Input guest | Não implementado nesta etapa; continua lacuna |
-| ws2_32 guest | Não integrado nesta etapa; continua lacuna |
-| Rebuild | Script/CI adicionados; tentativa local BUILD_BLOCKED |
-| Cinco PEs contra novo Wasm | Não executados: nenhum novo artefato foi produzido |
-| Cinco PEs contra Wasm estável | Reexecutados: 5 GUEST_FAILURE |
-| DOOM95 contra estável | Reexecutado: salto nulo; não atribuído a uma API específica |
-| DOOM95 contra candidato | Sem execução; candidato não foi compilado |
+## Ciclos executados e falhas corrigidas
 
-## ABI e persistência
+| Run | Commit medido | Resultado real |
+|---|---|---|
+| [40711254902](https://github.com/710862-beep/porthole/actions/runs/40711254902) | `640b158` | Rebuild falhou; logs via redirect inacessíveis |
+| [40711849705](https://github.com/710862-beep/porthole/actions/runs/40711849705) | `5427dc1` | Checks API expôs erro do generator em checkout limpo |
+| [40712277632](https://github.com/710862-beep/porthole/actions/runs/40712277632) | `e872de7` | Corrigido NotFound; Rust compilou, 8 testes passaram; guests falharam no binding inválido |
+| [40712992950](https://github.com/710862-beep/porthole/actions/runs/40712992950) | `15b04cd` | Candidato baixado por Git blob API; sintaxe inválida confirmada localmente |
+| [40713495349](https://github.com/710862-beep/porthole/actions/runs/40713495349) | `69bb279` | Binding corrigido/inicializado; 3 sintéticos passaram; 6/15 probes originais passaram |
+| [40714052612](https://github.com/710862-beep/porthole/actions/runs/40714052612) | `cbb0e7d` | Registro/instalação confirmados em disco real; aquisição API 403 deixou probes vazios, corretamente reprovados |
+| [40714518581](https://github.com/710862-beep/porthole/actions/runs/40714518581) | `1bd2116` | Autenticação API e DOOM95 fixado; candidato validado; 3/5 sintéticos, 6/15 originais |
 
-O guest é x86 em um buffer dentro da memória linear Wasm; um ponteiro x86 **não**
-é automaticamente um offset absoluto do memory.buffer do Wasm. A ponte Rust
-valida faixas guest, copia bytes e usa slices wasm-bindgen. Não consulta
-Emulator.memory() reentrantemente dentro de uma chamada Rust já emprestada.
+O gerador lia `.s`/`.def` antes de criá-los; agora somente NotFound permite criar
+um arquivo novo, e demais erros de I/O continuam propagados. A regressão Rust
+cobre criação, conteúdo igual, atualização e caminho não regular.
+O binding usava `export { default as ... }` sem re-export de módulo: sintaxe
+inválida. O build agora exporta a variável local `__wbg_init`. O validador antigo
+aceitava os bytes Wasm desse candidato, mas não sua sintaxe JS; a nova regressão
+rejeita o caso e exige exports e inicialização efetiva do binding.
 
-APIs de espera ficam no núcleo cooperativo e suspende-se a CPU via Sleep; não
-se retorna uma Promise como DWORD. O gerador win32-derive cria wrappers/PE DLLs
-para as novas assinaturas. O pacote de build correto é glue, não um presumido
-retrowin32.wasm na raiz do workspace.
+## Integridade comprovada no CI e depois do download
 
-Registro usa métodos síncronos de overlay do mesmo RegistryStore já existente;
-o host aguarda ready antes de iniciar o guest e flush no término. Uma escrita
-aceita não é confirmação durável. Falha de persistência aparece em flushError
-e invalida PASS no runner. O teste guest do runner usa store volátil; os testes
-Node de disco são uma evidência separada, não login Roblox nem instalação real.
-
-Diretórios têm overlay síncrono e fila de confirmação; snapshot de diretórios
-preexistentes no host ainda é parcial. Também faltam validação física de FS
-Access, recuperação de erros e cobertura completa dos erros Win32 nesse caminho.
-
-## Evidência local
-
-- npm test: **133 verificações** (122 unitárias/contrato + 11 DOM).
-- node --check: **55 scripts**.
-- bash -n no script de rebuild, YAML lint e git diff --check: aprovados.
-- Patch de fonte: 16 arquivos alterados/novos em relação ao upstream fixado;
-  aplicação sobre fonte pristine conferida com git apply --check.
-- Dois testes Rust de scheduler foram escritos, mas não executados. Não entram
-  na contagem 133.
-- Hash do Wasm estável permanece
+- Wasm: **1.669.558 bytes**, magic `00 61 73 6d`, versão 1.
+- SHA256 Wasm: `afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d`.
+- Binding: **31.018 bytes**, SHA256 `1b935d6bb11943ee3f2a7bfd6e1bbe1c4df799ddbe03b68660e998f90eb5b75f`.
+- SHA256SUMS conferido; WebAssembly.compile e inicialização do binding passaram.
+- Status: **INTEGRITY_VALIDATED_NOT_COMPATIBILITY**, 42 exports, 60 imports.
+- Estável intacto: 1.634.129 bytes; SHA256
   `5dc271886ebd68f2ba682099e71415bae7e40a457b3819d165484ffec0e1be41`.
 
-Ver [instruções/procedência](../rust/README.md) e
-[patch auditável](../rust/patches/porthole-core.patch). Os resultados anteriores
-continuam válidos somente para o artefato antigo. Nenhum commit/push nem workflow
-remoto foi executado nesta etapa.
+## Cinco PEs realmente executados no candidato
+
+| PE sintético autoral | Resultado | Evidência além de exit 0/SUCCESS |
+|---|---|---|
+| thread-validation | PASS | 3 workers × 10 loops, 30 verificações TLS no guest; completed==3 e WaitForMultipleObjects; 3 WORKER_DONE |
+| input-test | GUEST_FAILURE | Janela pede DOM ausente no headless; nenhum delta físico comprovado. Raw Input guest ainda ausente |
+| network-test | GUEST_FAILURE | Loader registra ws2_32.dll e WSAStartup/socket/connect/send/recv etc. ausentes; depois ocorre salto nulo |
+| registry-test | PASS | Guest grava/reabre/lê; após flush um novo store lê disco Node: REG_BINARY 128 bytes e REG_DWORD 12345 |
+| installer-test | PASS sintético | Diretório real, test.txt 15 bytes, marcador uninstall.exe vazio e InstallPath em novo store/disco Node conferidos |
+
+O marcador vazio **não é desinstalador executável**. Dados de Roblox são
+artificiais; não houve login Roblox/Adobe. Disco temporário Node não equivale a
+File System Access no navegador. O runner remove seu diretório temporário ao
+final. Aceitar uma escrita no overlay não basta: flushError invalida PASS e os
+contratos de registro/instalador exigem releitura externa. Input headless nunca
+vira validação física só por sair com código zero.
+
+## Originais e DOOM95
+
+Aquisição final: **15 PEs originais/mirrors**, faltando Wine winetest, .kkrieger,
+Minesweeper e Notepad. As tentativas/fallbacks e erros permanecem no relatório de
+aquisição; nenhum substituto foi rotulado como original. Autenticação fica
+restrita ao origin HTTPS api.github.com usando o token já fornecido pelo runner.
+
+Probes: **6 PASS / 9 BACKEND_FAILURE**. PASS: callback, cmdline, metrics,
+thread (ambos os loops terminaram), winapi e hello. Falhas incluem DOM ausente,
+traps, exits não zero e imports não resolvidos. PASS de probe não significa
+conformidade completa da aplicação nem teste Wine.
+
+DOOM95: PE32 de mirror público mshoger/doom95, 775.117 bytes, SHA256
+`209aaa8f56e982ad21cad48d853e6a926900062f8f46757c649ccc7e2249dec8`.
+A origem foi fixada por Git blob e checksum, não autenticada como distribuição
+oficial. Foi reexecutado no candidato: **BACKEND_FAILURE — jmp to null page
+addr=0**, sem janela/frame. Loader lista diversos imports ausentes (kernel32,
+user32, GDI, winmm e dplay), mas o trace não identifica qual chamada disparou o
+salto. Não atribuímos o crash a uma API específica nem a Raw Input sem prova.
+
+## Reprodução e transporte dos artifacts
+
+```bash
+bash scripts/build-remote.sh --run 40714518581
+# retorno não zero: falhas guest continuam obrigatórias
+python3 scripts/download-ci-blobs.py 40714518581
+node scripts/validate-wasm.mjs artifacts/remote/40714518581/retrowin32-candidate-wasm
+```
+
+Artifacts normais: `retrowin32-candidate-wasm` e `test-results`, retenção 14 dias.
+Neste sandbox, gh download/log redireciona para hosts de armazenamento bloqueados.
+Logs de build foram recuperados por Checks API. O fallback transfere arquivos
+por **Git blobs sem commit/ref**, com manifesto nas annotations; confere SHA do
+run/fonte, SHA1 Git, tamanho e SHA256 antes de salvar no diretório ignorado.
+`contents: write` serve para criar esses blobs, não para promover ou escrever
+vendor. Blobs são transporte efêmero; artifacts normais seguem publicados.
+Nenhuma URL assinada ou credencial consta da evidência versionada.
+
+Dispatch manual retorna 403 pela integração; **push dispara o workflow**. Não
+foi criada outra branch. Os commits foram publicados na branch da sessão.
+
+## Evidências e próximos gates
+
+- Rust 1.81.0, wasm-bindgen 0.2.92; **8 testes Rust** (1 derive, 2 scheduler, 5 win32).
+- **143 verificações JS/DOM**, **59 scripts** com syntax check; não se confundem
+  com testes Rust ou conformidade Wine.
+- Patch completo de **17 arquivos** confere com git apply --check na fonte fixada.
+- [Resumo auditável e hashes dos relatórios](evidence/remote-candidate-40714518581.json).
+- Logs/JSON completos baixados em `artifacts/remote/40714518581/` (não versionados).
+
+**Pendências que bloqueiam promoção:** implementar/testar Raw Input no núcleo,
+runner com DOM/deltas verificáveis, ABI ws2_32 com transporte real e contrato
+HTTP, resolver falhas dos probes/regressões e investigar DOOM95 por trace.
+Não foram adicionados stubs de sucesso para esconder essas lacunas.
+Somente depois de todos os gates será permitido substituir Wasm e glue juntos,
+com backup/reversão e nova rodada de regressões.

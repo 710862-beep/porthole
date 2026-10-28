@@ -1,0 +1,320 @@
+{
+  "sourceSha": "1bd21160ae81f88eaaa50c54a8a939bc6545457f",
+  "runId": 40714518581,
+  "url": "https://github.com/710862-beep/porthole/actions/runs/40714518581",
+  "conclusion": "failure",
+  "promoted": false,
+  "integrity": {
+    "bindingInitialized": true,
+    "status": "INTEGRITY_VALIDATED_NOT_COMPATIBILITY",
+    "bytes": 1669558,
+    "wasmSha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d",
+    "glueSha256": "1b935d6bb11943ee3f2a7bfd6e1bbe1c4df799ddbe03b68660e998f90eb5b75f",
+    "exports": 42,
+    "imports": 60
+  },
+  "rustTestsPassed": 8,
+  "synthetic": [
+    {
+      "name": "thread-validation",
+      "sha256": "b2a1c46261ab0ba449fe611b19d47ea64dc1c8b64536680fd2930cf84f58b37a",
+      "backendSha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d",
+      "result": {
+        "status": "exited",
+        "exitCode": 0,
+        "error": null,
+        "instructions": 766,
+        "stdout": "WORKER_DONE\nWORKER_DONE\nWORKER_DONE\nSUCCESS\n",
+        "volatileWrites": false,
+        "flushError": null
+      },
+      "status": "PASS",
+      "hostEvidence": null,
+      "guestContract": {
+        "workers": 3,
+        "loopsPerWorker": 10,
+        "tlsAssertions": 30,
+        "completedMarkers": 3
+      }
+    },
+    {
+      "name": "input-test",
+      "sha256": "304e2d405d1c93189265ee48e0ea935e46e17c5a68eacf7f4567a9f211b589cd",
+      "backendSha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d",
+      "result": {
+        "status": "error",
+        "exitCode": null,
+        "error": "Janela Win32 solicitada, mas document/DOM n\u00e3o est\u00e1 dispon\u00edvel.",
+        "instructions": 0,
+        "stdout": "",
+        "volatileWrites": false,
+        "flushError": null
+      },
+      "status": "GUEST_FAILURE"
+    },
+    {
+      "name": "network-test",
+      "sha256": "e8c1195fd16a42a6692737ec059b65c20e6af5d7304055d4f03e5c56e590742a",
+      "backendSha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d",
+      "result": {
+        "status": "error",
+        "exitCode": null,
+        "error": "jmp to null page addr=0",
+        "instructions": 0,
+        "stdout": "",
+        "volatileWrites": false,
+        "flushError": null
+      },
+      "status": "GUEST_FAILURE"
+    },
+    {
+      "name": "registry-test",
+      "sha256": "8cc60dbcf7dd724f6c0c729b308bb1f9b8ebb90c4b735dcd27fdd0602fbbeb34",
+      "backendSha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d",
+      "result": {
+        "status": "exited",
+        "exitCode": 0,
+        "error": null,
+        "instructions": 1309,
+        "stdout": "SUCCESS (same-process reopen only)\n",
+        "volatileWrites": false,
+        "flushError": null
+      },
+      "status": "PASS",
+      "hostEvidence": {
+        "kind": "node-disk-fresh-registry-store",
+        "tokenBytes": 128,
+        "userId": 12345
+      }
+    },
+    {
+      "name": "installer-test",
+      "sha256": "be8f88ba4c2839c174f2c75ec7f9135381e62ffb28d0c20d636a301a840c749b",
+      "backendSha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d",
+      "result": {
+        "status": "exited",
+        "exitCode": 0,
+        "error": null,
+        "instructions": 377,
+        "stdout": "SUCCESS (requires host persistence verification)\n",
+        "volatileWrites": false,
+        "flushError": null
+      },
+      "status": "PASS",
+      "hostEvidence": {
+        "kind": "node-disk-fresh-registry-store",
+        "directory": true,
+        "testFileBytes": 15,
+        "uninstallerMarkerBytes": 0,
+        "installPath": "C:\\Program Files\\TestApp"
+      }
+    }
+  ],
+  "originals": {
+    "summary": {
+      "executed": 15,
+      "passed": 6,
+      "failed": 9
+    },
+    "tests": [
+      {
+        "path": "tests/assets/retrowin32/callback/callback.exe",
+        "sha256": "d1c0fe175759cf83be5bf764686693cdaecb8eb308a3f1d9f8f89c545dcdaf7f",
+        "status": "PASS",
+        "exitCode": 0,
+        "error": null,
+        "stdout": "callback0 invoked: 1234\nretrowin32_callback1 returned: 1\n",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/cmdline.exe",
+        "sha256": "506aa1add257c457654d5ce21e94cb76dc62c9dcadcfd3460162336b7a235e57",
+        "status": "PASS",
+        "exitCode": 0,
+        "error": null,
+        "stdout": "GetModuleFileNameA: TODO.exe\nGetCommandLineA: cmdline.exe\n",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/ddraw.exe",
+        "sha256": "0afe9417cdfb521debde6cc8b3b75fd0d2dece5de0005f053dc52e8dbf0c1084",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "Janela Win32 solicitada, mas document/DOM n\u00e3o est\u00e1 dispon\u00edvel.",
+        "stdout": "CreateWindowEx\n",
+        "instructionCounterValid": false
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/dib.exe",
+        "sha256": "16254645303b84e4f887c0ea1700d06987c14ef92daf268c2855e3b64b7cd47c",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "Janela Win32 solicitada, mas document/DOM n\u00e3o est\u00e1 dispon\u00edvel.",
+        "stdout": "",
+        "instructionCounterValid": false
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/errors.exe",
+        "sha256": "45ace62385aa865f075788dfe61c3cf66b2c4f1f05bb119a39bda1f421a9822b",
+        "status": "BACKEND_FAILURE",
+        "exitCode": 1,
+        "error": null,
+        "stdout": "usage: errors.exe <mode>\n",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/gdi.exe",
+        "sha256": "2bee321e165af5a3455d02d974de88a9ee0d48ae20c9354db1dc501f21918c39",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "unreachable",
+        "stdout": "",
+        "instructionCounterValid": false
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/metrics.exe",
+        "sha256": "e8845151fc40ebb208fb85c2698c4a454f1024395bd730f0226dc83bd80f04ef",
+        "status": "PASS",
+        "exitCode": 0,
+        "error": null,
+        "stdout": "GetSystemMetrics():\r\n0 => 640\n1 => 480\n2 => 0\n3 => 0\n4 => 19\n5 => 1\n6 => 1\n7 => 0\n8 => 0\n9 => 0\n10 => 0\n11 => 0\n12 => 0\n13 => 0\n14 => 0\n15 => 19\n16 => 0\n17 => 0\n18 => 0\n19 => 0\n20 => 0\n21 => 0\n22 => 0\n23 => 0\n24 => 0\n25 => 0\n26 => 0\n27 => 0\n28 => 0\n29 => 0\n30 => 0\n31 => 0\n32 => 4\n33 => 4\n34 => 0\n35 => 0\n36 => 0\n37 => 0",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/cpp/thread.exe",
+        "sha256": "b68adf92c4412d485c62e2ab406d8e06952a4c8d9683a1c56f4ca453dcc785f8",
+        "status": "PASS",
+        "exitCode": 0,
+        "error": null,
+        "stdout": "thread_id=1 name=main tls=1 i=0\nthread_id=2 short_thread_proc exiting\nthread_id=3 name=i_am_thread tls=2 i=0\nthread_id=1 name=main tls=1 i=1\nthread_id=3 name=i_am_thread tls=2 i=1\nthread_id=1 name=main tls=1 i=2\nthread_id=3 name=i_am_thread tls=2 i=2\nthread_id=1 name=main tls=1 i=3\nthread_id=3 name=i_am_thread tls=2 i=",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/ops/ops.exe",
+        "sha256": "1d8a2fa0436823f8a8437fddb8d2da148f4ae67d6466d9f08098241d1b19f529",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "unreachable",
+        "stdout": "add 3,5 => 8\nadd 3,fd => 0 CF ZF\nadd 3,fb => fe SF\nadc (CF=1) ff,0 => 0 CF ZF\nadc (CF=1) ff,1 => 1 CF\nadc (CF=1) ff,fe => fe CF SF\nadc (CF=1) ff,ff => ff CF SF\nsbb (CF=1) 0,0 => ff CF SF\nsbb (CF=1) 0,1 => fe CF SF\nsbb (CF=1) 0,fe => 1 CF\nsbb (CF=1) 0,ff => 0 CF ZF\nshr 3,0 => 3\nshr 3,1 => 1 CF\nshr 3,2 => 0 CF ZF\nshr 80,",
+        "instructionCounterValid": false
+      },
+      {
+        "path": "tests/assets/retrowin32/trace/trace.exe",
+        "sha256": "24dbb3b03d9b6cc44b46e4ac0066679d8228df4d5fbf4c726a88e6efa32e31d4",
+        "status": "BACKEND_FAILURE",
+        "exitCode": 1,
+        "error": null,
+        "stdout": "error: specify command to run\nerror: Args\n",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/winapi/winapi.exe",
+        "sha256": "aba62931f8d688823cda9bcede357bba808571fc3521f0d6596e68140547c275",
+        "status": "PASS",
+        "exitCode": 0,
+        "error": null,
+        "stdout": "hello\n",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/retrowin32/zig_hello/hello.exe",
+        "sha256": "aedd81ffb8358801ad2ee2202b24b4fcde1cb9f0e40c4c3059b72c8fc76b6ce3",
+        "status": "PASS",
+        "exitCode": 0,
+        "error": null,
+        "stdout": "Hello, world!\n",
+        "instructionCounterValid": true
+      },
+      {
+        "path": "tests/assets/windows/Dependencies.exe",
+        "sha256": "e6cc67f7e1b8f9b271cf4de607d51aee8fb6909dd38ad2859b8f5b87b32240b3",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "jmp to null page addr=0",
+        "stdout": "",
+        "instructionCounterValid": false
+      },
+      {
+        "path": "tests/assets/installers/notepad-plus-plus.exe",
+        "sha256": "ee848aa54df153921678b343857a83861da81ce0c9dbb217b6f55a8780e60f5e",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "jmp to null page addr=0",
+        "stdout": "",
+        "instructionCounterValid": false
+      },
+      {
+        "path": "tests/assets/games/doom95.exe",
+        "sha256": "209aaa8f56e982ad21cad48d853e6a926900062f8f46757c649ccc7e2249dec8",
+        "status": "BACKEND_FAILURE",
+        "exitCode": null,
+        "error": "jmp to null page addr=0",
+        "stdout": "",
+        "instructionCounterValid": false
+      }
+    ]
+  },
+  "acquisition": {
+    "acquired": 15,
+    "missing": [
+      "wine/winetest.exe",
+      "games/kkrieger.exe",
+      "windows/Minesweeper.exe",
+      "windows/notepad.exe"
+    ]
+  },
+  "transfer": {
+    "sourceSha": "1bd21160ae81f88eaaa50c54a8a939bc6545457f",
+    "runId": "40714518581",
+    "files": [
+      {
+        "path": "artifacts/wasm-candidate/retrowin32.wasm",
+        "blob": "690badccad69ba6d4510d60fa9c8a1829b5f8dfd",
+        "bytes": 1669558,
+        "sha256": "afeaba0ff7d2c50a4cd9da24f6c8ab8da83eb090d8a24fcd326d41bfbaab1d1d"
+      },
+      {
+        "path": "artifacts/wasm-candidate/glue.mjs",
+        "blob": "63ac1a1fb4ca3d60874f77834ff6458d80fd0da9",
+        "bytes": 31018,
+        "sha256": "1b935d6bb11943ee3f2a7bfd6e1bbe1c4df799ddbe03b68660e998f90eb5b75f"
+      },
+      {
+        "path": "artifacts/wasm-candidate/SHA256SUMS",
+        "blob": "4c5a45bc1a725f51b107e731e76522e72d4f2d20",
+        "bytes": 279,
+        "sha256": "1fa5664e80cb2e6e8179f1520f609a0864fa4907535dfbbd7c103172bd002fa9"
+      },
+      {
+        "path": "artifacts/wasm-candidate/integrity.json",
+        "blob": "f10c1fea837ca21376dff2574824626f86ebb43f",
+        "bytes": 308,
+        "sha256": "dd1b06a519cd3c40ead20f6f832d9d55a9dc920106af75a86dd151862375fc79"
+      },
+      {
+        "path": "artifacts/asset-acquisition.json",
+        "blob": "573f585661285a32749e0f001d6c09feb5197b99",
+        "bytes": 33299,
+        "sha256": "fec8207ba46c05c5b9c6746be5d3024006fd7703597211eae62bc85f5784588f"
+      },
+      {
+        "path": "artifacts/guest-probes-candidate.json",
+        "blob": "9dcb60038327240c639b886c3ad085d26dd60c06",
+        "bytes": 67697,
+        "sha256": "45f21c770eb51f62b36ade60f31bab373d7900c825778c8b7341bb4e9327d1a8"
+      },
+      {
+        "path": "artifacts/synthetic-candidate-all.json",
+        "blob": "dc28e9691428e605d2652e6cf00cd336c5d9d012",
+        "bytes": 10273,
+        "sha256": "cc4d56ac9e712dec08102cd26aacd8f156b435c776dd0f0dc55301eb68384a89"
+      },
+      {
+        "path": "artifacts/rebuild-wasm.log",
+        "blob": "f11a09c077edfdbf2ddc03faa3da8664fc672a88",
+        "bytes": 13780,
+        "sha256": "4c2ce5b00937eafda82b8b68958205baafcccb1f0a69f02fbd2bfb0e6e4c7d72"
+      }
+    ]
+  }
+}

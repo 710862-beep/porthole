@@ -17,7 +17,7 @@ The upstream tree includes development UI/examples; Porthole does not build or
 load that UI. Porthole remains Vanilla JS/CSS. `web/wasm.wasm` inside the upstream
 source is a placeholder and is NOT a build input/runtime engine.
 
-## Source changes (not yet rustc-validated)
+## Source changes (compiled and tested in Actions; compatibility incomplete)
 
 - CPUState::Terminated; terminated CPUs excluded from scheduling; no empty
   deadline unwrap when all CPUs have completed. Machine recognizes all-completed.
@@ -73,21 +73,40 @@ is explicit via `registryBridge` in createProcess; the runner uses a volatile
 store, not a claim of physical persistence. App/UI automatic provisioning and
 cross-session guest persistence remain to be validated before promotion.
 
-## Actual local result
+## Actual remote result — 2026-10-28
 
-`npm run build:wasm`: **BUILD_BLOCKED: missing tool cargo**.
-A Rustup executable was acquired through PyPI (`rustup==1.29.0.1`), then a real
-Rust 1.81.0 installation attempt failed while fetching
-`https://static.rust-lang.org/dist/channel-rust-1.81.0.toml.sha256`
-with `tls handshake eof` (host outside this sandbox's outbound allowlist).
-No Rust compiler, target stdlib, native Rust test execution or rebuilt Wasm was
-obtained. `artifacts/toolchain-acquisition.log` retains the failure.
+Local Rust installation remains blocked; GitHub Actions is the working build
+server. Source commit `1bd21160ae81f88eaaa50c54a8a939bc6545457f`,
+[run 40714518581](https://github.com/710862-beep/porthole/actions/runs/40714518581):
+Rust 1.81.0, bindgen 0.2.92, rebuilt DLLs, **8 native Rust tests passed**, and
+release Wasm produced. Downloaded Wasm: **1,669,558 bytes**. Checksums, Wasm
+compile and matching JS binding initialization passed locally and remotely.
 
-Tree-sitter found no new grammar errors relative to upstream in 12 changed .rs
-files; its pre-existing opaque wasm-bindgen extern-type errors are not rustc
-errors. Grammar inspection is NOT a substitute for compilation/type checking.
+**Workflow remains red:** 3/5 authored guest contracts passed (threads, registry,
+installer with real Node disk verification), 2 failed (headless input and absent
+ws2_32). Original probes: 6/15 passed; DOOM95 still fails with a null jump.
+Raw Input and ws2_32 are not implemented by this source delta. No promotion.
 
-CI's separate rust-wasm-candidate job installs the toolchain/linker, regenerates
-DLLs, builds and validates the five PEs plus acquired originals. It has not been
-run remotely in this session. Candidate tests are mandatory failures when
-unsupported; publication is not promotion or proof of passing.
+Two bootstrap bugs were fixed using real CI diagnostics: missing generated
+DLL files in clean checkouts, and an invalid local `default` re-export in the
+binding. A validator regression rejects that syntactically invalid binding.
+
+Normal Actions artifact redirects are blocked in this sandbox. The workflow
+also creates **unreferenced Git blobs**, with a small Checks API transfer manifest;
+this does not commit binaries or update any branch/ref. `contents: write` is
+needed only for blob creation. The downloader verifies run/source SHA, Git blob
+SHA1, size and SHA256 before writing under ignored `artifacts/remote/<run>/`.
+Blobs are an ephemeral transport; normal Actions artifacts retain their 14-day
+policy. No access tokens or signed artifact URLs are stored in reports.
+
+```bash
+bash scripts/build-remote.sh --run 40714518581
+# exits nonzero because guest compatibility gates remain failed
+# API-only direct retrieval (no promotion):
+python3 scripts/download-ci-blobs.py 40714518581
+node scripts/validate-wasm.mjs artifacts/remote/40714518581/retrowin32-candidate-wasm
+```
+
+The manual workflow dispatch API returns 403 for the sandbox integration;
+pushing the session branch automatically starts this workflow. No other branch
+was created. See [full report](../docs/rust-wasm-integration.md).

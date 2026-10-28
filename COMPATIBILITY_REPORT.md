@@ -1,6 +1,7 @@
 # Porthole — relatório de compatibilidade real
 
-> **Atualização 2026-10-28 — integração Rust/Wasm:** há agora código Rust candidato em `rust/retrowin32`, patch de scheduler/waits, ponte de registro/diretórios e pipeline de rebuild. **Nenhum novo Wasm foi produzido:** cargo ausente; instalação de Rust via Rustup falhou no download de static.rust-lang.org (TLS EOF). Raw Input e ws2_32 guest permanecem abertos. Suíte atual: **133 verificações, 55 scripts**. Os cinco PEs e DOOM95 foram reexecutados apenas no Wasm estável e continuam falhando. Detalhes em [docs/rust-wasm-integration.md](docs/rust-wasm-integration.md). As medições abaixo são o histórico da etapa anterior, não evidência do candidato.
+> **Atualização 2026-10-28 — CI remoto real:** fonte `1bd21160ae81f88eaaa50c54a8a939bc6545457f`, [run 40714518581](https://github.com/710862-beep/porthole/actions/runs/40714518581). **Wasm produzido, baixado e validado**, inclusive binding. 8 testes Rust passaram; 143 verificações JS/DOM e 59 syntax checks locais. **3/5 contratos sintéticos passaram** (threads, registro e instalação com confirmação em disco Node); input e ws2_32 falham. Probes originais: **6/15**; DOOM95 falha em salto nulo, sem API causal comprovada. **Workflow vermelho; não promovido.** [Relatório atualizado](docs/rust-wasm-integration.md) e [evidência versionada](docs/evidence/remote-candidate-40714518581.json). As seções abaixo são **histórico da etapa anterior**, não o estado atual do candidato.
+
 
 Data: 2026-10-27 (data local da sessão). Branch: `arena/6a52f3cb-porthole`.
 
