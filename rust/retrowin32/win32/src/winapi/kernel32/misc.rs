@@ -376,3 +376,13 @@ pub fn RtlUnwind(
 ) {
     todo!();
 }
+
+/// Process-wide Win32 error policy. SEM_NOALIGNMENTFAULTEXCEPT is sticky.
+#[win32_derive::dllexport]
+pub fn SetErrorMode(machine:&mut Machine,mode:u32)->u32 {
+    let previous=machine.state.kernel32.error_mode;
+    machine.state.kernel32.error_mode=mode|(previous&4);
+    previous
+}
+#[win32_derive::dllexport]
+pub fn GetErrorMode(machine:&mut Machine)->u32 {machine.state.kernel32.error_mode}

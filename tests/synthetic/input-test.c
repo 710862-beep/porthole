@@ -1,6 +1,7 @@
 #include "common.h"
 /* Host injects these exact signed deltas; no DOM and no test-only DLL import. */
 void mainCRTStartup(void) {
+    REQUIRE(GetErrorMode()==0);REQUIRE(SetErrorMode(SEM_NOOPENFILEERRORBOX)==0);REQUIRE(GetErrorMode()==SEM_NOOPENFILEERRORBOX);REQUIRE(SetErrorMode(SEM_FAILCRITICALERRORS)==SEM_NOOPENFILEERRORBOX);REQUIRE(GetErrorMode()==SEM_FAILCRITICALERRORS);SetErrorMode(0);
     REQUIRE((GetAsyncKeyState(VK_SHIFT)&0xffff)==0x8001);
     REQUIRE((GetAsyncKeyState(VK_SHIFT)&0xffff)==0x8000);
     REQUIRE(GetAsyncKeyState(VK_CONTROL)==0);

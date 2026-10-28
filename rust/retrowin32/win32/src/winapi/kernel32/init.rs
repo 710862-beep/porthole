@@ -207,6 +207,7 @@ pub struct State {
     /// Heaps created by HeapAlloc().
     heaps: HashMap<u32, Heap>,
     pub process_heap: u32,
+    pub error_mode:u32,
 
     pub dlls: HashMap<HMODULE, DLL>,
     pub dll_init_order: Vec<HMODULE>,
@@ -271,6 +272,7 @@ impl State {
             image_base: 0,
             teb,
             process_heap: 0,
+            error_mode:0,
             mappings,
             heaps: HashMap::new(),
             dlls,
