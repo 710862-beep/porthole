@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { githubAPIHeaders } from '../../scripts/github-api-auth.mjs';
 import { validatePE } from '../../scripts/fetch-test-assets.mjs';
 const bytes = Buffer.alloc(128);
 bytes.write('MZ'); bytes.writeUInt32LE(64, 60); bytes.writeUInt32LE(0x4550, 64); bytes.writeUInt16LE(0x14c, 68);
@@ -9,4 +10,10 @@ const broken = Buffer.from(bytes); broken.writeUInt32LE(0xffffffff, 60);
 assert.throws(() => validatePE(broken), /PE/);
 assert.throws(() => validatePE(bytes, 1048577), /Size/);
 assert.equal(validatePE(bytes).size, 128);
-console.log('asset-acquisition: 6 verificações concluídas.');
+assert.deepEqual(githubAPIHeaders('https://api.github.com/repos/example/public',{}),[]);
+const env={GH_TOKEN:'test-only-not-a-secret'};
+assert.deepEqual(githubAPIHeaders('https://api.github.com/repos/example/public',env),['-H','Authorization: Bearer test-only-not-a-secret']);
+assert.deepEqual(githubAPIHeaders('http://api.github.com/repos/example/public',env),[]);
+assert.deepEqual(githubAPIHeaders('https://api.github.com.evil.invalid',env),[]);
+assert.deepEqual(githubAPIHeaders('https://github.com/example/public',env),[]);
+console.log('asset-acquisition: 11 verificações concluídas.');

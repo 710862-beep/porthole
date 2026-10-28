@@ -1,3 +1,4 @@
+import { githubAPIHeaders } from './github-api-auth.mjs';
 /** Authorized acquisition alternatives. Never disables TLS or conceals synthetic provenance. */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +15,7 @@ function request(url, binary = false) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'porthole-api-'));
   try {
     const file = path.join(tmp,'payload');
-    const run = spawnSync('curl', ['-sS', '-L', '--fail-with-body', '--connect-timeout', '10', '--max-time', '45', '--max-filesize', '67108864', '--proto', '=https', '--proto-redir', '=https', '-H', `Accept: ${item.accept}`, '-H', 'X-GitHub-Api-Version: 2022-11-28', '-o', file, '-w', '%{http_code}\n%{url_effective}', url], { encoding: 'utf8', timeout: 50000 });
+    const run = spawnSync('curl', [...githubAPIHeaders(url), '-sS', '-L', '--fail-with-body', '--connect-timeout', '10', '--max-time', '45', '--max-filesize', '67108864', '--proto', '=https', '--proto-redir', '=https', '-H', `Accept: ${item.accept}`, '-H', 'X-GitHub-Api-Version: 2022-11-28', '-o', file, '-w', '%{http_code}\n%{url_effective}', url], { encoding: 'utf8', timeout: 50000 });
     const [code, finalUrl] = (run.stdout || '').split('\n'); item.httpStatus = Number(code)||null; item.finalUrl = finalUrl;
     if (run.status !== 0) throw new Error(run.stderr || run.error?.message || `exit ${run.status}`);
     return fs.readFileSync(file);
@@ -49,6 +50,15 @@ for (const [repo,match,name,zip] of [
     if(data.status!==0) throw new Error('ZIP member read failed');
     save(name,data.stdout,{url:asset.url,tag:release.tag_name,member});
   } finally {fs.rmSync(tmp,{recursive:true,force:true});}
+});
+// Deterministic, identified public mirror: search results are not stable inputs.
+task('pinned DOOM95 mirror blob',()=>{
+  if(manifest.assets.some(a=>a.path==='tests/assets/games/doom95.exe'))return;
+  const url='https://api.github.com/repos/mshoger/doom95/git/blobs/650051f2ec90a61385acb8fec4ce57444b7e4d94';
+  const blob=json(url);if(blob.encoding!=='base64')throw Error('Expected base64 Git blob');
+  const bytes=Buffer.from(blob.content,'base64');
+  if(crypto.createHash('sha256').update(bytes).digest('hex')!=='209aaa8f56e982ad21cad48d853e6a926900062f8f46757c649ccc7e2249dec8')throw Error('Pinned DOOM95 checksum mismatch');
+  save('games/doom95.exe',bytes,{url,repository:'mshoger/doom95',provenance:'public mirror; not authenticated official distribution'});
 });
 // Bounded and explicit search, not a claim to have exhausted all public forks.
 for(const [query,basename,name,min] of [

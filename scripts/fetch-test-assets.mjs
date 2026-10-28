@@ -1,3 +1,4 @@
+import { githubAPIHeaders } from './github-api-auth.mjs';
 /** Acquisition only: downloaded programs are never executed by this script.
  * curl uses the system CA store (Node's CA store differs in some sandboxes).
  */
@@ -24,7 +25,7 @@ function download(url) {
   const attempt = { url };
   manifest.attempts.push(attempt);
   try {
-    const r = spawnSync('curl', ['--location', '--fail-with-body', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '60', '--max-filesize', '67108864', '--proto', '=https', '--proto-redir', '=https', '--output', file, '--write-out', '%{http_code}', url], { encoding: 'utf8', timeout: 65000 });
+    const r = spawnSync('curl', [...githubAPIHeaders(url), '--location', '--fail-with-body', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '60', '--max-filesize', '67108864', '--proto', '=https', '--proto-redir', '=https', '--output', file, '--write-out', '%{http_code}', url], { encoding: 'utf8', timeout: 65000 });
     attempt.httpStatus = Number(r.stdout) || null;
     if (r.status !== 0) throw new Error(r.error?.message || r.stderr.trim() || `curl exit ${r.status}`);
     return fs.readFileSync(file);
