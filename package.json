@@ -15,7 +15,11 @@
     "fetch:fallbacks": "node scripts/fetch-with-fallbacks.mjs",
     "build:synthetic": "node scripts/build-synthetic.mjs",
     "test:synthetic": "node scripts/run-synthetic.mjs",
-    "build:wasm": "bash scripts/rebuild-wasm.sh"
+    "build:wasm": "bash scripts/rebuild-wasm.sh",
+    "build:wine64": "node scripts/build-wine64-tests.mjs",
+    "test:wine64": "node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json",
+    "test:wine64:build": "node tests/wine64/run-wine64.mjs --build --report artifacts/wine64-report.json",
+    "serve:x64": "python3 -m http.server 8080 --bind 0.0.0.0"
   },
   "devDependencies": {
     "jsdom": "^24.1.3",
