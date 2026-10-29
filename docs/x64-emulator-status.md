@@ -65,6 +65,38 @@ subtests themselves have not started. `__getmainargs` receives `argc == 2` (the 
 `[0x430044]/[0x430048]` triple in `fault_snapshot()` and watch the printf path - `__stdio_common_vfprintf`
 is already HLE'd, so the exact format string that reaches it identifies the branch.
 
+### Subtest results (measured, run 40974146382)
+
+The CRTs now reach `main` and **run the real subtests**:
+
+| Fixture / subtest | Verdict | Instructions | Guest console |
+| --- | --- | --- | --- |
+| `user32_test.exe uitools` | **PASS** (exit 0) | 5 935 | `uitools: 42 tests executed (0 failures), 0 skipped` |
+| `kernel32_test.exe power` | **PASS** (exit 0) | 1 529 | `power: 5 tests executed (0 failures), 0 skipped` |
+| `user32_test.exe wsprintf` | 31 failures (exit 31) | 25 532 | `wsprintf.c:83 zero padded negative value failure: buf=[0000000000]` |
+| `kernel32_test.exe drive` | 2+ failures, then `unmapped thunk` | 17 456 | `drive.c:64 got 1 for drive spec 'C:'` |
+| `kernel32_test.exe directory` | failures, then `unmapped thunk` | 14 846 | `CreateDirectoryA(C:\Windows\System32): ret=1 err=3` |
+| `kernel32_test.exe environ` | `unmapped thunk 0x7ff00000f2a0` | 1 039 | - |
+| `kernel32_test.exe atom` | budget exhausted (60 000) | 60 000 | - |
+| `d3d12_test.exe d3d12` | access violation at 0x0 | 1 005 | call through a NULL vtable slot |
+| `porthole_x64_plan_test.exe x64_plan` | access violation at 0x0 | 13 688 | `CreateFileW on C:\Game failed: err=3` |
+
+### First three semantic blockers, with the exact API
+
+1. **`wsprintfA` / `wsprintfW` (user32.dll)** - 31 failures. `wsprintfA` with
+   `"%010d", -12345` produces `0000000000`; the length probe (`buf=NULL`) returns 1 instead of the
+   full expanded length, so the caller's "wrong result [0]" comparisons all fail. The HLE formatter
+   needs the Win32 subset: `-`/`0`/`+`/` ` flags, width, precision, `%I64d`, `%s`, `%c`, `%x`, `%p`.
+2. **`CreateFileW` on `C:\`** - `ERROR_PATH_NOT_FOUND (3)` where Wine expects sharing/access
+   errors, plus `GetDriveTypeA("C:")` returning 1 instead of `DRIVE_FIXED (3)`, and
+   `CreateDirectoryA("C:\\Windows\\System32")` returning 1/err 3.
+3. **`unmapped thunk 0x7ff00000_____`** - a call into the HLE region whose slot was never
+   registered: `GetProcAddress` hands the guest a thunk for an export that `dispatch` does not
+   implement, so the driver cannot resolve `(dll, symbol)` for that RIP.
+
+`atom` exhausting 60 000 instructions without a fault is a *livelock*, not a crash: the guest is
+looping on a `GetAtomNameA` truncation rule that our HLE answers inconsistently.
+
 ## How the trace is produced
 
 `rust/porthole-x64-wasm/src/bin/xtrace.rs` (native, no wasm needed) plus
