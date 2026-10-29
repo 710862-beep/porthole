@@ -1553,6 +1553,7 @@ impl Win32Kernel {
                         }
                         let truncate = create_disposition == 2 || create_disposition == 5;
                         let key = path.to_ascii_uppercase();
+                        let handle_key = key.clone();
                         let entry = self.files.entry(key).or_insert_with(|| GuestFile {
                             path: path.clone(),
                             data: Vec::new(),
@@ -1567,7 +1568,7 @@ impl Win32Kernel {
                         entry.position = 0;
                         entry.handle_count += 1;
                         let handle = self.alloc_handle();
-                        self.handle_map.insert(handle, key.clone());
+                        self.handle_map.insert(handle, handle_key);
                         handle
                     }
                 }
