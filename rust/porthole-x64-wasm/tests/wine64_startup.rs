@@ -73,8 +73,14 @@ fn user32_crt_startup_stack_stays_symmetric() {
         rsp > MAIN_STACK_BOTTOM && rsp < MAIN_STACK_TOP,
         "RSP left the guest stack region: 0x{rsp:x}\n{snapshot}"
     );
+    // Regression: the `_initterm` upcall used to resume into `.text` interpreted as a function
+    // pointer, faulting after exactly 85 instructions at 0x100c70xxxxxx.
     assert!(
-        insns >= 85,
+        !outcome.contains("0x100c7"),
+        "guest jumped into the phantom 0x100c7... range: {outcome}\n{snapshot}"
+    );
+    assert!(
+        insns >= 200,
         "guest stopped after only {insns} instructions: {outcome}\n{snapshot}"
     );
 }

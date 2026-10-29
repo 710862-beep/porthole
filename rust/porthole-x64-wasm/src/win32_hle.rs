@@ -1948,13 +1948,13 @@ impl Win32Kernel {
                     ..
                 }) = self.upcall_stack.last().cloned()
                 {
-                    if let Some(target) =
-                        self.find_next_initterm_fn(vmm, next_slot, saved_end, next_slot)
+                    if let Some((slot, target)) =
+                        self.find_next_initterm_fn(vmm, next_slot, saved_end)
                     {
                         if let Some(UpcallState::Initterm { next_slot: ns, .. }) =
                             self.upcall_stack.last_mut()
                         {
-                            *ns = target + 8;
+                            *ns = slot + 8;
                         }
                         return HleAction::Upcall {
                             target,
@@ -1970,10 +1970,10 @@ impl Win32Kernel {
                 if start == 0 || end <= start {
                     return HleAction::Return(0);
                 }
-                if let Some(target) = self.find_next_initterm_fn(vmm, start, end, start) {
+                if let Some((slot, target)) = self.find_next_initterm_fn(vmm, start, end) {
                     self.upcall_stack.push(UpcallState::Initterm {
                         start,
-                        next_slot: target + 8,
+                        next_slot: slot + 8,
                         end,
                         resume_rip: call_rip,
                     });
@@ -2782,11 +2782,11 @@ impl Win32Kernel {
                 resume_rip,
                 ..
             }) => {
-                if let Some(next) = self.find_next_initterm_fn(vmm, next_slot, end, next_slot) {
+                if let Some((slot, next)) = self.find_next_initterm_fn(vmm, next_slot, end) {
                     if let Some(UpcallState::Initterm { next_slot: ns, .. }) =
                         self.upcall_stack.last_mut()
                     {
-                        *ns = next + 8;
+                        *ns = slot + 8;
                     }
                     return Some(UpcallStep::Call(next));
                 }
@@ -2798,18 +2798,26 @@ impl Win32Kernel {
         }
     }
 
+    /// Scans a CRT initializer table (`__xc_a`..`__xc_z`) for the next callable entry.
+    ///
+    /// Returns `(slot_va, function_va)`. The *slot* is the iteration cursor: the original code
+    /// advanced with `fn_ptr + 8`, which walks into `.text` after the first constructor and then
+    /// interprets instruction bytes as a function pointer (the `0x100c70...` jumps). Entries that
+    /// do not land in a mapped region are skipped instead of being called.
     fn find_next_initterm_fn(
         &self,
         vmm: &mut VirtualMemoryManager,
         from: u64,
         end: u64,
-        _hint: u64,
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64)> {
         let mut p = from;
         while p + 8 <= end {
-            let fn_ptr = vmm.read_u64(p).ok()?;
-            if fn_ptr != 0 {
-                return Some(fn_ptr);
+            let fn_ptr = match vmm.read_u64(p) {
+                Ok(v) => v,
+                Err(_) => return None,
+            };
+            if fn_ptr != 0 && vmm.find_region(fn_ptr).is_some() {
+                return Some((p, fn_ptr));
             }
             p += 8;
         }
