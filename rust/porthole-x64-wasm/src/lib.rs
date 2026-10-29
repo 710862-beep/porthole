@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use wasm_bindgen::prelude::*;
 
 pub mod cpu;
@@ -14,7 +16,7 @@ use jit::HybridWasmJit;
 use pe64::{load_pe64_image, init_teb, LoadedPe64Info, MAIN_STACK_BOTTOM, MAIN_STACK_TOP,
            MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
 use vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, PAGE_READWRITE};
-use win32_hle::{HleAction, Win32Kernel};
+use win32_hle::{HleAction, UpcallStep, Win32Kernel};
 
 /// Extra pseudo-thunk used as the return address of HLE upcalls.
 pub const UPCALL_RETURN_THUNK: u64 = THUNK_BASE + THUNK_REGION_SIZE - THUNK_STRIDE;
@@ -44,6 +46,10 @@ pub struct BrowserX64Emulator {
     pending_upcall: bool,
     frames_presented_seen: u64,
     console: Vec<u8>,
+    /// Instruction-level execution trace (see [`BrowserX64Emulator::enable_trace`]).
+    trace: Vec<String>,
+    trace_max: usize,
+    trace_enabled: bool,
 }
 
 #[wasm_bindgen]
@@ -61,6 +67,9 @@ impl BrowserX64Emulator {
             pending_upcall: false,
             frames_presented_seen: 0,
             console: Vec::new(),
+            trace: Vec::new(),
+            trace_max: 0,
+            trace_enabled: false,
         }
     }
 
@@ -106,30 +115,41 @@ impl BrowserX64Emulator {
         let vmm = &mut self.vmm;
         let jit = &mut self.jit;
 
-        let (info, bindings) =
-            load_pe64_image(bytes, vmm, jit, |dll: &str, symbol: &str, ordinal: u16| {
-                // Deterministic per-import thunk in the HLE region; every import resolves to a
-                // RET stub that the dispatcher recognises by RIP.
-                let key_hash = thunk_hash(dll, symbol, ordinal);
-                THUNK_BASE + 0x1000 + (key_hash % 4096) as u64 * THUNK_STRIDE
-            })
-            .map_err(|e| JsValue::from_str(&e))?;
+        // One thunk slot per *distinct* import, assigned in import-table order. Hashing the
+        // (dll,symbol) pair into a 4096-slot table used to alias colliding imports onto the same
+        // stub (188 imports over 4096 slots is ~4 expected collisions), which silently dispatched
+        // calls to the wrong Win32 API. The BTreeMap keeps the assignment deterministic.
+        let mut thunk_slots: BTreeMap<(String, String, u16), u64> = BTreeMap::new();
+        let mut next_import_thunk = THUNK_BASE + 0x1000;
+        let (info, bindings) = load_pe64_image(bytes, vmm, jit, |dll: &str, symbol: &str, ordinal: u16| {
+            let key = (dll.to_string(), symbol.to_string(), ordinal);
+            if let Some(&slot) = thunk_slots.get(&key) {
+                return slot;
+            }
+            let slot = next_import_thunk;
+            next_import_thunk += THUNK_STRIDE;
+            thunk_slots.insert(key, slot);
+            slot
+        })
+        .map_err(|e| JsValue::from_str(&e))?;
+        let thunk_slot_count = thunk_slots.len();
 
-        // Fill each bound thunk with RET and record the (dll,symbol) -> thunk mapping used by
-        // the dispatcher.
-        for b in &bindings {
-            let thunk = THUNK_BASE + 0x1000 + (thunk_hash(&b.dll, &b.symbol, b.ordinal) % 4096) as u64 * THUNK_STRIDE;
-            let _ = self.vmm.host_write_bytes(thunk, &[0xC3]);
+        // Fill each bound thunk with RET and record the thunk -> (dll,symbol) mapping used by the
+        // dispatcher when RIP enters the HLE region.
+        for ((dll, symbol, ordinal), thunk) in &thunk_slots {
+            let _ = self.vmm.host_write_bytes(*thunk, &[0xC3]);
             self.kernel
-                .remember_import_thunk(thunk, &b.dll, &b.symbol, b.ordinal);
+                .remember_import_thunk(*thunk, dll, symbol, *ordinal);
         }
-        let _ = kernel_thunk_pool;
+        let _ = (kernel_thunk_pool, &bindings);
 
         // Entry state: Win64 startup stack with the return address pointing at the exit thunk.
         self.cpu = CpuState::new();
         self.cpu.gs_base = MAIN_TEB_ADDR;
         self.cpu.rip = info.entry_point;
-        self.cpu.gpr[4] = MAIN_STACK_TOP - 0x100; // RSP
+        // Win64 ABI: at the first instruction of a function RSP % 16 == 8 (the call pushed the
+        // return address). MAIN_STACK_TOP is 16-byte aligned, so bias by 0x108 rather than 0x100.
+        self.cpu.gpr[4] = MAIN_STACK_TOP - 0x108; // RSP
         self.cpu.gpr[5] = 0; // RBP
         let rsp = self.cpu.gpr[4];
         let _ = self.vmm.write_u64(rsp, UPCALL_RETURN_THUNK);
@@ -156,7 +176,7 @@ impl BrowserX64Emulator {
             info.text_size,
             info.import_count,
             info.aot_blocks_compiled,
-            bindings.len()
+            thunk_slot_count
         );
         self.loaded = Some(info);
         self.status = RunStatus::Running;
@@ -177,28 +197,61 @@ impl BrowserX64Emulator {
 
         let mut executed = 0u32;
         while executed < max_instructions {
+            // --- upcall sentinel: a guest function that the HLE invoked has returned -------------
             if self.cpu.rip == UPCALL_RETURN_THUNK {
-                if let Some((target, _)) = self.kernel.finish_upcall(&mut self.vmm) {
-                    let rsp = self.cpu.gpr[4];
-                    let _ = self.vmm.write_u64(rsp, UPCALL_RETURN_THUNK);
-                    self.cpu.rip = target;
-                    self.pending_upcall = true;
-                    continue;
+                match self.kernel.finish_upcall(&mut self.vmm) {
+                    Some(UpcallStep::Call(target)) => {
+                        // The upcalled function's own `ret` already popped the sentinel, so RSP is
+                        // back at the interrupted HLE stub's frame. Stage a *new* sentinel one slot
+                        // below it and enter the next guest constructor.
+                        let rsp = self.cpu.gpr[4];
+                        let ret_slot = rsp.wrapping_sub(8);
+                        let _ = self.vmm.write_u64(ret_slot, UPCALL_RETURN_THUNK);
+                        self.trace_event(format!(
+                            "U sentinel->call 0x{:x} rsp=0x{:x}->0x{:x}",
+                            target, rsp, ret_slot
+                        ));
+                        self.cpu.gpr[4] = ret_slot;
+                        self.cpu.rip = target;
+                        self.pending_upcall = true;
+                        continue;
+                    }
+                    Some(UpcallStep::Resume(resume_rip)) => {
+                        // Re-enter the API stub with the stack untouched: this time its handler
+                        // returns a plain value and the driver pops the guest's real return
+                        // address from [rsp] as usual.
+                        self.trace_event(format!(
+                            "R sentinel->resume 0x{:x} rsp=0x{:x}",
+                            resume_rip, self.cpu.gpr[4]
+                        ));
+                        self.cpu.rip = resume_rip;
+                        self.pending_upcall = false;
+                        continue;
+                    }
+                    None => {
+                        // No upcall in flight: the process entry point returned.
+                        let code = self.kernel.exit_code.unwrap_or(0);
+                        self.status = RunStatus::ExitProcess(code);
+                        self.trace_event(format!("E entry returned, exit {code}"));
+                        return format!("exit:{}", code);
+                    }
                 }
-                // The entry point returned: treat as process exit 0 unless already set.
-                let code = self.kernel.exit_code.unwrap_or(0);
-                self.status = RunStatus::ExitProcess(code);
-                return format!("exit:{}", code);
             }
 
             let insn_rip = self.cpu.rip;
+            let rsp_before = self.cpu.gpr[4];
+            self.vmm.current_rip = insn_rip;
 
-            // HLE thunk range?
+            // --- HLE thunk range ---------------------------------------------------------------
             if insn_rip >= THUNK_BASE && insn_rip < THUNK_BASE + THUNK_REGION_SIZE {
                 match self.kernel.lookup_import_thunk(insn_rip) {
                     Some((dll, symbol, ordinal)) => {
                         let args = self.capture_args();
                         let rsp = self.cpu.gpr[4];
+                        // Snapshot the return address *before* the call, so a corrupted slot shows
+                        // up as an explicit ret_slot=0x... value rather than an unexplained jump.
+                        let ret_slot_addr = rsp;
+                        let ret_slot_val = self.vmm.read_u64(ret_slot_addr).unwrap_or(0);
                         let action = self.kernel.dispatch(
                             &mut self.vmm,
                             &dll,
@@ -212,24 +265,35 @@ impl BrowserX64Emulator {
                             HleAction::Return(rax) => {
                                 self.cpu.gpr[0] = rax;
                                 let ret = self.vmm.read_u64(rsp).unwrap_or(0);
-                                self.cpu.gpr[4] = rsp + 8;
+                                self.cpu.gpr[4] = rsp.wrapping_add(8);
                                 self.cpu.rip = ret;
                                 self.cpu.instructions_executed =
                                     self.cpu.instructions_executed.wrapping_add(1);
+                                self.trace_event(format!(
+                                    "H 0x{:x} {}!{} rsp=0x{:x} [rsp]=0x{:x} -> rax=0x{:x} ret=0x{:x}",
+                                    insn_rip, dll, symbol, rsp, ret_slot_val, rax, ret
+                                ));
+                                self.drain_watch();
                                 executed += 1;
                                 continue;
                             }
-                            HleAction::Upcall { target, .. } => {
-                                let ret_slot = rsp - 8;
+                            HleAction::Upcall { target, resume_rip, .. } => {
+                                let ret_slot = rsp.wrapping_sub(8);
                                 let _ = self.vmm.write_u64(ret_slot, UPCALL_RETURN_THUNK);
                                 self.cpu.gpr[4] = ret_slot;
                                 self.cpu.rip = target;
                                 self.pending_upcall = true;
+                                self.trace_event(format!(
+                                    "U 0x{:x} {}!{} upcall -> 0x{:x} resume=0x{:x} rsp=0x{:x}->0x{:x}",
+                                    insn_rip, dll, symbol, target, resume_rip, rsp, ret_slot
+                                ));
+                                self.drain_watch();
                                 continue;
                             }
                             HleAction::ExitProcess(code) => {
                                 self.status = RunStatus::ExitProcess(code);
                                 self.console.extend_from_slice(&self.kernel.drain_stdout());
+                                self.trace_event(format!("E ExitProcess({code}) from {symbol}"));
                                 return format!("exit:{}", code);
                             }
                         }
@@ -257,21 +321,29 @@ impl BrowserX64Emulator {
                             };
                             self.cpu.gpr[0] = result;
                             let ret = self.vmm.read_u64(rsp).unwrap_or(0);
-                            self.cpu.gpr[4] = rsp + 8;
+                            self.cpu.gpr[4] = rsp.wrapping_add(8);
                             self.cpu.rip = ret;
+                            self.trace_event(format!(
+                                "H d3d12 0x{:x} slot={} rsp=0x{:x} -> rax=0x{:x} ret=0x{:x}",
+                                insn_rip, slot, rsp, result, ret
+                            ));
                             executed += 1;
                             continue;
                         }
                         self.status = RunStatus::Fault;
                         self.fault_message = format!("unmapped thunk 0x{insn_rip:x}");
+                        self.trace_event(format!("F unmapped thunk 0x{insn_rip:x} rsp=0x{rsp_before:x}"));
                         return format!("fault:{}", self.fault_message);
                     }
                 }
             }
 
-            match self.cpu.step_one(&mut self.vmm) {
+            // --- ordinary guest instruction ----------------------------------------------------
+            let outcome = self.cpu.step_one(&mut self.vmm);
+            match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {
                     executed += 1;
+                    self.trace_instruction(insn_rip, rsp_before);
                     self.maybe_jit_compile(insn_rip);
                 }
                 Ok(ExecOutcome::Fault(msg)) => {
@@ -285,9 +357,15 @@ impl BrowserX64Emulator {
                     }
                     self.status = RunStatus::Fault;
                     self.fault_message = msg;
+                    self.trace_event(format!(
+                        "F decode/exec fault at 0x{insn_rip:x}: {}",
+                        self.fault_message
+                    ));
                     return format!("fault:{}", self.fault_message);
                 }
                 Err(MemoryTrap::PageFault(addr)) => {
+                    self.trace_event(format!("P page-fault 0x{addr:x} at 0x{insn_rip:x}"));
+                    self.trace_instruction(insn_rip, rsp_before);
                     return format!("page-fault:{}", addr);
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
@@ -297,6 +375,11 @@ impl BrowserX64Emulator {
                         self.cpu.gpr[0], self.cpu.gpr[1], self.cpu.gpr[2], self.cpu.gpr[4],
                         self.cpu.gs_base, self.cpu.render_rip_history()
                     );
+                    self.trace_instruction(insn_rip, rsp_before);
+                    self.trace_event(format!(
+                        "F access violation 0x{addr:x} at 0x{insn_rip:x} rsp=0x{:x}",
+                        self.cpu.gpr[4]
+                    ));
                     return format!("fault:{}", self.fault_message);
                 }
             }
@@ -310,6 +393,133 @@ impl BrowserX64Emulator {
 
         self.console.extend_from_slice(&self.kernel.drain_stdout());
         "next".to_string()
+    }
+
+    // ------------------------------------------------------------------ tracing
+
+    /// Records up to `max_entries` execution events (instructions, HLE dispatches, upcall
+    /// transitions, page faults and stores inside the optional write watch).
+    pub fn enable_trace(&mut self, max_entries: u32) {
+        self.trace.clear();
+        self.trace_max = max_entries as usize;
+        self.trace_enabled = self.trace_max > 0;
+    }
+
+    pub fn take_trace(&mut self) -> String {
+        self.trace_enabled = false;
+        std::mem::take(&mut self.trace).join("\n")
+    }
+
+    /// Appends a trace line, keeping a ring of the most recent `trace_max` events so the state
+    /// immediately *before* a fault is always available.
+    fn trace_push(&mut self, line: String) {
+        if !self.trace_enabled || self.trace_max == 0 {
+            return;
+        }
+        if self.trace.len() >= self.trace_max {
+            self.trace.remove(0);
+        }
+        self.trace.push(line);
+    }
+
+    fn trace_event(&mut self, line: String) {
+        self.trace_push(line);
+    }
+
+    fn trace_instruction(&mut self, insn_rip: u64, rsp_before: u64) {
+        if !self.trace_enabled || self.trace_max == 0 {
+            return;
+        }
+        let mut bytes = [0u8; 8];
+        let mut hex = String::new();
+        if self.vmm.host_read_bytes(insn_rip, &mut bytes).is_ok() {
+            for b in bytes {
+                hex.push_str(&format!("{b:02x}"));
+            }
+        }
+        let line = format!(
+            "I 0x{:x} rsp=0x{:x}->0x{:x} rax=0x{:x} rsi=0x{:x} rdi=0x{:x} rbp=0x{:x} bytes={}",
+            insn_rip,
+            rsp_before,
+            self.cpu.gpr[4],
+            self.cpu.gpr[0],
+            self.cpu.gpr[6],
+            self.cpu.gpr[7],
+            self.cpu.gpr[5],
+            hex
+        );
+        self.trace_push(line);
+        self.drain_watch();
+    }
+
+    /// Emits every store the VMM's data breakpoint caught since the last drain.
+    fn drain_watch(&mut self) {
+        if !self.trace_enabled || self.trace_max == 0 || self.vmm.watch_log.is_empty() {
+            return;
+        }
+        let events = std::mem::take(&mut self.vmm.watch_log);
+        for ev in events {
+            let tag = if ev.host { "host" } else { "guest" };
+            self.trace_push(format!(
+                "W 0x{:x} <- 0x{:x} len={} at 0x{:x} ({})",
+                ev.addr, ev.value, ev.len, ev.rip, tag
+            ));
+        }
+    }
+
+    /// Full register + stack + page report for the current (or last) fault. Deliberately verbose:
+    /// it is the only state that survives a `run_slice` returning `fault:`.
+    pub fn fault_snapshot(&mut self) -> String {
+        let mut out = String::new();
+        let rsp = self.cpu.gpr[4];
+        out.push_str(&format!(
+            "status={} rip=0x{:x} rflags=0x{:x} insns={}\n",
+            self.status_text(),
+            self.cpu.rip,
+            self.cpu.rflags,
+            self.cpu.instructions_executed
+        ));
+        out.push_str(&format!(
+            "rsp=0x{rsp:x} rbp=0x{:x} rax=0x{:x} rbx=0x{:x} rcx=0x{:x} rdx=0x{:x} rsi=0x{:x} rdi=0x{:x}\n",
+            self.cpu.gpr[5], self.cpu.gpr[0], self.cpu.gpr[3], self.cpu.gpr[1],
+            self.cpu.gpr[2], self.cpu.gpr[6], self.cpu.gpr[7]
+        ));
+        out.push_str(&format!(
+            "r8=0x{:x} r9=0x{:x} r10=0x{:x} r11=0x{:x} r12=0x{:x} r13=0x{:x} r14=0x{:x} r15=0x{:x} gs=0x{:x} fs=0x{:x}\n",
+            self.cpu.gpr[8], self.cpu.gpr[9], self.cpu.gpr[10], self.cpu.gpr[11],
+            self.cpu.gpr[12], self.cpu.gpr[13], self.cpu.gpr[14], self.cpu.gpr[15],
+            self.cpu.gs_base, self.cpu.fs_base
+        ));
+        out.push_str(&format!(
+            "stack page: {}\n",
+            self.vmm.describe_page(rsp)
+        ));
+        if !self.fault_message.is_empty() {
+            out.push_str(&format!("fault: {}\n", self.fault_message));
+        }
+        out.push_str("stack (32 qwords from rsp-0x40):\n");
+        let base = rsp.wrapping_sub(0x40);
+        for i in 0..32u64 {
+            let addr = base.wrapping_add(i * 8);
+            let mut buf = [0u8; 8];
+            let val = match self.vmm.host_read_bytes(addr, &mut buf) {
+                Ok(()) => u64::from_le_bytes(buf),
+                Err(_) => 0xFFFF_FFFF_FFFF_FFFF,
+            };
+            let marker = if addr == rsp {
+                "  <= rsp"
+            } else if addr == self.cpu.gpr[5] {
+                "  <= rbp"
+            } else {
+                ""
+            };
+            out.push_str(&format!("  [0x{addr:x}] 0x{val:016x}{marker}\n"));
+        }
+        out.push_str(&format!(
+            "last RIPs: {}\n",
+            self.cpu.render_rip_history()
+        ));
+        out
     }
 
     fn capture_args(&mut self) -> [u64; 10] {
@@ -344,6 +554,51 @@ impl BrowserX64Emulator {
         if self.vmm.host_read_bytes(insn_rip, &mut window).is_ok() {
             let _ = self.jit.try_compile_block(insn_rip, epoch, &window);
         }
+    }
+
+    // -------------------------------------------------------------- debugging
+
+    /// Arms a data breakpoint over `[lo, hi)`; every guest/HLE store into that window is emitted
+    /// into the execution trace as a `W` line with the value written and the writing RIP.
+    pub fn set_write_watch(&mut self, lo: u64, hi: u64, capacity: u32) {
+        self.vmm.set_write_watch(lo, hi, capacity as usize);
+    }
+
+    pub fn clear_write_watch(&mut self) {
+        self.vmm.clear_write_watch();
+    }
+
+    /// Pretty-prints one guest VA: mapping region, protection, residency, swap state and epoch.
+    pub fn describe_address(&self, addr: u64) -> String {
+        self.vmm.describe_page(addr)
+    }
+
+    pub fn stack_pointer(&self) -> u64 {
+        self.cpu.gpr[4]
+    }
+
+    pub fn register_json(&self) -> String {
+        format!(
+            "{{\"rip\":{},\"rsp\":{},\"rbp\":{},\"rax\":{},\"rbx\":{},\"rcx\":{},\"rdx\":{},\"rsi\":{},\"rdi\":{},\"r8\":{},\"r9\":{},\"r10\":{},\"r11\":{},\"r12\":{},\"r13\":{},\"r14\":{},\"r15\":{},\"rflags\":{}}}",
+            self.cpu.rip,
+            self.cpu.gpr[4],
+            self.cpu.gpr[5],
+            self.cpu.gpr[0],
+            self.cpu.gpr[3],
+            self.cpu.gpr[1],
+            self.cpu.gpr[2],
+            self.cpu.gpr[6],
+            self.cpu.gpr[7],
+            self.cpu.gpr[8],
+            self.cpu.gpr[9],
+            self.cpu.gpr[10],
+            self.cpu.gpr[11],
+            self.cpu.gpr[12],
+            self.cpu.gpr[13],
+            self.cpu.gpr[14],
+            self.cpu.gpr[15],
+            self.cpu.rflags
+        )
     }
 
     // -------------------------------------------------------------- telemetry
@@ -465,20 +720,6 @@ impl BrowserX64Emulator {
             self.status_text().replace('"', "'")
         )
     }
-}
-
-fn thunk_hash(dll: &str, symbol: &str, ordinal: u16) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in dll
-        .bytes()
-        .chain(std::iter::once(b'!'))
-        .chain(symbol.bytes())
-        .chain(ordinal.to_le_bytes())
-    {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h
 }
 
 #[cfg(test)]

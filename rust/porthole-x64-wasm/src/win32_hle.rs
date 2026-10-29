@@ -60,12 +60,31 @@ pub const CP_UTF8: u32 = 65001;
 pub const ANSI_CODEPAGE: u32 = 1252;
 
 /// Marker for an HLE call that must invoke a guest function before returning.
+///
+/// An upcall is a *re-entrant* HLE call: the guest called an API stub, the API needs the guest to
+/// run some code (a CRT constructor), so the driver pushes a sentinel return address and jumps into
+/// guest code. When the guest's `ret` lands on the sentinel, [`Win32Kernel::finish_upcall`] decides
+/// whether to call the next guest function ([`UpcallStep::Call`]) or to give control back to the
+/// API handler ([`UpcallStep::Resume`]) so the original call can finally pop its own return
+/// address. `resume_rip` is that stub address; it is never overwritten by the upcall machinery.
 #[derive(Debug, Clone)]
 pub enum UpcallState {
     Initterm {
+        start: u64,
         next_slot: u64,
         end: u64,
+        resume_rip: u64,
     },
+}
+
+/// Next action for the driver after an upcalled guest function returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpcallStep {
+    /// Push a fresh sentinel and call this guest function.
+    Call(u64),
+    /// All guest work for this API is done: re-enter the API stub at `resume_rip` with the stack
+    /// frame exactly as the original guest `call` left it.
+    Resume(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -1917,6 +1936,35 @@ impl Win32Kernel {
             | "_crt_atexit" | "_crt_at_quick_exit" | "_tzset" => 0,
             "_initterm" | "_initterm_e" => {
                 // Iterate the constructor table, calling each non-null pointer.
+                //
+                // The handler is re-entered through the same thunk after every upcalled
+                // constructor returns, and the constructor is free to clobber RCX/RDX, so the
+                // in-flight frame (not the argument registers) is the source of truth while an
+                // iteration is suspended.
+                if let Some(UpcallState::Initterm {
+                    next_slot,
+                    end: saved_end,
+                    resume_rip,
+                    ..
+                }) = self.upcall_stack.last().cloned()
+                {
+                    if let Some(target) =
+                        self.find_next_initterm_fn(vmm, next_slot, saved_end, next_slot)
+                    {
+                        if let Some(UpcallState::Initterm { next_slot: ns, .. }) =
+                            self.upcall_stack.last_mut()
+                        {
+                            *ns = target + 8;
+                        }
+                        return HleAction::Upcall {
+                            target,
+                            resume_rip,
+                            rax: 0,
+                        };
+                    }
+                    self.upcall_stack.pop();
+                    return HleAction::Return(0);
+                }
                 let start = a0;
                 let end = a1;
                 if start == 0 || end <= start {
@@ -1924,8 +1972,10 @@ impl Win32Kernel {
                 }
                 if let Some(target) = self.find_next_initterm_fn(vmm, start, end, start) {
                     self.upcall_stack.push(UpcallState::Initterm {
+                        start,
                         next_slot: target + 8,
                         end,
+                        resume_rip: call_rip,
                     });
                     return HleAction::Upcall {
                         target,
@@ -1933,7 +1983,7 @@ impl Win32Kernel {
                         rax: 0,
                     };
                 }
-                0
+                HleAction::Return(0)
             }
             "__acrt_iob_func" => {
                 // Return stable unique FILE* sentinels for stdin/stdout/stderr (index in a1).
@@ -2721,24 +2771,30 @@ impl Win32Kernel {
         self.upcall_stack.last().cloned()
     }
 
-    pub fn finish_upcall(&mut self, vmm: &mut VirtualMemoryManager) -> Option<(u64, u64)> {
-        loop {
-            let top = self.upcall_stack.last().cloned();
-            match top {
-                Some(UpcallState::Initterm { next_slot, end }) => {
-                    if let Some(next) = self.find_next_initterm_fn(vmm, next_slot, end, next_slot) {
-                        if let Some(UpcallState::Initterm { next_slot: ns, .. }) =
-                            self.upcall_stack.last_mut()
-                        {
-                            *ns = next + 8;
-                        }
-                        return Some((next, 0));
+    /// Called when the guest returned into the upcall sentinel. Either call the next guest
+    /// constructor or resume the interrupted HLE stub; `None` only when no upcall is in flight
+    /// (i.e. the process entry point itself returned).
+    pub fn finish_upcall(&mut self, vmm: &mut VirtualMemoryManager) -> Option<UpcallStep> {
+        match self.upcall_stack.last().cloned() {
+            Some(UpcallState::Initterm {
+                next_slot,
+                end,
+                resume_rip,
+                ..
+            }) => {
+                if let Some(next) = self.find_next_initterm_fn(vmm, next_slot, end, next_slot) {
+                    if let Some(UpcallState::Initterm { next_slot: ns, .. }) =
+                        self.upcall_stack.last_mut()
+                    {
+                        *ns = next + 8;
                     }
-                    self.upcall_stack.pop();
-                    return None;
+                    return Some(UpcallStep::Call(next));
                 }
-                None => return None,
+                // Keep the frame: the re-entered `_initterm` handler needs it to know that the
+                // iteration is finished (and pops it itself before returning).
+                Some(UpcallStep::Resume(resume_rip))
             }
+            None => None,
         }
     }
 

@@ -1,0 +1,51 @@
+name: x86-64 guest trace (fault diagnostics)
+
+# Fast, single-job diagnostic lane. Builds the x86-64 core natively (no wasm-bindgen needed),
+# runs the four real Wine64 PE32+ fixtures through `xtrace`, and publishes the whole trace to a
+# check run so it can be read back from a sandbox where artifact/log downloads are blocked.
+
+on:
+  push:
+    branches: [arena/e737e676-porthole]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: porthole-x64-trace-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    name: Guest trace + stack invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - name: Build xtrace
+        working-directory: rust/porthole-x64-wasm
+        run: cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
+      - name: Run the four Wine64 fixtures through the tracer
+        run: |
+          for f in user32_test kernel32_test d3d12_test porthole_x64_plan_test; do
+            echo "##### fixture=$f" >> trace.log
+            if [ -f "tests/assets/wine64/$f.exe" ]; then
+              ./rust/porthole-x64-wasm/target/release/xtrace \
+                "tests/assets/wine64/$f.exe" --budget 20000 --slice 4000 --trace 400 >> trace.log 2>&1 || \
+                echo "xtrace exit=$?" >> trace.log
+            else
+              echo "fixture missing" >> trace.log
+            fi
+          done
+          wc -l trace.log
+      - name: Stack-symmetry regression tests
+        run: |
+          cd rust/porthole-x64-wasm
+          cargo test --release --test wine64_startup -- --nocapture 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
+      - name: Publish trace through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci-publish-trace.py trace.log

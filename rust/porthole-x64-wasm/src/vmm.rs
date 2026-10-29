@@ -52,6 +52,21 @@ struct PageEntry {
     last_used_gen: u64,
 }
 
+/// One observed store inside the watched VA window (see [`VirtualMemoryManager::set_write_watch`]).
+///
+/// `rip` is the guest instruction pointer that was executing when the store happened, supplied by
+/// the CPU driver through [`VirtualMemoryManager::current_rip`]. This turns the VMM into a
+/// data-breakpoint engine: it answers "who overwrote this stack slot, with what value".
+#[derive(Debug, Clone, Copy)]
+pub struct WatchEvent {
+    pub rip: u64,
+    pub addr: u64,
+    pub len: u64,
+    pub value: u64,
+    /// `true` when the store came from loader/HLE privileged code rather than a guest instruction.
+    pub host: bool,
+}
+
 /// Phase 2: NVMe-backed VirtualMemoryManager.
 ///
 /// Manages a 64-bit sparse virtual address space (supporting 16 GB–64 GB+ guest VA ranges)
@@ -69,6 +84,12 @@ pub struct VirtualMemoryManager {
     pub pages_evicted: u64,
     pub pages_faulted_in: u64,
     pub dirty_pages_queued: u64,
+    /// Guest RIP stamped onto [`WatchEvent`]s; maintained by the execution driver.
+    pub current_rip: u64,
+    watch_lo: u64,
+    watch_hi: u64,
+    watch_len: usize,
+    pub watch_log: Vec<WatchEvent>,
 }
 
 impl VirtualMemoryManager {
@@ -86,7 +107,77 @@ impl VirtualMemoryManager {
             pages_evicted: 0,
             pages_faulted_in: 0,
             dirty_pages_queued: 0,
+            current_rip: 0,
+            watch_lo: 0,
+            watch_hi: 0,
+            watch_len: 0,
+            watch_log: Vec::new(),
         }
+    }
+
+    /// Arms a data breakpoint over `[lo, hi)`. Every overlapping store is appended to
+    /// [`Self::watch_log`] (capped at `capacity` entries) with the value written and the RIP that
+    /// wrote it. `capacity == 0` disables the watch.
+    pub fn set_write_watch(&mut self, lo: u64, hi: u64, capacity: usize) {
+        self.watch_lo = lo;
+        self.watch_hi = hi;
+        self.watch_len = capacity;
+        self.watch_log.clear();
+        self.watch_log.reserve(capacity.min(4096));
+    }
+
+    pub fn clear_write_watch(&mut self) {
+        self.watch_lo = 0;
+        self.watch_hi = 0;
+        self.watch_len = 0;
+        self.watch_log.clear();
+    }
+
+    #[inline]
+    fn note_write(&mut self, addr: u64, data: &[u8], host: bool) {
+        if self.watch_len == 0 || self.watch_log.len() >= self.watch_len {
+            return;
+        }
+        let end = addr.wrapping_add(data.len() as u64);
+        if end <= self.watch_lo || addr >= self.watch_hi {
+            return;
+        }
+        let mut head = [0u8; 8];
+        let n = data.len().min(8);
+        head[..n].copy_from_slice(&data[..n]);
+        self.watch_log.push(WatchEvent {
+            rip: self.current_rip,
+            addr,
+            len: data.len() as u64,
+            value: u64::from_le_bytes(head),
+            host,
+        });
+    }
+
+    /// Human-readable residency/protection report for one page, used by fault snapshots.
+    pub fn describe_page(&self, addr: u64) -> String {
+        let page_base = Self::align_down(addr);
+        let region = self.find_region(page_base);
+        let resident = self.page_cache.get(&page_base).map(|e| {
+            format!(
+                "resident dirty={} pinned={} gen={}",
+                e.dirty, e.pinned, e.last_used_gen
+            )
+        });
+        format!(
+            "page=0x{:x} region={} swapped={} resident={} epoch={}",
+            page_base,
+            match region {
+                Some(r) => format!(
+                    "0x{:x}+0x{:x} state=0x{:x} prot=0x{:x} type=0x{:x}",
+                    r.base, r.size, r.state, r.protect, r.mem_type
+                ),
+                None => "UNMAPPED".to_string(),
+            },
+            self.swapped_out_pages.contains(&page_base),
+            resident.unwrap_or_else(|| "absent".to_string()),
+            self.page_write_epoch(page_base)
+        )
     }
 
     pub fn set_max_resident_pages(&mut self, max_pages: usize) {
@@ -595,6 +686,7 @@ impl VirtualMemoryManager {
         if data.is_empty() {
             return Ok(());
         }
+        self.note_write(addr, data, false);
         let first_page = Self::align_down(addr);
         let last_page = Self::align_down(addr.wrapping_add((data.len() - 1) as u64));
         if first_page == last_page {
@@ -619,6 +711,9 @@ impl VirtualMemoryManager {
 
     /// Loader/HLE privileged write (bypasses guest read-only page flags when populating PE `.rdata`/`.text`).
     pub fn host_write_bytes(&mut self, addr: u64, data: &[u8]) -> Result<(), MemoryTrap> {
+        if !data.is_empty() {
+            self.note_write(addr, data, true);
+        }
         let mut cursor = 0usize;
         while cursor < data.len() {
             let cur_va = addr.wrapping_add(cursor as u64);

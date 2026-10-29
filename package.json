@@ -19,7 +19,9 @@
     "build:wine64": "node scripts/build-wine64-tests.mjs",
     "test:wine64": "node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json",
     "test:wine64:build": "node tests/wine64/run-wine64.mjs --build --report artifacts/wine64-report.json",
-    "serve:x64": "python3 -m http.server 8080 --bind 0.0.0.0"
+    "serve:x64": "python3 -m http.server 8080 --bind 0.0.0.0",
+    "trace:x64": "cargo run --release --manifest-path rust/porthole-x64-wasm/Cargo.toml --bin xtrace --",
+    "test:x64:startup": "cargo test --release --manifest-path rust/porthole-x64-wasm/Cargo.toml --test wine64_startup -- --nocapture"
   },
   "devDependencies": {
     "jsdom": "^24.1.3",
