@@ -50,6 +50,8 @@ pub struct BrowserX64Emulator {
     trace: Vec<String>,
     trace_max: usize,
     trace_enabled: bool,
+    /// Suppress the per-instruction `I`/`W` lines so the ring buffer holds only HLE traffic.
+    hle_trace_only: bool,
 }
 
 #[wasm_bindgen]
@@ -70,6 +72,7 @@ impl BrowserX64Emulator {
             trace: Vec::new(),
             trace_max: 0,
             trace_enabled: false,
+            hle_trace_only: false,
         }
     }
 
@@ -267,6 +270,12 @@ impl BrowserX64Emulator {
                             rsp,
                             insn_rip,
                         );
+                        if !self.kernel.hle_notes.is_empty() {
+                            let notes: Vec<String> = self.kernel.hle_notes.drain(..).collect();
+                            for note in notes {
+                                self.trace_event(note);
+                            }
+                        }
                         match action {
                             HleAction::Return(rax) => {
                                 self.cpu.gpr[0] = rax;
@@ -349,7 +358,9 @@ impl BrowserX64Emulator {
             match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {
                     executed += 1;
-                    self.trace_instruction(insn_rip, rsp_before);
+                    if !self.hle_trace_only {
+                        self.trace_instruction(insn_rip, rsp_before);
+                    }
                     self.maybe_jit_compile(insn_rip);
                 }
                 Ok(ExecOutcome::Fault(msg)) => {
@@ -371,7 +382,9 @@ impl BrowserX64Emulator {
                 }
                 Err(MemoryTrap::PageFault(addr)) => {
                     self.trace_event(format!("P page-fault 0x{addr:x} at 0x{insn_rip:x}"));
-                    self.trace_instruction(insn_rip, rsp_before);
+                    if !self.hle_trace_only {
+                        self.trace_instruction(insn_rip, rsp_before);
+                    }
                     return format!("page-fault:{}", addr);
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
@@ -381,7 +394,9 @@ impl BrowserX64Emulator {
                         self.cpu.gpr[0], self.cpu.gpr[1], self.cpu.gpr[2], self.cpu.gpr[4],
                         self.cpu.gs_base, self.cpu.render_rip_history()
                     );
-                    self.trace_instruction(insn_rip, rsp_before);
+                    if !self.hle_trace_only {
+                        self.trace_instruction(insn_rip, rsp_before);
+                    }
                     self.trace_event(format!(
                         "F access violation 0x{addr:x} at 0x{insn_rip:x} rsp=0x{:x}",
                         self.cpu.gpr[4]
@@ -566,6 +581,14 @@ impl BrowserX64Emulator {
 
     /// Arms a data breakpoint over `[lo, hi)`; every guest/HLE store into that window is emitted
     /// into the execution trace as a `W` line with the value written and the writing RIP.
+    /// Keep only HLE (`H`/`U`/`R`/`E`) events in the trace ring buffer.
+    ///
+    /// A 22 000-instruction run overflows a 260-line buffer long before the interesting API call,
+    /// so the diagnostics lane can filter down to Win32 traffic and still see the whole run.
+    pub fn set_hle_trace_only(&mut self, on: bool) {
+        self.hle_trace_only = on;
+    }
+
     pub fn set_write_watch(&mut self, lo: u64, hi: u64, capacity: u32) {
         self.vmm.set_write_watch(lo, hi, capacity as usize);
     }

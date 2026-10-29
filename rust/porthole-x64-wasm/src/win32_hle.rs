@@ -236,6 +236,8 @@ pub struct Win32Kernel {
     tzname_ptr: u64,
     /// Next free slot in the `GetProcAddress` stub pool (`EXPORT_THUNK_BASE`..`EXPORT_THUNK_END`).
     export_thunk_next: u64,
+    /// Diagnostics emitted from inside an HLE handler; the driver drains these into its trace.
+    pub hle_notes: Vec<String>,
 }
 
 impl Win32Kernel {
@@ -282,6 +284,7 @@ impl Win32Kernel {
             timezone_daylight: 0,
             tzname_ptr: 0,
             export_thunk_next: 0,
+            hle_notes: Vec::new(),
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -327,6 +330,13 @@ impl Win32Kernel {
         let h = self.next_handle;
         self.next_handle += 4;
         h
+    }
+
+    /// Records a diagnostic line for the driver's trace ring buffer.
+    pub fn note(&mut self, line: String) {
+        if self.hle_notes.len() < 100_000 {
+            self.hle_notes.push(line);
+        }
     }
 
     pub fn set_last_error(&mut self, err: u32) {
@@ -634,7 +644,11 @@ impl Win32Kernel {
         id as u64
     }
 
-    /// Exact Wine `GlobalGetAtomNameA` semantics (returns 0 + ERROR_MORE_DATA on truncation).
+    /// Wine `GlobalGetAtomNameA` semantics.
+    ///
+    /// Two details matter to atom.c: the name *plus its NUL* has to fit (otherwise the call fails
+    /// with ERROR_MORE_DATA and leaves the buffer untouched, atom.c:196-206), and atom 0 is an
+    /// invalid parameter rather than an invalid handle (atom.c:198).
     fn atom_name_global(
         &mut self,
         vmm: &mut VirtualMemoryManager,
@@ -647,7 +661,7 @@ impl Win32Kernel {
             return 0;
         }
         if atom == 0 || atom > 0xFFFF {
-            self.set_last_error(ERROR_INVALID_HANDLE);
+            self.set_last_error(ERROR_INVALID_PARAMETER);
             return 0;
         }
         let name = if atom <= 0xBFFF {
@@ -656,7 +670,7 @@ impl Win32Kernel {
             match self.atoms_global.name_of(atom as u16) {
                 Some(n) => n.to_string(),
                 None => {
-                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
                     return 0;
                 }
             }
@@ -664,14 +678,13 @@ impl Win32Kernel {
         let units: Vec<u16> = name.encode_utf16().collect();
         let (bytes, _) = wide_to_mb(ANSI_CODEPAGE, &units);
         let len = bytes.len() as u64;
-        let c = len.min(count - 1) as usize;
-        let mut out = bytes[..c].to_vec();
-        out.push(0);
-        let _ = vmm.write_bytes(buffer, &out);
-        if len >= count {
+        if len + 1 > count {
             self.set_last_error(ERROR_MORE_DATA);
             return 0;
         }
+        let mut out = bytes;
+        out.push(0);
+        let _ = vmm.write_bytes(buffer, &out);
         len
     }
 
@@ -729,7 +742,7 @@ impl Win32Kernel {
             return 0;
         }
         if atom == 0 || atom > 0xFFFF {
-            self.set_last_error(ERROR_INVALID_HANDLE);
+            self.set_last_error(ERROR_INVALID_PARAMETER);
             return 0;
         }
         let name = if atom <= 0xBFFF {
@@ -743,30 +756,25 @@ impl Win32Kernel {
             match t {
                 Some(n) => n.to_string(),
                 None => {
-                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
                     return 0;
                 }
             }
         };
         let units: Vec<u16> = name.encode_utf16().collect();
         let len = units.len() as u64;
-        let c = len.min(count) as usize;
-        let mut buf = Vec::with_capacity((c + 1) * 2);
-        for u in &units[..c] {
+        if len + 1 > count {
+            self.set_last_error(ERROR_MORE_DATA);
+            return 0;
+        }
+        let mut buf = Vec::with_capacity((units.len() + 1) * 2);
+        for u in &units {
             buf.extend_from_slice(&u.to_le_bytes());
         }
-        if c < count as usize {
-            buf.extend_from_slice(&[0, 0]);
-        }
+        buf.extend_from_slice(&[0, 0]);
         let _ = vmm.write_bytes(buffer, &buf);
-        if len > count {
-            self.set_last_error(ERROR_MORE_DATA);
-            return count;
-        }
         len
     }
-
-    // --------------------------------------------------------------- misc
 
     fn drive_type(&self, path: &str) -> u32 {
         let bytes = path.as_bytes();
@@ -1380,7 +1388,11 @@ impl Win32Kernel {
                 self.drive_type(&raw) as u64
             }
             "GetDiskFreeSpaceA" | "GetDiskFreeSpaceW" => {
-                let raw = if symbol.ends_with('A') {
+                // A NULL path means "the root of the current drive", which succeeds; only the
+                // empty string is an error (drive.c:146).
+                let raw = if a0 == 0 {
+                    self.cwd.clone()
+                } else if symbol.ends_with('A') {
                     self.read_ansi(vmm, a0)
                 } else {
                     self.read_wide(vmm, a0)
@@ -2000,6 +2012,9 @@ impl Win32Kernel {
                     return HleAction::Return(0);
                 }
                 if let Some((slot, target)) = self.find_next_initterm_fn(vmm, start, end) {
+                    self.note(format!(
+                        "K _initterm start=0x{start:x} end=0x{end:x} slot=0x{slot:x} target=0x{target:x}"
+                    ));
                     self.upcall_stack.push(UpcallState::Initterm {
                         start,
                         next_slot: slot + 8,
@@ -2750,8 +2765,14 @@ impl Win32Kernel {
         if current == 0 {
             return 0;
         }
-        if start == 0 || start > current {
-            return current - 1;
+        // CharPrevA/CharPrevExA saturate at the start of the buffer: when `current` is the first
+        // byte the answer is `current` itself, not the byte before the string
+        // (wsprintf.c:318/323 caught the off-by-one at CHAR_MAX offset -1).
+        if start == 0 {
+            return current.wrapping_sub(1);
+        }
+        if current <= start {
+            return current;
         }
         if codepage != 0 {
             // DBCS aware: GBK (936), Big5 (950), Shift-JIS (932/949) lead byte ranges.
@@ -3105,7 +3126,11 @@ impl Win32Kernel {
                 resume_rip,
                 ..
             }) => {
-                if let Some((slot, next)) = self.find_next_initterm_fn(vmm, next_slot, end) {
+                let found = self.find_next_initterm_fn(vmm, next_slot, end);
+                self.note(format!(
+                    "K _initterm resume from=0x{next_slot:x} end=0x{end:x} found={found:?}"
+                ));
+                if let Some((slot, next)) = found {
                     if let Some(UpcallState::Initterm { next_slot: ns, .. }) =
                         self.upcall_stack.last_mut()
                     {
@@ -3113,6 +3138,7 @@ impl Win32Kernel {
                     }
                     return Some(UpcallStep::Call(next));
                 }
+
                 // Keep the frame: the re-entered `_initterm` handler needs it to know that the
                 // iteration is finished (and pops it itself before returning).
                 Some(UpcallStep::Resume(resume_rip))
@@ -3123,23 +3149,43 @@ impl Win32Kernel {
 
     /// Scans a CRT initializer table (`__xc_a`..`__xc_z`) for the next callable entry.
     ///
-    /// Returns `(slot_va, function_va)`. The *slot* is the iteration cursor: the original code
-    /// advanced with `fn_ptr + 8`, which walks into `.text` after the first constructor and then
-    /// interprets instruction bytes as a function pointer (the `0x100c70...` jumps). Entries that
-    /// do not land in a mapped region are skipped instead of being called.
+    /// Returns `(slot_va, function_va)`; the caller must advance the cursor with `slot_va + 8`.
+    ///
+    /// The earlier version advanced with `function_va + 8`, i.e. it used the *callee's* address as
+    /// the table cursor. After the first constructor (`pre_c_init` at `0x401000`) that pointed into
+    /// `.text`, and the 8 instruction bytes at `0x401008` were read as a function pointer
+    /// (`0x0001_00c7_0002_701c`), which is exactly the `0x100c70002701c` the guest jumped to.
+    /// Entries that do not land in a mapped region are skipped instead of being called.
+    /// True when `addr` is backed by a mapped region the CPU may execute from.
+    ///
+    /// `find_region(...).is_some()` is not enough: the VMM keeps unmapped-but-reserved slots, so a
+    /// garbage "function pointer" taken out of instruction bytes passed the old check.
+    fn is_executable(vmm: &VirtualMemoryManager, addr: u64) -> bool {
+        match vmm.find_region(addr) {
+            Some(reg) => matches!(reg.protect, 0x10 | 0x20 | 0x40 | 0x80),
+            None => false,
+        }
+    }
+
     fn find_next_initterm_fn(
         &self,
         vmm: &mut VirtualMemoryManager,
         from: u64,
         end: u64,
     ) -> Option<(u64, u64)> {
+        // A wild `end` (the API is also reachable with a garbage table) would walk the scan into
+        // unrelated `.rdata` and "find" instruction bytes as a function pointer, so the window is
+        // clamped and the scan is capped.
+        let end = end.min(from.saturating_add(0x1_0000));
         let mut p = from;
-        while p + 8 <= end {
+        let mut scanned = 0u32;
+        while p + 8 <= end && scanned < 1024 {
+            scanned += 1;
             let fn_ptr = match vmm.read_u64(p) {
                 Ok(v) => v,
                 Err(_) => return None,
             };
-            if fn_ptr != 0 && vmm.find_region(fn_ptr).is_some() {
+            if fn_ptr != 0 && Self::is_executable(vmm, fn_ptr) {
                 return Some((p, fn_ptr));
             }
             p += 8;

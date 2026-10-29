@@ -21,6 +21,7 @@ struct Options {
     extra_watch: Vec<(u64, u64)>,
     peeks: Vec<u64>,
     args: Option<String>,
+    hle_only: bool,
 }
 
 fn parse_u64(v: &str) -> Option<u64> {
@@ -43,6 +44,7 @@ fn parse_args() -> Options {
         extra_watch: Vec::new(),
         peeks: Vec::new(),
         args: None,
+        hle_only: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -52,6 +54,7 @@ fn parse_args() -> Options {
             "--trace" => opts.trace = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.trace),
             "--span" => opts.watch_span = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.watch_span),
             "--no-watch" => opts.watch = false,
+            "--hle-only" => opts.hle_only = true,
             "--args" => opts.args = it.next(),
             "--watch" => {
                 if let Some(v) = it.next() {
@@ -87,6 +90,11 @@ fn main() {
 
     let mut emu = BrowserX64Emulator::new(2048);
     emu.enable_trace(opts.trace);
+    if opts.hle_only {
+        // Only Win32/NT HLE traffic: the whole run then fits in a 260-line buffer.
+        emu.set_hle_trace_only(true);
+        println!("trace_filter=hle-only");
+    }
     match emu.load_pe(&bytes) {
         Ok(info) => println!("load={info}"),
         Err(_) => {
