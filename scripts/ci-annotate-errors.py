@@ -9,6 +9,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HEADER = re.compile(r"^\s*(error(\[\w+\])?|warning):\s*(.*)$")
 NOTE = re.compile(r"^\s*-->\s+(\S+):(\d+):(\d+)\s*$")
 CARET = re.compile(r"^\s*\|\s*\^+.*(expected .*|missing .*|found .*)$")
+TESTFAIL = re.compile(r"(^test .* FAILED|^---- .* stdout ----|panicked at|assertion .* failed|^left:|^right:|failures:$)")
 
 
 def main(paths):
@@ -18,6 +19,10 @@ def main(paths):
         if not path.is_file():
             continue
         lines = [ANSI.sub("", line) for line in path.read_text(encoding="utf-8", errors="replace").splitlines()]
+        for line in lines:
+            if TESTFAIL.search(line):
+                print(f"::error file={raw}::{line.strip()[:900]}")
+                emitted += 1
         i = 0
         while i < len(lines):
             header = HEADER.match(lines[i])
