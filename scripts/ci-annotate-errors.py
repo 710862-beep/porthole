@@ -7,7 +7,7 @@ from pathlib import Path
 
 PATTERN = re.compile(
     r"(^error(\[|:)|^warning: unused|cannot find|no method|no field|expected|mismatched|"
-    r"^  -->|trait bound|unresolved import|missing)"
+    r"-->\s*\S+\.rs:\d+|trait bound|unresolved import|missing `)"
 )
 
 

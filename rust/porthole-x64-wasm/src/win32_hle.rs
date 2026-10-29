@@ -252,7 +252,7 @@ impl Win32Kernel {
         kernel.files.insert(
             "C:".into(),
             GuestFile {
-                path: "C:".into(),
+                path: "C:\\".into(),
                 data: Vec::new(),
                 position: 0,
                 writable: false,
@@ -271,7 +271,8 @@ impl Win32Kernel {
                 handle_count: 1,
             },
         );
-        kernel.alloc_handle() // process pseudo-handle 0x100
+        kernel.alloc_handle(); // process pseudo-handle 0x100
+        kernel
     }
 
     pub fn alloc_handle(&mut self) -> u64 {
@@ -2141,6 +2142,9 @@ impl Win32Kernel {
                     bits_ptr: a4,
                     selected_in: 0,
                     cleared: false,
+                    pixels: None,
+                    base_color: 0x00FF_FFFF,
+                    fill_rect: None,
                 });
                 let _ = handle_id;
                 bmp
