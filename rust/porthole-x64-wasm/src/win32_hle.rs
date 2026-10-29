@@ -2236,8 +2236,8 @@ impl Win32Kernel {
             }
 
             // ------------------------------------------------------ user32/gdi32
-            "wsprintfA" => self.wsprintf(vmm, a0, a1, guest_rsp, false),
-            "wsprintfW" => self.wsprintf(vmm, a0, a1, guest_rsp, true),
+            "wsprintfA" => self.wsprintf(vmm, a0, a1, args, guest_rsp, false),
+            "wsprintfW" => self.wsprintf(vmm, a0, a1, args, guest_rsp, true),
             "wvsprintfA" => self.vfprintf_to(vmm, a0, a1, a2, false),
             "wvsprintfW" => self.vfprintf_to(vmm, a0, a1, a2, true),
             "CharUpperA" => self.char_case(vmm, a0, true, true),
@@ -2642,13 +2642,21 @@ impl Win32Kernel {
         vmm: &mut VirtualMemoryManager,
         buffer: u64,
         fmt_ptr: u64,
+        args: &[u64; 10],
         guest_rsp: u64,
         wide: bool,
     ) -> u64 {
+        // x64 variadic convention: `buffer` arrives in RCX and `fmt_ptr` in RDX, so the *first two*
+        // varargs live in R8/R9 and only the third onwards are stack slots at [rsp+0x28].
+        // Reading just the stack dropped both register varargs, which made every single-argument
+        // wsprintfA format a zero ("%010d", -12345 -> "0000000000") and return 1.
+        let mut slots: Vec<u64> = Vec::with_capacity(32);
+        slots.push(args[2]);
+        slots.push(args[3]);
+        slots.extend_from_slice(&args[4..10]);
         let stack_base = guest_rsp + 0x28;
-        let mut slots = Vec::with_capacity(32);
-        for i in 0..32u64 {
-            slots.push(vmm.read_u64(stack_base + i * 8).unwrap_or(0));
+        for i in 0..26u64 {
+            slots.push(vmm.read_u64(stack_base + (6 + i) * 8).unwrap_or(0));
         }
         let mut va = VaSlotReader::from_varargs_slice(&slots);
         if wide {
