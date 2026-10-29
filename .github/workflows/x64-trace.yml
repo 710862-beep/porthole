@@ -43,24 +43,45 @@ jobs:
         run: cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
       - name: Run the four Wine64 fixtures through the tracer
         run: |
-          for f in user32_test kernel32_test d3d12_test porthole_x64_plan_test; do
-            echo "##### fixture=$f" >> trace.log
+          run() {
+            f="$1"; sub="$2"
+            out="trace-$f$sub.log"
+            echo "##### fixture=$f subtest=${sub:-none}" > "$out"
             if [ -f "tests/assets/wine64/$f.exe" ]; then
-              ./rust/porthole-x64-wasm/target/release/xtrace \
-                "tests/assets/wine64/$f.exe" --budget 20000 --slice 4000 --trace 2000 \
+              ./rust/porthole-x64-wasm/target/release/xtrace "tests/assets/wine64/$f.exe" \
+                --budget 60000 --slice 4000 --trace 260 \
                 --watch 0x430000:0x4300d0 --watch 0x300000000:0x300000120 \
-                --peek 0x430040 --peek 0x430048 --peek 0x300000020 >> trace.log 2>&1 || \
-                echo "xtrace exit=$?" >> trace.log
+                --peek 0x430040 --peek 0x430048 --peek 0x300000020 \
+                ${sub:+--args "$f.exe $sub"} >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
             else
-              echo "fixture missing" >> trace.log
+              echo "fixture missing" >> "$out"
             fi
-          done
+            cat "$out" >> trace.log
+          }
+          run user32_test wsprintf
+          run user32_test uitools
+          run kernel32_test atom
+          run kernel32_test environ
+          run kernel32_test drive
+          run kernel32_test power
+          run kernel32_test directory
+          run d3d12_test d3d12
+          run porthole_x64_plan_test x64_plan
           wc -l trace.log
+      - name: Publish each fixture trace through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in trace-*.log; do
+            [ -e "$f" ] || continue
+            python3 scripts/ci-publish-trace.py "$f" "porthole-x64-trace:${f#trace-}"
+          done
       - name: Stack-symmetry regression tests
         run: |
           cd rust/porthole-x64-wasm
           cargo test --release --test wine64_startup -- --nocapture 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
-      - name: Publish trace through the Checks API
+      - name: Publish the combined trace
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

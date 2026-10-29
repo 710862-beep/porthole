@@ -20,6 +20,7 @@ struct Options {
     watch_span: u64,
     extra_watch: Vec<(u64, u64)>,
     peeks: Vec<u64>,
+    args: Option<String>,
 }
 
 fn parse_u64(v: &str) -> Option<u64> {
@@ -41,6 +42,7 @@ fn parse_args() -> Options {
         watch_span: 0x400,
         extra_watch: Vec::new(),
         peeks: Vec::new(),
+        args: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -50,6 +52,7 @@ fn parse_args() -> Options {
             "--trace" => opts.trace = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.trace),
             "--span" => opts.watch_span = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.watch_span),
             "--no-watch" => opts.watch = false,
+            "--args" => opts.args = it.next(),
             "--watch" => {
                 if let Some(v) = it.next() {
                     let mut parts = v.split(':');
@@ -96,6 +99,10 @@ fn main() {
     for (lo, hi) in &opts.extra_watch {
         emu.add_write_watch(*lo, *hi);
         println!("watch+=[0x{lo:x},0x{hi:x})");
+    }
+    if let Some(args) = &opts.args {
+        emu.set_command_line(args);
+        println!("command_line={args}");
     }
     let rsp0 = emu.stack_pointer();
     if opts.watch {

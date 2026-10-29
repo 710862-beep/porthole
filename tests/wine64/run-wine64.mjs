@@ -60,10 +60,11 @@ async function loadEmulator(wasmDir) {
   return { available: true, module: mod, wasmSha256: crypto.createHash('sha256').update(fs.readFileSync(wasmPath)).digest('hex') };
 }
 
-async function runOne(binding, manifestEntry, options) {
+async function runOne(binding, manifestEntry, options, testName = null) {
   const started = Date.now();
   const item = {
-    name: manifestEntry.name,
+    name: testName ? `${manifestEntry.name} ${testName}` : manifestEntry.name,
+    subtest: testName,
     sha256: manifestEntry.sha256,
     subtests: manifestEntry.subtests,
     origin: manifestEntry.origin,
@@ -94,6 +95,8 @@ async function runOne(binding, manifestEntry, options) {
 
   const loadInfo = JSON.parse(emu.load_pe(new Uint8Array(bytes)));
   item.load = loadInfo;
+  // winetest binaries take the subtest name as argv[1]; without it they print usage and exit(1).
+  if (testName) emu.set_command_line(`${manifestEntry.name} ${testName}`);
 
   const pageCache = new Map();
   let sliceCount = 0;
@@ -213,9 +216,15 @@ async function main() {
     ? manifest.binaries.filter((b) => b.name.includes(options.only))
     : manifest.binaries;
 
+  const worklist = [];
   for (const entry of selected) {
-    process.stdout.write(`[wine64] ${entry.name} ... `);
-    const item = await runOne(binding, entry, options);
+    const names = Array.isArray(entry.subtests) && entry.subtests.length ? entry.subtests : [null];
+    for (const st of names) worklist.push([entry, st]);
+  }
+
+  for (const [entry, testName] of worklist) {
+    process.stdout.write(`[wine64] ${entry.name}${testName ? ` ${testName}` : ''} ... `);
+    const item = await runOne(binding, entry, options, testName);
     report.tests.push(item);
     console.log(`${item.status}${item.error ? ` (${item.error})` : ''} · ${item.instructions} instr · ${item.durationMs} ms` + (item.failures != null ? ` · ${item.failures} falhas` : ''));
     if (item.status === 'FAIL') {

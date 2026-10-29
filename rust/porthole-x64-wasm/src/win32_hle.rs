@@ -223,6 +223,15 @@ pub struct Win32Kernel {
     dc_brush: HashMap<u64, u32>,
     selected_bitmap: HashMap<u64, u64>,
     windows: Vec<(u64, u32, u32)>,
+    /// Command line handed to the guest (`GetCommandLineA/W`, `__p___argc`, `__p___argv`).
+    pub command_line: String,
+    crt_argc_ptr: u64,
+    crt_argv_var: u64,
+    crt_wargv_var: u64,
+    crt_environ_var: u64,
+    crt_wenviron_var: u64,
+    command_line_a: u64,
+    command_line_w: u64,
 }
 
 impl Win32Kernel {
@@ -258,6 +267,14 @@ impl Win32Kernel {
             dc_brush: HashMap::new(),
             selected_bitmap: HashMap::new(),
             windows: Vec::new(),
+            command_line: String::from("test.exe"),
+            crt_argc_ptr: 0,
+            crt_argv_var: 0,
+            crt_wargv_var: 0,
+            crt_environ_var: 0,
+            crt_wenviron_var: 0,
+            command_line_a: 0,
+            command_line_w: 0,
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -2040,48 +2057,36 @@ impl Win32Kernel {
                 va
             }
             "__p___argc" => {
-                let va = self.heap_alloc(vmm, self.process_heap, 8);
-                if va != 0 {
-                    let _ = vmm.write_u32(va, 1);
-                }
-                va
+                let (argc, _, _) = self.ensure_crt_argv(vmm);
+                argc
             }
             // `__p___argv` returns a `char***`: the address of the `__argv` *variable*, which in
             // turn holds the address of the NULL-terminated vector. The caller dereferences it
-            // once (`mov (%rax),%rax` at 0x425510 in user32_test), so returning the vector directly
-            // makes the guest treat argv[0]'s characters ("test.exe") as a pointer.
-            "__p___argv" | "__p___wargv" => {
-                let var = self.heap_alloc(vmm, self.process_heap, 8);
-                let arr = self.heap_alloc(vmm, self.process_heap, 16);
-                let argv0 = self.heap_alloc(vmm, self.process_heap, 64);
-                let wide = symbol == "__p___wargv";
-                if argv0 != 0 {
-                    if wide {
-                        let _ = self.write_wide(vmm, argv0, "test.exe");
-                    } else {
-                        let _ = self.write_ansi(vmm, argv0, "test.exe");
-                    }
-                }
-                if arr != 0 {
-                    let _ = vmm.write_u64(arr, argv0);
-                    let _ = vmm.write_u64(arr + 8, 0);
-                }
-                if var != 0 {
-                    let _ = vmm.write_u64(var, arr);
-                }
-                var
+            // once (`mov (%rax),%rax` at 0x425510 in user32_test), so returning the vector
+            // directly makes the guest treat argv[0]'s characters ("test.exe") as a pointer.
+            "__p___argv" => {
+                let (_, argv, _) = self.ensure_crt_argv(vmm);
+                argv
             }
-            "__p__environ" | "__p__wenviron" => {
-                // Same double indirection, with an empty environment block.
-                let var = self.heap_alloc(vmm, self.process_heap, 8);
-                let arr = self.heap_alloc(vmm, self.process_heap, 8);
-                if arr != 0 {
-                    let _ = vmm.write_u64(arr, 0);
-                }
-                if var != 0 {
-                    let _ = vmm.write_u64(var, arr);
-                }
-                var
+            "__p___wargv" => {
+                let (_, _, wargv) = self.ensure_crt_argv(vmm);
+                wargv
+            }
+            "__p__environ" => {
+                self.ensure_crt_argv(vmm);
+                self.crt_environ_var
+            }
+            "__p__wenviron" => {
+                self.ensure_crt_argv(vmm);
+                self.crt_wenviron_var
+            }
+            "GetCommandLineA" => {
+                let (a, _) = self.ensure_command_line_buffers(vmm);
+                a
+            }
+            "GetCommandLineW" => {
+                let (_, w) = self.ensure_command_line_buffers(vmm);
+                w
             }
             "__setusermatherr" | "frexp" | "atoi" | "malloc" | "calloc" | "realloc" => {
                 self.crt_alloc(vmm, symbol, a0, a1)
@@ -2744,6 +2749,119 @@ struct Bitmap {
 // Fields kept outside `dispatch` for clarity; grouped in a second impl block.
 impl Win32Kernel {
     /// Initializes the file/handle/window side tables after construction.
+
+    /// Sets the command line the guest CRT sees. `argc`/`argv` are derived from it exactly like
+    /// the Windows loader does, so a winetest binary can be started as `<image> <test_name>`.
+    pub fn set_command_line(&mut self, line: &str) {
+        self.command_line = line.to_string();
+        self.crt_argc_ptr = 0;
+        self.crt_argv_var = 0;
+        self.crt_wargv_var = 0;
+        self.command_line_a = 0;
+        self.command_line_w = 0;
+    }
+
+    fn argv_tokens(&self) -> Vec<String> {
+        let mut toks: Vec<String> = self
+            .command_line
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        if toks.is_empty() {
+            toks.push("test.exe".to_string());
+        }
+        toks
+    }
+
+    fn build_argv_vector(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        tokens: &[String],
+        wide: bool,
+    ) -> u64 {
+        let argc = tokens.len() as u64;
+        let var = self.heap_alloc(vmm, self.process_heap, 8);
+        let arr = self.heap_alloc(vmm, self.process_heap, (argc + 1) * 8);
+        for (i, tok) in tokens.iter().enumerate() {
+            let bytes = if wide {
+                (tok.chars().count() as u64 + 1) * 2 + 2
+            } else {
+                tok.len() as u64 + 2
+            };
+            let slot = self.heap_alloc(vmm, self.process_heap, bytes);
+            if slot != 0 {
+                if wide {
+                    let _ = self.write_wide(vmm, slot, tok);
+                } else {
+                    let _ = self.write_ansi(vmm, slot, tok);
+                }
+            }
+            if arr != 0 {
+                let _ = vmm.write_u64(arr + i as u64 * 8, slot);
+            }
+        }
+        if arr != 0 {
+            let _ = vmm.write_u64(arr + argc * 8, 0);
+        }
+        if var != 0 {
+            let _ = vmm.write_u64(var, arr);
+        }
+        var
+    }
+
+    fn build_empty_env_vector(&mut self, vmm: &mut VirtualMemoryManager) -> u64 {
+        let var = self.heap_alloc(vmm, self.process_heap, 8);
+        let arr = self.heap_alloc(vmm, self.process_heap, 8);
+        if arr != 0 {
+            let _ = vmm.write_u64(arr, 0);
+        }
+        if var != 0 {
+            let _ = vmm.write_u64(var, arr);
+        }
+        var
+    }
+
+    /// Lazily materialises `__argc`, `__argv`, `__wargv` and the environment variables.
+    fn ensure_crt_argv(&mut self, vmm: &mut VirtualMemoryManager) -> (u64, u64, u64) {
+        if self.crt_argc_ptr != 0 {
+            return (self.crt_argc_ptr, self.crt_argv_var, self.crt_wargv_var);
+        }
+        let tokens = self.argv_tokens();
+        let argc_ptr = self.heap_alloc(vmm, self.process_heap, 8);
+        if argc_ptr != 0 {
+            let _ = vmm.write_u32(argc_ptr, tokens.len() as u32);
+        }
+        let argv_var = self.build_argv_vector(vmm, &tokens, false);
+        let wargv_var = self.build_argv_vector(vmm, &tokens, true);
+        self.crt_environ_var = self.build_empty_env_vector(vmm);
+        self.crt_wenviron_var = self.build_empty_env_vector(vmm);
+        self.crt_argc_ptr = argc_ptr;
+        self.crt_argv_var = argv_var;
+        self.crt_wargv_var = wargv_var;
+        (argc_ptr, argv_var, wargv_var)
+    }
+
+    fn ensure_command_line_buffers(&mut self, vmm: &mut VirtualMemoryManager) -> (u64, u64) {
+        if self.command_line_a != 0 {
+            return (self.command_line_a, self.command_line_w);
+        }
+        let line = self.command_line.clone();
+        let a = self.heap_alloc(vmm, self.process_heap, line.len() as u64 + 2);
+        if a != 0 {
+            let _ = self.write_ansi(vmm, a, &line);
+        }
+        let w = self.heap_alloc(
+            vmm,
+            self.process_heap,
+            (line.chars().count() as u64 + 1) * 2 + 2,
+        );
+        if w != 0 {
+            let _ = self.write_wide(vmm, w, &line);
+        }
+        self.command_line_a = a;
+        self.command_line_w = w;
+        (a, w)
+    }
     pub fn init_runtime_tables(&mut self) {
         self.init_modules();
         self.bitmaps.clear();

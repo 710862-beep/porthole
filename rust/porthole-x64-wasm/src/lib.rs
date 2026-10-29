@@ -87,6 +87,12 @@ impl BrowserX64Emulator {
         self.kernel.vfs_snapshot(path)
     }
 
+    /// Sets the guest command line (`GetCommandLineA/W`, `argc`/`argv`), e.g.
+    /// `"kernel32_test.exe atom"` so a winetest binary runs a single subtest.
+    pub fn set_command_line(&mut self, line: &str) {
+        self.kernel.set_command_line(line);
+    }
+
     /// Maps a PE32+ (`0x8664`) image, resolves imports against the HLE thunk space, initializes
     /// PEB/TEB/stack, and runs the AOT block compiler over `.text`.
     pub fn load_pe(&mut self, bytes: &[u8]) -> Result<String, JsValue> {

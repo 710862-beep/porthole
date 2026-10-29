@@ -41,6 +41,7 @@ def post(url, token, body):
 
 def main(argv):
     path = argv[0] if argv else "trace.log"
+    check_name = argv[1] if len(argv) > 1 else "porthole-x64-trace"
     try:
         text = open(path, encoding="utf-8", errors="replace").read()
     except FileNotFoundError:
@@ -64,12 +65,12 @@ def main(argv):
         return
 
     body = {
-        "name": "porthole-x64-trace",
+        "name": check_name,
         "head_sha": sha,
         "status": "completed",
         "conclusion": "neutral",
         "output": {
-            "title": f"x86-64 guest trace ({len(lines)} lines)",
+            "title": f"{check_name} ({len(lines)} lines)",
             "summary": summary or "(empty)",
             "text": rest or "(nothing beyond the summary window)",
         },
