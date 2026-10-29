@@ -292,7 +292,11 @@ impl BrowserX64Emulator {
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
                     self.status = RunStatus::Fault;
-                    self.fault_message = format!("access violation at 0x{addr:x}");
+                    self.fault_message = format!(
+                        "access violation at 0x{addr:x} (rax=0x{:x} rcx=0x{:x} rdx=0x{:x} rsp=0x{:x} gs=0x{:x}); history: {}",
+                        self.cpu.gpr[0], self.cpu.gpr[1], self.cpu.gpr[2], self.cpu.gpr[4],
+                        self.cpu.gs_base, self.cpu.render_rip_history()
+                    );
                     return format!("fault:{}", self.fault_message);
                 }
             }

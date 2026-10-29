@@ -66,6 +66,9 @@ pub struct CpuState {
     pub instructions_executed: u64,
     pub icache_hits: u64,
     pub icache_misses: u64,
+    /// Last executed RIPs, used to explain guest faults without an interactive debugger.
+    pub rip_history: [u64; 16],
+    pub rip_history_len: usize,
 }
 
 impl CpuState {
@@ -86,6 +89,8 @@ impl CpuState {
             instructions_executed: 0,
             icache_hits: 0,
             icache_misses: 0,
+            rip_history: [0; 16],
+            rip_history_len: 0,
         }
     }
 
@@ -694,8 +699,26 @@ impl CpuState {
         }
     }
 
+    /// Records `rip` in the small history ring used by fault diagnostics.
+    pub fn note_rip(&mut self, rip: u64) {
+        let slot = self.rip_history_len % self.rip_history.len();
+        self.rip_history[slot] = rip;
+        self.rip_history_len = self.rip_history_len.wrapping_add(1);
+    }
+
+    pub fn render_rip_history(&self) -> String {
+        let len = self.rip_history_len.min(self.rip_history.len());
+        let mut out = String::new();
+        for i in (0..len).rev().take(8) {
+            let idx = (self.rip_history_len + self.rip_history.len() - 1 - i) % self.rip_history.len();
+            out.push_str(&format!("0x{:x} ", self.rip_history[idx]));
+        }
+        out.trim_end().to_string()
+    }
+
     pub fn step_one(&mut self, vmm: &mut VirtualMemoryManager) -> Result<ExecOutcome, MemoryTrap> {
         let insn_rip = self.rip;
+        self.note_rip(insn_rip);
         let mut buf = [0u8; 16];
         let _avail = self.fetch_insn_bytes(vmm, &mut buf)?;
         let code = &buf[..];
