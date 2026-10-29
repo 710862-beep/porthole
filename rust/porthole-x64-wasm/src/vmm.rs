@@ -376,30 +376,50 @@ impl VirtualMemoryManager {
 
     fn evict_if_needed(&mut self, protected_page: Option<u64>) {
         while self.page_cache.len() > self.max_resident_pages {
-            let mut oldest_key: Option<u64> = None;
-            let mut oldest_gen = u64::MAX;
-            for (&k, entry) in &self.page_cache {
-                if entry.pinned || Some(k) == protected_page {
-                    continue;
-                }
-                if entry.last_used_gen < oldest_gen {
-                    oldest_gen = entry.last_used_gen;
-                    oldest_key = Some(k);
-                }
-            }
-            let Some(victim_base) = oldest_key else {
+            let before = self.page_cache.len();
+            self.evict_if_needed_locked(protected_page);
+            if self.page_cache.len() == before {
                 break;
-            };
-            if let Some(victim) = self.page_cache.remove(&victim_base) {
-                self.pages_evicted += 1;
-                self.swapped_out_pages.insert(victim_base);
-                if victim.dirty {
-                    self.dirty_pages_queued += 1;
-                    self.evicted_dirty_pages.push(EvictedPage {
-                        page_base: victim_base,
-                        data: victim.data,
-                    });
-                }
+            }
+        }
+    }
+
+    /// Evicts exactly one unpinned LRU page (no-op when every resident page is pinned).
+    fn evict_if_needed_locked(&mut self, protected_page: Option<u64>) {
+        let mut oldest_key: Option<u64> = None;
+        let mut oldest_gen = u64::MAX;
+        for (&k, entry) in &self.page_cache {
+            if entry.pinned || Some(k) == protected_page {
+                continue;
+            }
+            if entry.last_used_gen < oldest_gen {
+                oldest_gen = entry.last_used_gen;
+                oldest_key = Some(k);
+            }
+        }
+        let Some(victim_base) = oldest_key else {
+            return;
+        };
+        if let Some(victim) = self.page_cache.remove(&victim_base) {
+            self.pages_evicted += 1;
+            self.swapped_out_pages.insert(victim_base);
+            if victim.dirty {
+                self.dirty_pages_queued += 1;
+                self.evicted_dirty_pages.push(EvictedPage {
+                    page_base: victim_base,
+                    data: victim.data,
+                });
+            }
+        }
+    }
+
+    /// Evicts LRU pages until a new page fits inside the configured RAM budget.
+    fn make_room_for_insert(&mut self, protected_page: Option<u64>) {
+        while self.page_cache.len() >= self.max_resident_pages {
+            let before = self.page_cache.len();
+            self.evict_if_needed_locked(protected_page);
+            if self.page_cache.len() == before {
+                break;
             }
         }
     }
@@ -420,7 +440,7 @@ impl VirtualMemoryManager {
 
         let gen = self.bump_gen();
         if !self.page_cache.contains_key(&page_base) {
-            self.evict_if_needed(protected_peer);
+            self.make_room_for_insert(protected_peer);
             let gen2 = self.bump_gen();
             self.page_cache.insert(
                 page_base,
@@ -459,7 +479,7 @@ impl VirtualMemoryManager {
         // Writing an entire 4 KB page overwrites any swapped contents without needing read-before-write.
         self.swapped_out_pages.remove(&page_base);
         if !self.page_cache.contains_key(&page_base) {
-            self.evict_if_needed(None);
+            self.make_room_for_insert(None);
         }
         let gen = self.bump_gen();
         self.bump_write_epoch(page_base);
@@ -480,7 +500,7 @@ impl VirtualMemoryManager {
         let page_base = Self::align_down(addr);
         self.swapped_out_pages.remove(&page_base);
         if !self.page_cache.contains_key(&page_base) {
-            self.evict_if_needed(None);
+            self.make_room_for_insert(None);
         }
         let gen = self.bump_gen();
         let mut page_vec = vec![0u8; PAGE_SIZE];
