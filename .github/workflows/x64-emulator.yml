@@ -21,7 +21,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.81.0
       - name: cargo test
         working-directory: rust/porthole-x64-wasm
-        run: cargo test --all-targets 2>&1 | tee cargo-test.log
+        run: |
+          set -o pipefail
+          cargo test --all-targets 2>&1 | tee cargo-test.log
+      - name: Surface compiler errors as Checks annotations
+        if: failure()
+        run: |
+          python3 scripts/ci-annotate-errors.py \
+            rust/porthole-x64-wasm/cargo-test.log \
+            rust/porthole-x64-wasm/cargo-build.log || true
       - name: Upload cargo diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -54,7 +62,9 @@ jobs:
           fi
       - name: cargo build (wasm32-unknown-unknown, release)
         working-directory: rust/porthole-x64-wasm
-        run: cargo build --release --target wasm32-unknown-unknown 2>&1 | tee cargo-build.log
+        run: |
+          set -o pipefail
+          cargo build --release --target wasm32-unknown-unknown 2>&1 | tee cargo-build.log
       - name: wasm-bindgen (web target)
         run: |
           mkdir -p artifacts/porthole-x64-wasm
@@ -68,6 +78,12 @@ jobs:
           path: artifacts/porthole-x64-wasm/
           if-no-files-found: error
           retention-days: 14
+      - name: Surface compiler errors as Checks annotations
+        if: failure()
+        run: |
+          python3 scripts/ci-annotate-errors.py \
+            rust/porthole-x64-wasm/cargo-test.log \
+            rust/porthole-x64-wasm/cargo-build.log || true
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
