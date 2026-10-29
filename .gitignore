@@ -1,1 +1,21 @@
 node_modules/
+artifacts/
+*.log
+
+# Acquired executables and local reports: reproducible, not redistributed
+tests/assets/
+tests/reports/
+
+# Compiled synthetic fixtures are rebuilt from versioned sources
+tests/synthetic/*.exe
+tests/synthetic/*.pdb
+tests/synthetic/*.lib
+tests/synthetic/BUILD.json
+
+__pycache__/
+*.pyc
+# Authored DLL fixtures are reproducibly built alongside synthetic EXEs.
+tests/synthetic/*.dll
+
+# Pinned Wine research checkout (acquired by script)
+vendor/wine-source/

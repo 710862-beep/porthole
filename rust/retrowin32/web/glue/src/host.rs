@@ -1,0 +1,427 @@
+//! Implementations of the traits in win32/host.rs, providing the hosting API for the emulator.
+
+use anyhow::bail;
+use wasm_bindgen::prelude::*;
+use win32::{ReadDir, Stat, StatKind, WindowsPath, ERROR};
+
+struct WebSurface {
+    _hwnd: u32,
+    canvas: web_sys::HtmlCanvasElement,
+    width: u32,
+    ctx: web_sys::CanvasRenderingContext2d,
+    screen: web_sys::CanvasRenderingContext2d,
+}
+
+impl WebSurface {
+    pub fn new(
+        hwnd: u32,
+        opts: &win32::SurfaceOptions,
+        screen: web_sys::CanvasRenderingContext2d,
+    ) -> Self {
+        let canvas = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .create_element("canvas")
+            .unwrap()
+            .unchecked_into::<web_sys::HtmlCanvasElement>();
+        canvas.set_width(opts.width);
+        canvas.set_height(opts.height);
+        let ctx = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<web_sys::CanvasRenderingContext2d>()
+            .unwrap();
+        ctx.set_fill_style(&JsValue::from_str("black"));
+        ctx.fill_rect(0.0, 0.0, opts.width as f64, opts.height as f64);
+        ctx.fill();
+        Self {
+            _hwnd: hwnd,
+            canvas,
+            width: opts.width,
+            ctx,
+            screen,
+        }
+    }
+}
+
+impl win32::Surface for WebSurface {
+    fn write_pixels(&mut self, pixels: &[[u8; 4]]) {
+        let slice =
+            unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const _, pixels.len() * 4) };
+        let image_data =
+            web_sys::ImageData::new_with_u8_clamped_array(wasm_bindgen::Clamped(slice), self.width)
+                .unwrap();
+        self.ctx.put_image_data(&image_data, 0.0, 0.0).unwrap();
+    }
+
+    fn show(&mut self) {
+        self.screen
+            .draw_image_with_html_canvas_element(&self.canvas, 0.0, 0.0)
+            .unwrap();
+    }
+
+    fn bit_blt(
+        &mut self,
+        dx: u32,
+        dy: u32,
+        src: &dyn win32::Surface,
+        sx: u32,
+        sy: u32,
+        w: u32,
+        h: u32,
+    ) {
+        // Hack: we know all surfaces are WebSurface.
+        // I think to fix this properly I might need to make every X86 generic across all the
+        // host types, eek.
+        let src = unsafe { &*(src as *const dyn win32::Surface as *const WebSurface) };
+        self.ctx
+            .draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                &src.canvas,
+                sx as f64,
+                sy as f64,
+                w as f64,
+                h as f64,
+                dx as f64,
+                dy as f64,
+                w as f64,
+                h as f64,
+            )
+            .unwrap();
+    }
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const JSWINDOW_TS: &'static str = r#"
+export interface JsWindow {
+  title: string;
+  set_size(width: number, height: number): void;
+  set_position(x: number, y: number): void;
+  set_visible(visible: boolean): void;
+}"#;
+
+#[wasm_bindgen]
+extern "C" {
+    pub type JsWindow;
+    #[wasm_bindgen(method, setter)]
+    fn set_title(this: &JsWindow, title: &str);
+    #[wasm_bindgen(method)]
+    fn set_size(this: &JsWindow, width: u32, height: u32);
+    #[wasm_bindgen(method)]
+    fn set_position(this: &JsWindow,x:i32,y:i32);
+    #[wasm_bindgen(method)]
+    fn set_visible(this: &JsWindow,visible:bool);
+}
+
+impl win32::Window for JsWindow {
+    fn set_position(&mut self,x:i32,y:i32)->Result<(),win32::ERROR>{JsWindow::set_position(self,x,y);Ok(())}
+    fn set_visible(&mut self,visible:bool)->Result<(),win32::ERROR>{JsWindow::set_visible(self,visible);Ok(())}
+    fn set_title(&mut self, title: &str) {
+        JsWindow::set_title(self, title);
+    }
+
+    fn set_size(&mut self, width: u32, height: u32) {
+        JsWindow::set_size(self, width, height);
+    }
+
+    fn fullscreen(&mut self) {
+        log::warn!("todo: fullscreen");
+    }
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const JSFILE_TS: &'static str = r#"
+export interface JsFile {
+  info(): number;
+  seek(ofs: number): boolean;
+  read(buf: Uint8Array): number;
+  write(buf: Uint8Array): number;
+}"#;
+
+#[wasm_bindgen]
+extern "C" {
+    pub type JsFile;
+    #[wasm_bindgen(method)]
+    fn info(this: &JsFile) -> u64;
+    #[wasm_bindgen(method)]
+    fn seek(this: &JsFile, ofs: u32) -> bool;
+    #[wasm_bindgen(method)]
+    fn read(this: &JsFile, buf: &mut [u8]) -> u32;
+    #[wasm_bindgen(method)]
+    fn write(this: &JsFile, buf: &[u8]) -> u32;
+}
+
+impl win32::File for JsFile {
+    fn stat(&self) -> Result<Stat, ERROR> {
+        Ok(Stat {
+            kind: StatKind::File,
+            size: JsFile::info(self),
+            atime: 0,
+            ctime: 0,
+            mtime: 0,
+        })
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), ERROR> {
+        todo!("set_len {len}")
+    }
+}
+
+impl std::io::Read for JsFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = JsFile::read(self, buf);
+        Ok(n as usize)
+    }
+}
+
+impl std::io::Write for JsFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = JsFile::write(self, buf);
+        Ok(n as usize)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        todo!()
+    }
+}
+
+impl std::io::Seek for JsFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match pos {
+            std::io::SeekFrom::Start(ofs) => {
+                if JsFile::seek(self, ofs as u32) {
+                    Ok(ofs)
+                } else {
+                    todo!();
+                }
+            }
+            std::io::SeekFrom::End(_) => todo!(),
+            std::io::SeekFrom::Current(_) => todo!(),
+        }
+    }
+}
+
+fn map_mousevent(event: web_sys::MouseEvent) -> anyhow::Result<win32::MouseMessage> {
+    Ok(win32::MouseMessage {
+        down: true,
+        button: match event.button() {
+            0 => win32::MouseButton::Left,
+            1 => win32::MouseButton::Middle,
+            2 => win32::MouseButton::Right,
+            _ => bail!("unhandled button"),
+        },
+        x: event.offset_x() as u32,
+        y: event.offset_y() as u32,
+    })
+}
+
+fn message_from_event(event: web_sys::Event) -> anyhow::Result<win32::Message> {
+    let hwnd = js_sys::Reflect::get(&event, &JsValue::from_str("hwnd"))
+        .unwrap()
+        .as_f64()
+        .unwrap() as u32;
+    let time = event.time_stamp() as u32;
+    let detail = match event.type_().as_str() {
+        "keydown"|"keyup"|"char" => {
+            let key=js_sys::Reflect::get(&event,&JsValue::from_str("keyCode")).map_err(|_|anyhow::anyhow!("invalid keyCode field"))?.as_f64().unwrap_or(0.0) as u32;
+            win32::MessageDetail::Key {message:match event.type_().as_str(){"keydown"=>0x100,"keyup"=>0x101,_=>0x102},key}
+        }
+        "mousedown" => {
+            let mut event = map_mousevent(event.unchecked_into::<web_sys::MouseEvent>())?;
+            event.down = true;
+            win32::MessageDetail::Mouse(event)
+        }
+        "mousemove" => {
+            let mut event = map_mousevent(event.unchecked_into::<web_sys::MouseEvent>())?;
+            event.down = false;
+            event.button = win32::MouseButton::None;
+            win32::MessageDetail::Mouse(event)
+        }
+        "mouseup" => {
+            let mut event = map_mousevent(event.unchecked_into::<web_sys::MouseEvent>())?;
+            event.down = false;
+            win32::MessageDetail::Mouse(event)
+        }
+        ty => bail!("unhandled event type {ty}"),
+    };
+    log::info!("msg: {:?}", detail);
+    Ok(win32::Message { hwnd, detail, time })
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const JSHOST_TS: &'static str = r#"
+export interface JsHost {
+  ensure_timer(when: number): void;
+  get_event(): Event | undefined;
+  
+  open(path: string, access: {}): JsFile|null;
+  
+  create_window(hwnd: number): JsWindow;
+}"#;
+
+#[wasm_bindgen]
+extern "C" {
+    pub type JsHost;
+
+    #[wasm_bindgen(method)]
+    fn ticks(this: &JsHost) -> u32;
+    #[wasm_bindgen(method)]
+    fn create_dir(this: &JsHost, path: &str) -> u32;
+    #[wasm_bindgen(method)]
+    fn registry_call(this: &JsHost, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String;
+
+    #[wasm_bindgen(method)]
+    fn api_trace(this: &JsHost, entry: &str);
+    #[wasm_bindgen(method)]
+    fn current_dir(this: &JsHost) -> String;
+    #[wasm_bindgen(method)]
+    fn set_current_dir(this: &JsHost, path: &str) -> u32;
+    #[wasm_bindgen(method)]
+    fn file_info(this:&JsHost,path:&str)->String;
+    #[wasm_bindgen(method)]
+    fn read_dir(this:&JsHost,path:&str)->String;
+    #[wasm_bindgen(method)]
+    fn key_state(this: &JsHost, key: u32) -> u32;
+    #[wasm_bindgen(method)]
+    fn raw_input_events(this: &JsHost) -> String;
+    #[wasm_bindgen(method)]
+    fn network_call(this: &JsHost, request: &str) -> String;
+    #[wasm_bindgen(method)]
+    fn log(this: &JsHost, level: u8, msg: String);
+
+    #[wasm_bindgen(method)]
+    fn ensure_timer(this: &JsHost, when: u32);
+
+    #[wasm_bindgen(method)]
+    fn get_event(this: &JsHost) -> web_sys::Event;
+
+    #[wasm_bindgen(method)]
+    fn open(this: &JsHost, path: &str, options: win32::FileOptions) -> Option<JsFile>;
+    #[wasm_bindgen(method)]
+    fn stdout(this: &JsHost, buf: &[u8]);
+
+    #[wasm_bindgen(method)]
+    fn create_window(this: &JsHost, hwnd: u32) -> JsWindow;
+
+    #[wasm_bindgen(method)]
+    fn screen(this: &JsHost,hwnd:u32) -> web_sys::CanvasRenderingContext2d;
+}
+
+impl win32::Host for JsHost {
+    fn api_trace(&self, entry: &str) { JsHost::api_trace(self,entry) }
+    fn key_state(&self, key: u32) -> u32 { JsHost::key_state(self,key) }
+    fn raw_input_events(&self) -> String { JsHost::raw_input_events(self) }
+    fn network_call(&self, request: &str) -> String { JsHost::network_call(self,request) }
+    fn registry_call(&self, op: &str, handle: u32, name: &str, ty: u32, data: &[u8]) -> String {
+        JsHost::registry_call(self, op, handle, name, ty, data)
+    }
+    fn ticks(&self) -> u32 {
+        JsHost::ticks(self)
+    }
+
+    fn system_time(&self) -> chrono::DateTime<chrono::Local> {
+        chrono::Local::now()
+    }
+
+    fn get_message(&self) -> Option<win32::Message> {
+        let event = JsHost::get_event(self);
+        if event.is_undefined() {
+            return None;
+        }
+        message_from_event(event)
+            .inspect_err(|err| log::error!("failed to convert message: {err}"))
+            .ok()
+    }
+
+    fn block(&self, wait: Option<u32>) -> bool {
+        if let Some(t) = wait {
+            // Enqueue a timer to wake up caller.
+            JsHost::ensure_timer(self, t);
+        }
+        false
+    }
+
+    fn open(
+        &self,
+        path: &WindowsPath,
+        options: win32::FileOptions,
+    ) -> Result<Box<dyn win32::File>, ERROR> {
+        match JsHost::open(self, &path.to_string_lossy(), options) {
+            Some(file) => Ok(Box::new(file)),
+            None => Err(ERROR::FILE_NOT_FOUND),
+        }
+    }
+
+    fn stat(&self, path: &WindowsPath) -> Result<Stat, ERROR> {
+        let raw=JsHost::file_info(self,&path.to_string_lossy());
+        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|_|ERROR::INVALID_DATA)?;
+        let status=value["status"].as_u64().ok_or(ERROR::INVALID_DATA)? as u32;
+        if status!=0{return Err(ERROR::try_from(status).unwrap_or(ERROR::INVALID_DATA))}
+        let kind=match value["kind"].as_str(){Some("file")=>StatKind::File,Some("directory")=>StatKind::Directory,_=>return Err(ERROR::INVALID_DATA)};
+        Ok(Stat{kind,size:value["size"].as_u64().ok_or(ERROR::INVALID_DATA)?,atime:0,ctime:0,mtime:0})
+    }
+
+    fn read_dir(&self, path: &WindowsPath) -> Result<Box<dyn ReadDir>, ERROR> {
+        let raw=JsHost::read_dir(self,&path.to_string_lossy());
+        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|_|ERROR::INVALID_DATA)?;
+        let status=value["status"].as_u64().ok_or(ERROR::INVALID_DATA)? as u32;
+        if status!=0{return Err(ERROR::try_from(status).unwrap_or(ERROR::INVALID_DATA))}
+        let list=value["entries"].as_array().ok_or(ERROR::INVALID_DATA)?;
+        if list.len()>4096{return Err(ERROR::INVALID_DATA)}
+        let mut entries=Vec::new();
+        for item in list{
+            let name=item["name"].as_str().ok_or(ERROR::INVALID_DATA)?.to_string();
+            if name.is_empty()||name.contains(['/', '\\', '\0']){return Err(ERROR::INVALID_DATA)}
+            let kind=match item["kind"].as_str(){Some("file")=>StatKind::File,Some("directory")=>StatKind::Directory,_=>return Err(ERROR::INVALID_DATA)};
+            entries.push(win32::ReadDirEntry{name,stat:Stat{kind,size:item["size"].as_u64().ok_or(ERROR::INVALID_DATA)?,atime:0,ctime:0,mtime:0}});
+        }
+        Ok(Box::new(CachedReadDir{entries:entries.into_iter()}))
+    }
+
+    fn log(&self, buf: &[u8]) {
+        JsHost::stdout(self, buf)
+    }
+
+    fn create_window(&mut self, hwnd: u32) -> Box<dyn win32::Window> {
+        let window = JsHost::create_window(self, hwnd);
+        Box::new(window)
+    }
+
+    fn create_surface(
+        &mut self,
+        hwnd: u32,
+        opts: &win32::SurfaceOptions,
+    ) -> Box<dyn win32::Surface> {
+        Box::new(WebSurface::new(hwnd, opts, JsHost::screen(self,hwnd)))
+    }
+
+    fn current_dir(&self) -> Result<win32::WindowsPathBuf, ERROR> {
+        Ok(win32::WindowsPathBuf::from(JsHost::current_dir(self)))
+    }
+
+    fn set_current_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
+        match JsHost::set_current_dir(self, &path.to_string_lossy()) {
+            0 => Ok(()), code => Err(ERROR::try_from(code).unwrap_or(ERROR::INVALID_PARAMETER)),
+        }
+    }
+
+    fn create_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
+        match JsHost::create_dir(self, &path.to_string_lossy()) {
+            0 => Ok(()),
+            code => Err(ERROR::try_from(code).unwrap_or(ERROR::ACCESS_DENIED)),
+        }
+    }
+
+    fn remove_file(&self, path: &WindowsPath) -> Result<(), ERROR> {
+        todo!("remove_file {path}")
+    }
+
+    fn remove_dir(&self, path: &WindowsPath) -> Result<(), ERROR> {
+        todo!("remove_dir {path}")
+    }
+}
+
+// Authorized synchronous overlay snapshot, not a directory scan of the host OS.
+struct CachedReadDir { entries:std::vec::IntoIter<win32::ReadDirEntry> }
+impl ReadDir for CachedReadDir { fn next(&mut self)->Result<Option<win32::ReadDirEntry>,ERROR>{Ok(self.entries.next())} }

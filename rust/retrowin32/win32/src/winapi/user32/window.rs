@@ -1,0 +1,1180 @@
+use super::*;
+use crate::{
+    host,
+    winapi::{
+        self,
+        bitmap::{self, BitmapRGBA32},
+        gdi32::HDC,
+        stack_args::{ArrayWithSize, FromArg},
+        types::{AnsiString, Str16, String16, HWND, POINT, RECT},
+    },
+    Host, Machine, SurfaceOptions,
+};
+use bitflags::bitflags;
+use memory::{Extensions, Mem};
+use std::rc::Rc;
+
+const TRACE_CONTEXT: &'static str = "user32/window";
+
+/*
+
+## Window initalization
+
+A small test app that created a window and printed the messages received
+had this sequence of events, where the braced message lists are messages
+that were processed during the function call:
+
+CreateWindow() {
+    msg: 36 WM_GETMINMAXINFO
+    msg: 129 WM_NCCREATE
+    msg: 131 WM_NCCALCSIZE
+    msg: 1 WM_CREATE
+}
+ShowWindow() {
+    msg: 24 WM_SHOWWINDOW
+    msg: 70 WM_WINDOWPOSCHANGING
+    msg: 28 WM_ACTIVATEAPP
+    msg: 134 WM_NCACTIVATE
+    msg: 6 WM_ACTIVATE
+    msg: 7 WM_SETFOCUS
+    msg: 71 WM_WINDOWPOSCHANGED
+    msg: 5 WM_SIZE
+    msg: 3 WM_MOVE
+}
+
+*/
+
+pub struct WindowPixels {
+    pub bitmap: BitmapRGBA32,
+}
+impl WindowPixels {
+    pub fn new(width: u32, height: u32) -> Self {
+        let size = (width * height) as usize;
+        let raw = {
+            let mut p = Vec::with_capacity(size);
+            p.resize(size, [0u8; 4]);
+            p.into_boxed_slice()
+        };
+        Self {
+            bitmap: BitmapRGBA32 {
+                width,
+                height,
+                pixels: bitmap::PixelData::Owned(raw),
+            },
+        }
+    }
+}
+
+pub struct UpdateRegion {
+    /// Whether to erase background in BeginPaint.
+    pub erase_background: bool,
+    // TODO: rect
+}
+
+pub struct Window {
+    pub dialog: Option<super::dialog_helpers::DialogInfo>,
+    pub title: String,
+    pub parent: HWND,
+    pub id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub control: Option<super::controls::Control>,
+    pub hwnd: HWND,
+    pub typ: WindowType,
+    /// Client area width (not total window width).
+    pub width: u32,
+    /// Client area height (not total window height).
+    pub height: u32,
+    pub wndclass: Rc<WndClass>,
+    pub style: WindowStyle,
+}
+
+pub enum WindowType {
+    TopLevel(WindowTopLevel),
+    Child,
+}
+
+/// Properties of only top-level windows.
+pub struct WindowTopLevel {
+    pub host: Box<dyn host::Window>,
+    pub surface: Box<dyn host::Surface>,
+    // TODO: CS_OWNDC windows do own a DC, but otherwise they don't.
+    // pub hdc: HDC,
+    pub pixels: Option<WindowPixels>,
+    pub dirty: Option<UpdateRegion>,
+}
+
+impl Window {
+    // TODO: expect_toplevel was added to introduce child windows,
+    // but many callers just need to handle child windows instead of calling these.
+    pub fn expect_toplevel(&self) -> &WindowTopLevel {
+        match &self.typ {
+            WindowType::TopLevel(win) => win,
+            _ => panic!("expected top-level window, see TODO"),
+        }
+    }
+    pub fn expect_toplevel_mut(&mut self) -> &mut WindowTopLevel {
+        match &mut self.typ {
+            WindowType::TopLevel(win) => win,
+            _ => panic!("expected top-level window, see TODO"),
+        }
+    }
+
+    pub fn bitmap_mut<'a>(&mut self) -> &mut BitmapRGBA32 {
+        let Window { width, height, .. } = *self;
+        &mut self
+            .expect_toplevel_mut()
+            .ensure_pixels(width, height)
+            .bitmap
+    }
+
+    pub fn set_client_size(&mut self, host: &mut dyn Host, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        match &mut self.typ {
+            WindowType::TopLevel(w) => {
+                w.host.set_size(width, height);
+                w.surface = host.create_surface(
+                    self.hwnd.to_raw(),
+                    &host::SurfaceOptions {
+                        width,
+                        height,
+                        primary: true,
+                    },
+                );
+                w.pixels = None; // recreate lazily
+            }
+            _ => {}
+        }
+    }
+}
+
+impl WindowTopLevel {
+    fn ensure_pixels(&mut self, width: u32, height: u32) -> &mut WindowPixels {
+        match self.pixels {
+            Some(ref mut px) => px,
+            None => {
+                self.pixels = Some(WindowPixels::new(width, height));
+                self.pixels.as_mut().unwrap()
+            }
+        }
+    }
+
+    pub fn flush_pixels(&mut self, mem: Mem) {
+        if let Some(pixels) = &mut self.pixels {
+            self.surface
+                .write_pixels(&pixels.bitmap.pixels.as_slice(mem));
+            self.surface.show();
+        }
+    }
+}
+
+pub struct WndClass {
+    pub name: String,
+    pub wndproc: u32,
+    pub background: HBRUSH,
+}
+
+fn register_class(machine: &mut Machine, wndclass: WndClass) -> u32 {
+    let atom = machine.state.user32.wndclasses.len() as u32 + 1;
+    machine.state.user32.wndclasses.push(Rc::new(wndclass));
+    atom
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Debug)]
+pub struct WNDCLASSA {
+    style: u32,
+    lpfnWndProc: u32,
+    cbClsExtra: u32,
+    cbWndExtra: u32,
+    hInstance: HINSTANCE,
+    hIcon: HICON,
+    hCursor: HCURSOR,
+    hbrBackground: u32,
+    lpszMenuName: u32,
+    lpszClassName: u32,
+}
+unsafe impl memory::Pod for WNDCLASSA {}
+
+#[win32_derive::dllexport]
+pub fn RegisterClassA(machine: &mut Machine, lpWndClass: Option<&WNDCLASSA>) -> u32 {
+    let wndclass = lpWndClass.unwrap();
+    let ex = WNDCLASSEXA {
+        cbSize: std::mem::size_of::<WNDCLASSEXA>() as u32,
+        style: wndclass.style,
+        lpfnWndProc: wndclass.lpfnWndProc,
+        cbClsExtra: wndclass.cbClsExtra,
+        cbWndExtra: wndclass.cbWndExtra,
+        hInstance: wndclass.hInstance,
+        hIcon: wndclass.hIcon,
+        hCursor: wndclass.hCursor,
+        hbrBackground: wndclass.hbrBackground,
+        lpszMenuName: wndclass.lpszMenuName,
+        lpszClassName: wndclass.lpszClassName,
+        hIconSm: 0,
+    };
+    RegisterClassExA(machine, Some(&ex))
+}
+
+#[win32_derive::dllexport]
+pub fn RegisterClassW(machine: &mut Machine, lpWndClass: Option<&WNDCLASSA>) -> u32 {
+    // TODO: calling the *W variants tags the windows as expecting wide messages(!).
+    let lpWndClass = lpWndClass.unwrap();
+    let name =
+        unsafe { Str16::from_nul_term_ptr(machine.mem(), lpWndClass.lpszClassName) }.unwrap();
+    let background = unsafe { BrushOrColor::from_arg(machine.mem(), lpWndClass.hbrBackground) };
+    let wndclass = WndClass {
+        name: name.to_string(),
+        wndproc: lpWndClass.lpfnWndProc,
+        background: background.to_brush(machine),
+    };
+    register_class(machine, wndclass)
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Debug)]
+pub struct WNDCLASSEXA {
+    cbSize: u32,
+    style: u32,
+    lpfnWndProc: u32,
+    cbClsExtra: u32,
+    cbWndExtra: u32,
+    hInstance: HINSTANCE,
+    hIcon: HICON,
+    hCursor: HCURSOR,
+    hbrBackground: u32,
+    lpszMenuName: u32,
+    lpszClassName: u32,
+    hIconSm: HICON,
+}
+unsafe impl memory::Pod for WNDCLASSEXA {}
+
+#[repr(C, packed)]
+#[derive(Clone, Debug)]
+pub struct WNDCLASSEXW {
+    cbSize: u32,
+    style: u32,
+    lpfnWndProc: u32,
+    cbClsExtra: u32,
+    cbWndExtra: u32,
+    hInstance: HINSTANCE,
+    hIcon: HICON,
+    hCursor: HCURSOR,
+    hbrBackground: u32,
+    lpszMenuName: u32,
+    lpszClassName: u32,
+    hIconSm: HICON,
+}
+unsafe impl memory::Pod for WNDCLASSEXW {}
+
+#[win32_derive::dllexport]
+pub fn RegisterClassExA(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXA>) -> u32 {
+    let lpWndClassEx = lpWndClassEx.unwrap();
+    let name = crate::str16::decode_cp1252(machine.mem().slicez(lpWndClassEx.lpszClassName));
+    let wndclass = WndClass {
+        name,
+        wndproc: lpWndClassEx.lpfnWndProc,
+        background: unsafe { BrushOrColor::from_arg(machine.mem(), lpWndClassEx.hbrBackground) }
+            .to_brush(machine),
+    };
+    register_class(machine, wndclass)
+}
+
+#[win32_derive::dllexport]
+pub fn RegisterClassExW(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXW>) -> u32 {
+    let lpWndClassEx = lpWndClassEx.unwrap();
+    let name = unsafe { Str16::from_nul_term_ptr(machine.mem(), lpWndClassEx.lpszClassName) }
+        .unwrap()
+        .to_string();
+    let wndclass = WndClass {
+        name,
+        wndproc: lpWndClassEx.lpfnWndProc,
+        background: unsafe { BrushOrColor::from_arg(machine.mem(), lpWndClassEx.hbrBackground) }
+            .to_brush(machine),
+    };
+    register_class(machine, wndclass)
+}
+
+bitflags! {
+    pub struct WindowStyle: u32 {
+        // Low 16 bits belong to the window class (e.g. ES_* for EDIT),
+        // not CS_* flags. Preserve them rather than panicking in CreateWindow.
+        const CLASS_SPECIFIC  = 0x0000ffff;
+        const POPUP           = 0x80000000;
+        const CHILD           = 0x40000000;
+        const MINIMIZE        = 0x20000000;
+        const VISIBLE         = 0x10000000;
+        const DISABLED        = 0x08000000;
+        const CLIPSIBLINGS    = 0x04000000;
+        const CLIPCHILDREN    = 0x02000000;
+        const MAXIMIZE        = 0x01000000;
+        const BORDER          = 0x00800000;
+        const DLGFRAME        = 0x00400000;
+        const VSCROLL         = 0x00200000;
+        const HSCROLL         = 0x00100000;
+        const SYSMENU         = 0x00080000;
+        const THICKFRAME      = 0x00040000;
+        const GROUP           = 0x00020000;
+        const TABSTOP         = 0x00010000;
+        const HREDRAW         = 0x00000002; // CS_HREDRAW
+        const VREDRAW         = 0x00000001; // CS_VREDRAW
+    }
+}
+impl TryFrom<u32> for WindowStyle {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        WindowStyle::from_bits(value).ok_or(value)
+    }
+}
+
+bitflags! {
+    pub struct WindowStyleEx: u32 {
+        // todo
+    }
+}
+impl TryFrom<u32> for WindowStyleEx {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        WindowStyleEx::from_bits(value).ok_or(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum CreateWindowClassName<'a, Str: ?Sized> {
+    Atom(u16),
+    Name(&'a Str),
+}
+impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassName<'a, str> {
+    unsafe fn from_arg(mem: memory::Mem<'a>, arg: u32) -> Self {
+        if arg <= 0xFFFF {
+            CreateWindowClassName::Atom(arg as u16)
+        } else {
+            CreateWindowClassName::Name(<Option<&str>>::from_arg(mem, arg).unwrap())
+        }
+    }
+}
+#[derive(Debug)]
+pub enum CreateWindowClassNameA {Atom(u16),Name(String)}
+impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassNameA {
+    unsafe fn from_arg(mem:memory::Mem<'a>,arg:u32)->Self {if arg<=0xffff{Self::Atom(arg as u16)}else{Self::Name(crate::str16::decode_cp1252(mem.slicez(arg)))}}
+}
+impl<'a> crate::winapi::stack_args::FromArg<'a> for CreateWindowClassName<'a, Str16> {
+    unsafe fn from_arg(mem: memory::Mem<'a>, arg: u32) -> Self {
+        if arg <= 0xFFFF {
+            CreateWindowClassName::Atom(arg as u16)
+        } else {
+            CreateWindowClassName::Name(<Option<&Str16>>::from_arg(mem, arg).unwrap())
+        }
+    }
+}
+
+#[win32_derive::dllexport]
+pub async fn CreateWindowExA(
+    machine: &mut Machine,
+    dwExStyle: Result<WindowStyleEx, u32>,
+    lpClassName: CreateWindowClassNameA,
+    lpWindowName: AnsiString,
+    dwStyle: Result<WindowStyle, u32>,
+    X: u32,
+    Y: u32,
+    nWidth: u32,
+    nHeight: u32,
+    hWndParent: HWND,
+    hMenu: u32,
+    hInstance: u32,
+    lpParam: u32,
+) -> HWND {
+    let class_name_wide: String16;
+    let class_name = match lpClassName {
+        CreateWindowClassNameA::Name(name) => {
+            class_name_wide = String16::from(&name);
+            CreateWindowClassName::Name(class_name_wide.as_str16())
+        }
+        CreateWindowClassNameA::Atom(a) => CreateWindowClassName::Atom(a),
+    };
+    let window_name = String16::from(lpWindowName.0.as_deref().unwrap_or(""));
+    CreateWindowExW(
+        machine,
+        dwExStyle,
+        class_name,
+        Some(window_name.as_str16()),
+        dwStyle,
+        X,
+        Y,
+        nWidth,
+        nHeight,
+        hWndParent,
+        hMenu,
+        hInstance,
+        lpParam,
+    )
+    .await
+}
+
+#[win32_derive::dllexport]
+pub async fn CreateWindowExW(
+    machine: &mut Machine,
+    dwExStyle: Result<WindowStyleEx, u32>,
+    lpClassName: CreateWindowClassName<'_, Str16>,
+    lpWindowName: Option<&Str16>,
+    dwStyle: Result<WindowStyle, u32>,
+    X: u32,
+    Y: u32,
+    nWidth: u32,
+    nHeight: u32,
+    hWndParent: HWND,
+    hMenu: u32,
+    hInstance: u32,
+    lpParam: u32,
+) -> HWND {
+    let class_name = match lpClassName {
+        CreateWindowClassName::Atom(_) => {winapi::kernel32::teb_mut(machine).LastErrorValue=1407;return HWND::null();},
+        CreateWindowClassName::Name(name) => name.to_string(),
+    };
+    super::controls::standard(machine);
+    let wndclass = match machine
+        .state
+        .user32
+        .wndclasses
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(&class_name))
+    {
+        Some(wndclass) => wndclass.clone(),
+        None => {
+            log::error!("UNSUPPORTED_WINDOW_CLASS {class_name:?}: no registered procedure/control implementation");
+            // Do not fabricate a working EDIT/BUTTON control with a zero proc.
+            winapi::kernel32::teb_mut(machine).LastErrorValue=1407;
+            return HWND::null();
+        }
+    };
+
+    let style = WindowStyle::from_bits_truncate(dwStyle.unwrap_or_else(|bits|WindowStyle::from_bits_truncate(bits)).bits());
+    const CW_USEDEFAULT: u32 = 0x8000_0000;
+
+    // hInstance is only relevant when multiple DLLs register classes:
+    //   https://devblogs.microsoft.com/oldnewthing/20050418-59/?p=35873
+
+    let hwnd = machine.state.user32.windows.reserve();
+    let width = if nWidth == CW_USEDEFAULT { 640 } else { nWidth };
+    let height = if nHeight == CW_USEDEFAULT {
+        480
+    } else {
+        nHeight
+    };
+
+    let style = WindowStyle::from_bits_truncate(dwStyle.unwrap_or_else(|bits|WindowStyle::from_bits_truncate(bits)).bits());
+    let menu = false; // TODO
+    let (width, height) = if style.contains(WindowStyle::CHILD) {(width,height)}else{client_size_from_window_size(style, menu, width, height)};
+    if width>4096 || height>4096 { winapi::kernel32::teb_mut(machine).LastErrorValue=87;return HWND::null(); }
+    if style.contains(WindowStyle::CHILD)&&machine.state.user32.windows.get(hWndParent).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return HWND::null();}
+
+    let typ = if style.contains(WindowStyle::CHILD) {
+        WindowType::Child
+    } else {
+        let mut host_win = machine.host.create_window(hwnd.to_raw());
+        host_win.set_title(&lpWindowName.unwrap().to_string());
+        host_win.set_size(width, height);
+        let surface = machine.host.create_surface(
+            hwnd.to_raw(),
+            &SurfaceOptions {
+                width,
+                height,
+                primary: true,
+            },
+        );
+        WindowType::TopLevel(WindowTopLevel {
+            host: host_win,
+            surface,
+            pixels: None,
+            dirty: Some(UpdateRegion {
+                erase_background: true,
+            }),
+        })
+    };
+
+    let raw_style = match dwStyle {Ok(value)=>value.bits(),Err(value)=>value};
+    let control = if wndclass.wndproc==super::controls::NATIVE_PROC {super::controls::kind(&class_name).map(|kind|super::controls::Control::new(kind,&lpWindowName.map(|s|s.to_string()).unwrap_or_default(),raw_style))}else{None};
+    let window = Window {
+        dialog: None,
+        title:lpWindowName.map(|s|s.to_string()).unwrap_or_default(),parent:hWndParent,id:hMenu,x:X as i32,y:Y as i32,control,
+        hwnd,
+        typ,
+        width,
+        height,
+        wndclass,
+        style,
+    };
+    machine.state.user32.windows.set(hwnd, window);
+
+    // Synchronously dispatch WM_CREATE.
+    let msg = MSG {
+        hwnd,
+        message: WM::CREATE as u32,
+        wParam: 0,
+        lParam: 0, // TODO: CREATESTRUCT
+        time: 0,
+        pt_x: 0,
+        pt_y: 0,
+    };
+    dispatch_message(machine, &msg).await;
+
+    hwnd
+}
+
+#[win32_derive::dllexport]
+pub fn DestroyWindow(machine: &mut Machine, hWnd: HWND) -> bool {
+    if machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false}
+    let children:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==hWnd).map(|w|w.hwnd).collect();
+    for child in children {DestroyWindow(machine,child);}
+    machine.state.user32.windows.remove(hWnd);if machine.state.user32.focused==hWnd{machine.state.user32.focused=HWND::null()}true
+}
+
+#[win32_derive::dllexport]
+pub fn GetDesktopWindow(_machine: &mut Machine) -> HWND {
+    // Reserved virtual desktop handle, not a physical host desktop.
+    HWND::from_raw(0xffff0001)
+}
+
+#[win32_derive::dllexport]
+pub fn GetForegroundWindow(machine: &mut Machine) -> HWND {
+    if let Some(window) = machine.state.user32.windows.iter().next() {
+        return window.hwnd;
+    }
+    GetDesktopWindow(machine)
+}
+
+#[win32_derive::dllexport]
+pub fn SetForegroundWindow(_machine: &mut Machine, hWnd: HWND) -> bool {
+    true // success
+}
+
+#[win32_derive::dllexport]
+pub fn GetActiveWindow(machine: &mut Machine) -> HWND {
+    match machine.state.user32.windows.iter().next() {
+        Some(w) => w.hwnd,
+        None => HWND::null(),
+    }
+}
+
+#[win32_derive::dllexport]
+pub fn GetLastActivePopup(machine: &mut Machine) -> HWND {
+    machine.state.user32.windows.iter().next().unwrap().hwnd
+}
+
+#[win32_derive::dllexport]
+pub fn FindWindowA(machine:&mut Machine,lpClassName:AnsiString,lpWindowName:AnsiString)->HWND {
+    machine.state.user32.windows.iter().find(|w|matches!(w.typ,WindowType::TopLevel(_))&&lpClassName.0.as_ref().map_or(true,|name|w.wndclass.name.eq_ignore_ascii_case(name))&&lpWindowName.0.as_ref().map_or(true,|title|w.title==*title)).map_or(HWND::null(),|w|w.hwnd)
+}
+
+#[win32_derive::dllexport]
+pub async fn UpdateWindow(machine: &mut Machine, hWnd: HWND) -> bool {
+    if machine.state.user32.windows.get(hWnd).and_then(|w|w.control.as_ref()).is_some(){super::controls::paint(machine,hWnd);return true}
+    let window = machine.state.user32.windows.get(hWnd).unwrap();
+    match &window.typ {
+        WindowType::TopLevel(top) => {
+            if top.dirty.is_none() {
+                return true;
+            }
+        }
+        _ => {
+            log::warn!("TODO: UpdateWindow for child windows");
+        }
+    }
+
+    let windowpos_addr = machine.state.scratch.alloc(
+        machine.emu.memory.mem(),
+        std::mem::size_of::<WINDOWPOS>() as u32,
+    );
+
+    let msg = MSG {
+        hwnd: hWnd,
+        message: WM::PAINT as u32,
+        wParam: 0,
+        lParam: 0,
+        time: 0,
+        pt_x: 0,
+        pt_y: 0,
+    };
+    DispatchMessageA(machine, Some(&msg)).await;
+
+    dispatch_message(
+        machine,
+        &MSG {
+            hwnd: hWnd,
+            message: WM::WINDOWPOSCHANGED as u32,
+            wParam: 0,
+            lParam: windowpos_addr,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        },
+    )
+    .await;
+
+    true // success
+}
+
+/// nCmdShow passed to ShowWindow().
+#[derive(Debug, win32_derive::TryFromEnum)]
+pub enum SW {
+    HIDE = 0,
+    NORMAL = 1,
+    SHOWMINIMIZED = 2,
+    SHOWMAXIMIZED = 3,
+    SHOWNOACTIVATE = 4,
+    SHOW = 5,
+    MINIMIZE = 6,
+    SHOWMINNOACTIVE = 7,
+    SHOWNA = 8,
+    RESTORE = 9,
+    SHOWDEFAULT = 10,
+    FORCEMINIMIZE = 11,
+}
+
+#[win32_derive::dllexport]
+pub async fn ShowWindow(machine: &mut Machine, hWnd: HWND, nCmdShow: Result<SW, u32>) -> bool {
+    let windowpos_addr = machine.state.scratch.alloc(
+        machine.emu.memory.mem(),
+        std::mem::size_of::<WINDOWPOS>() as u32,
+    );
+    dispatch_message(
+        machine,
+        &MSG {
+            hwnd: hWnd,
+            message: WM::ACTIVATEAPP as u32,
+            wParam: 0,
+            lParam: windowpos_addr,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        },
+    )
+    .await;
+
+    dispatch_message(
+        machine,
+        &MSG {
+            hwnd: hWnd,
+            message: WM::ACTIVATE as u32,
+            wParam: 1,
+            lParam: 0,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        },
+    )
+    .await;
+
+    dispatch_message(
+        machine,
+        &MSG {
+            hwnd: hWnd,
+            message: WM::WINDOWPOSCHANGED as u32,
+            wParam: 0,
+            lParam: windowpos_addr,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        },
+    )
+    .await;
+
+    let previously_visible = true;
+    previously_visible
+}
+
+#[win32_derive::dllexport]
+pub fn SetFocus(machine: &mut Machine, hWnd: HWND) -> HWND {
+    let old=machine.state.user32.focused;
+    if !hWnd.is_null()&&machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return HWND::null()}
+    machine.state.user32.focused=hWnd;
+    for (hwnd,focus) in [(old,false),(hWnd,true)] {if let Some(c)=machine.state.user32.windows.get_mut(hwnd).and_then(|w|w.control.as_mut()){c.focus=focus;super::controls::paint(machine,hwnd)}}
+    old
+}
+#[win32_derive::dllexport]
+pub fn GetFocus(machine:&mut Machine)->HWND {machine.state.user32.focused}
+#[win32_derive::dllexport]
+pub fn GetParent(machine:&mut Machine,hWnd:HWND)->HWND {machine.state.user32.windows.get(hWnd).map_or(HWND::null(),|w|w.parent)}
+#[win32_derive::dllexport]
+pub fn GetDlgCtrlID(machine:&mut Machine,hWnd:HWND)->u32 {machine.state.user32.windows.get(hWnd).map_or(0,|w|w.id)}
+
+async fn def_window_proc(
+    machine: &mut Machine,
+    hWnd: HWND,
+    msg: Result<WM, u32>,
+    _wParam: u32,
+    lParam: u32,
+) -> u32 {
+    let msg = match msg {
+        Ok(msg) => msg,
+        Err(_) => return 0, // ignore
+    };
+    match msg {
+        WM::PAINT => {
+            let window = machine
+                .state
+                .user32
+                .windows
+                .get_mut(hWnd)
+                .unwrap()
+                .expect_toplevel_mut();
+            window.dirty = None;
+        }
+        WM::WINDOWPOSCHANGED => {
+            let Window { width, height, .. } = *machine.state.user32.windows.get_mut(hWnd).unwrap();
+            let WINDOWPOS { flags, .. } = *machine.mem().view::<WINDOWPOS>(lParam);
+
+            if !flags.contains(SWP::NOSIZE) {
+                const SIZE_RESTORED: u32 = 0;
+                let msg = MSG {
+                    hwnd: hWnd,
+                    message: WM::SIZE as u32,
+                    wParam: SIZE_RESTORED, // TODO: SIZE_* flags
+                    lParam: (height << 16) | width,
+                    time: 0,
+                    pt_x: 0,
+                    pt_y: 0,
+                };
+                dispatch_message(machine, &msg).await;
+            }
+
+            if !flags.contains(SWP::NOMOVE) {
+                let x = 0; // TODO
+                let y = 0;
+                let msg = MSG {
+                    hwnd: hWnd,
+                    message: WM::MOVE as u32,
+                    wParam: 0,
+                    lParam: (y << 16) | x,
+                    time: 0,
+                    pt_x: 0,
+                    pt_y: 0,
+                };
+                dispatch_message(machine, &msg).await;
+            }
+        }
+        _ => {}
+    }
+    0
+}
+
+#[win32_derive::dllexport]
+pub async fn DefWindowProcA(
+    machine: &mut Machine,
+    hWnd: HWND,
+    msg: Result<WM, u32>,
+    wParam: u32,
+    lParam: u32,
+) -> u32 {
+    def_window_proc(machine, hWnd, msg, wParam, lParam).await
+}
+
+#[win32_derive::dllexport]
+pub async fn DefWindowProcW(
+    machine: &mut Machine,
+    hWnd: HWND,
+    msg: Result<WM, u32>,
+    wParam: u32,
+    lParam: u32,
+) -> u32 {
+    def_window_proc(machine, hWnd, msg, wParam, lParam).await
+}
+
+/// Compute window rectangle from client rectangle.
+pub(super) fn window_rect(rect: &mut RECT, style: WindowStyle, menu: bool) {
+    const CAPTION: i32 = 19;
+    rect.top = rect.top - CAPTION;
+    rect.left = rect.left;
+    rect.right = rect.right;
+    rect.bottom = rect.bottom;
+    if menu {
+        rect.top -= 19;
+    }
+    if style.contains(WindowStyle::BORDER) {
+        const BORDER: i32 = 1;
+        rect.top -= BORDER;
+        rect.left -= BORDER;
+        rect.right += BORDER;
+        rect.bottom += BORDER;
+    }
+    if style.contains(WindowStyle::THICKFRAME) {
+        const FRAME: i32 = 4;
+        rect.top -= FRAME;
+        rect.left -= FRAME;
+        rect.right += FRAME;
+        rect.bottom += FRAME;
+    }
+}
+
+fn client_size_from_window_size(
+    style: WindowStyle,
+    menu: bool,
+    width: u32,
+    height: u32,
+) -> (u32, u32) {
+    let mut r = RECT::default();
+    window_rect(&mut r, style, menu);
+    (
+        std::cmp::max(width as i32 - (r.right - r.left), 64) as u32,
+        std::cmp::max(height as i32 - (r.bottom - r.top), 64) as u32,
+    )
+}
+
+#[win32_derive::dllexport]
+pub fn AdjustWindowRect(
+    machine: &mut Machine,
+    lpRect: Option<&mut RECT>,
+    dwStyle: Result<WindowStyle, u32>,
+    bMenu: bool,
+) -> bool {
+    AdjustWindowRectEx(
+        machine,
+        lpRect,
+        dwStyle,
+        bMenu,
+        Result::Ok(WindowStyleEx::empty()),
+    )
+}
+
+#[win32_derive::dllexport]
+pub fn AdjustWindowRectEx(
+    _machine: &mut Machine,
+    lpRect: Option<&mut RECT>,
+    dwStyle: Result<WindowStyle, u32>,
+    bMenu: bool,
+    dwExStyle: Result<WindowStyleEx, u32>,
+) -> bool {
+    window_rect(lpRect.unwrap(), dwStyle.unwrap(), bMenu);
+    true
+}
+
+bitflags! {
+    pub struct SWP: u32 {
+        const ASYNCWINDOWPOS = 0x4000;
+        const DEFERERASE = 0x2000;
+        const DRAWFRAME = 0x0020;
+        const FRAMECHANGED = 0x0020;
+        const HIDEWINDOW = 0x0080;
+        const NOACTIVATE = 0x0010;
+        const NOCOPYBITS = 0x0100;
+        const NOMOVE = 0x0002;
+        const NOOWNERZORDER = 0x0200;
+        const NOREDRAW = 0x0008;
+        const NOREPOSITION = 0x0200;
+        const NOSENDCHANGING = 0x0400;
+        const NOSIZE = 0x0001;
+        const NOZORDER = 0x0004;
+        const SHOWWINDOW = 0x0040;
+    }
+}
+impl TryFrom<u32> for SWP {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        SWP::from_bits(value).ok_or(value)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct WINDOWPOS {
+    pub hwnd: HWND,
+    pub hwndInsertAfter: HWND,
+    pub x: i32,
+    pub y: i32,
+    pub cx: i32,
+    pub cy: i32,
+    pub flags: SWP,
+}
+unsafe impl memory::Pod for WINDOWPOS {}
+
+#[win32_derive::dllexport]
+pub async fn SetWindowPos(
+    machine: &mut Machine,
+    hWnd: HWND,
+    hWndInsertAfter: HWND,
+    X: i32,
+    Y: i32,
+    cx: i32,
+    cy: i32,
+    uFlags: Result<SWP, u32>,
+) -> bool {
+    let windowpos_addr = machine.state.scratch.alloc(
+        machine.emu.memory.mem(),
+        std::mem::size_of::<WINDOWPOS>() as u32,
+    );
+    *machine.mem().view_mut::<WINDOWPOS>(windowpos_addr) = WINDOWPOS {
+        hwnd: hWnd,
+        hwndInsertAfter: hWndInsertAfter,
+        x: X,
+        y: Y,
+        cx,
+        cy,
+        flags: uFlags.unwrap(),
+    };
+
+    // A trace of winstream.exe had this sequence of synchronous messages:
+    // WM_WINDOWPOSCHANGING
+    // (WM_ACTIVATEAPP, WM_NCACTIVATE, WM_ACTIVATE)
+    // WM_WINDOWPOSCHANGED
+    // -> DefWindowProc calls WM_SIZE and WM_MOVE
+    let msg = MSG {
+        hwnd: hWnd,
+        message: WM::WINDOWPOSCHANGED as u32,
+        wParam: 0,
+        lParam: windowpos_addr,
+        time: 0,
+        pt_x: 0,
+        pt_y: 0,
+    };
+    dispatch_message(machine, &msg).await;
+
+    let window = machine.state.user32.windows.get_mut(hWnd).unwrap();
+    let menu = true; // TODO
+    let (width, height) = client_size_from_window_size(window.style, menu, cx as u32, cy as u32);
+    window.set_client_size(&mut *machine.host, width, height);
+
+    true
+}
+
+#[win32_derive::dllexport]
+pub fn MoveWindow(
+    machine: &mut Machine,
+    hWnd: HWND,
+    X: u32,
+    Y: u32,
+    nWidth: u32,
+    nHeight: u32,
+    bRepaint: bool,
+) -> bool {
+    let window = machine.state.user32.windows.get_mut(hWnd).unwrap();
+    let menu = true; // TODO
+    let (width, height) = client_size_from_window_size(window.style, menu, nWidth, nHeight);
+    window.set_client_size(&mut *machine.host, width, height);
+    true // success
+}
+
+#[win32_derive::dllexport]
+pub fn GetClientRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
+    if hWnd.to_raw()==0xffff0001 {return GetWindowRect(machine,hWnd,lpRect);}
+    let rect=match lpRect {Some(rect)=>rect,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;}};
+    let window=match machine.state.user32.windows.get(hWnd) {Some(window)=>window,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false;}};
+    *rect = RECT {
+        left: 0,
+        top: 0,
+        right: window.width as i32,
+        bottom: window.height as i32,
+    };
+    true
+}
+
+#[win32_derive::dllexport]
+pub fn GetWindowRect(machine: &mut Machine, hWnd: HWND, lpRect: Option<&mut RECT>) -> bool {
+    let rect=match lpRect {Some(rect)=>rect,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false;}};
+    if hWnd.to_raw()==0xffff0001 {
+        // Same virtual monitor profile as GetSystemMetrics, never host hardware identity.
+        *rect=RECT {left:0,top:0,right:super::GetSystemMetrics(machine,Ok(super::SystemMetric::CXSCREEN)) as i32,bottom:super::GetSystemMetrics(machine,Ok(super::SystemMetric::CYSCREEN)) as i32};return true;
+    }
+    let window=match machine.state.user32.windows.get(hWnd) {Some(window)=>window,None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false;}};
+
+    let mut result = RECT {
+        left: 0,
+        top: 0,
+        right: window.width as i32,
+        bottom: window.height as i32,
+    };
+
+    let menu = true; // TODO
+    window_rect(&mut result, window.style, menu);
+
+    // Top-level coordinates follow the virtual desktop; child transform is partial.
+    let offset_x = window.x-result.left;
+    let offset_y = window.y-result.top;
+
+    result.left += offset_x;
+    result.right += offset_x;
+
+    result.top += offset_y;
+    result.bottom += offset_y;
+
+    *rect = result;
+    true
+}
+
+#[win32_derive::dllexport]
+pub fn ClientToScreen(_machine: &mut Machine, hWnd: HWND, lpPoint: Option<&mut POINT>) -> bool {
+    true
+}
+
+#[win32_derive::dllexport]
+pub fn GetWindowDC(_machine: &mut Machine, hWnd: HWND) -> HDC {
+    HDC::null()
+}
+
+#[win32_derive::dllexport]
+pub fn ReleaseDC(machine: &mut Machine, hwnd: HWND, hdc: HDC) -> bool {
+    // Note: there is also DeleteDC; this one is specifically for GetWindowDC/GetDC.
+    if let Some(dc) = machine.state.gdi32.dcs.remove(hdc) {
+        match dc.target {
+            winapi::gdi32::DCTarget::Window(dc_hwnd) => {
+                if dc_hwnd == hwnd {
+                    true
+                } else {
+                    log::warn!("ReleaseDC of DC not matching HWND");
+                    false // fail
+                }
+            }
+            _ => {
+                log::warn!("ReleaseDC of non-window DC");
+                false // fail
+            }
+        }
+    } else {
+        log::warn!("ReleaseDC of unknown DC");
+        false // fail
+    }
+}
+
+#[win32_derive::dllexport]
+pub fn GetWindowLongA(machine: &mut Machine, hWnd: HWND, nIndex: i32) -> i32 {
+    let Some(w)=machine.state.user32.windows.get(hWnd)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0};
+    match nIndex {-16=>w.control.as_ref().map_or(w.style.bits(),|c|c.style)as i32,-20=>0,-12=>w.id as i32,-8=>w.parent.to_raw() as i32,_=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1413;0}}
+}
+
+#[win32_derive::dllexport]
+pub fn GetDC(machine: &mut Machine, hWnd: HWND) -> HDC {
+    match hWnd.to_option() {
+        Some(hwnd) => {
+            let window = machine.state.user32.windows.get(hwnd).unwrap();
+            match &window.typ {
+                WindowType::TopLevel(_) => machine.state.gdi32.new_window_dc(hwnd),
+                _ => {
+                    log::warn!("GetDC for non-top-level window");
+                    HDC::null()
+                }
+            }
+        }
+        None => machine.state.gdi32.screen_dc,
+    }
+}
+
+#[win32_derive::dllexport]
+pub fn MapWindowPoints(
+    _machine: &mut Machine,
+    hWndFrom: HWND,
+    hWndTo: HWND,
+    lpPoints: ArrayWithSize<POINT>,
+) -> i32 {
+    if !(hWndFrom.is_null() || hWndTo.is_null()) {
+        todo!()
+    }
+    // Mapping a window to/from desktop coords.
+    let delta_x = 0;
+    let delta_y = 0;
+    (delta_y << 16) | delta_x
+}
+
+#[win32_derive::dllexport]
+pub fn SetCapture(_machine: &mut Machine, hwnd: HWND) -> HWND {
+    HWND::null()
+}
+
+#[win32_derive::dllexport]
+pub fn ReleaseCapture(_machine: &mut Machine) -> bool {
+    true
+}
+
+#[win32_derive::dllexport]
+pub fn SetWindowTextA(machine: &mut Machine, hWnd: HWND, lpString: AnsiString) -> bool {
+    let lpString=lpString.0.as_deref();
+    if let Some(w)=machine.state.user32.windows.get_mut(hWnd){w.title=lpString.unwrap_or("").into();}
+    if let Some(c)=machine.state.user32.windows.get_mut(hWnd).and_then(|w|w.control.as_mut()){c.text=lpString.unwrap_or("").as_bytes().to_vec();c.start=c.text.len();c.end=c.start;super::controls::paint(machine,hWnd);return true}
+    match machine.state.user32.windows.get_mut(hWnd) {
+        Some(window) => {
+            window
+                .expect_toplevel_mut()
+                .host
+                .set_title(lpString.unwrap());
+            true
+        }
+        None => {
+            log::error!("SetWindowText of non-window?");
+            false
+        }
+    }
+}
+
+#[win32_derive::dllexport]
+pub fn RegisterWindowMessageW(machine: &mut Machine, lpString: Option<&Str16>) -> u32 {
+    let name = lpString.unwrap().to_string();
+    machine.state.user32.user_window_message_count += 1;
+    WM::USER as u32 + machine.state.user32.user_window_message_count
+}
+
+#[win32_derive::dllexport]
+pub fn GetCapture(machine: &mut Machine) -> HWND {
+    todo!();
+}
+
+/* Wine win32u/window.c:1133-1171,1189-1198; SHA
+ * 0738d528db522f52d9d75f2aec712688dd31d1d2. LGPL-2.1-or-later.
+ * Copyright 1993, 1994 Alexandre Julliard. Native server style updates ->
+ * per-machine HWND state; synchronous messages still call real guest wndprocs.
+ * WinEvent accessibility notifications are not implemented in this profile.
+ */
+#[win32_derive::dllexport]
+pub async fn EnableWindow(machine: &mut Machine, hWnd: HWND, bEnable: bool) -> bool {
+    if hWnd.to_raw()==0xffff {winapi::kernel32::teb_mut(machine).LastErrorValue=87;return false}
+    if machine.state.user32.windows.get(hWnd).is_none(){winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false}
+    if !bEnable {Box::pin(super::message::SendMessageA(machine,hWnd,Err(0x1f),0,0)).await;}
+    // WM_CANCELMODE may destroy/re-enter the HWND: do not hold a Rust borrow across it.
+    let Some(w)=machine.state.user32.windows.get_mut(hWnd)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+    let was_disabled=w.style.contains(WindowStyle::DISABLED);
+    w.style.set(WindowStyle::DISABLED,!bEnable);
+    if let Some(c)=w.control.as_mut(){c.style=(c.style&!0x08000000)|if bEnable{0}else{0x08000000};}
+    if was_disabled==bEnable {
+        if !bEnable&&machine.state.user32.focused==hWnd {SetFocus(machine,HWND::null());Box::pin(super::message::SendMessageA(machine,hWnd,Err(8),0,0)).await;}
+        Box::pin(super::message::SendMessageA(machine,hWnd,Err(0xa),bEnable as u32,0)).await;
+    }
+    was_disabled
+}
+#[win32_derive::dllexport]
+pub fn IsWindowEnabled(machine:&mut Machine,hWnd:HWND)->bool{
+    match machine.state.user32.windows.get(hWnd){Some(w)=>!w.style.contains(WindowStyle::DISABLED),None=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;false}}
+}
+
+#[cfg(test)]
+mod porthole_style_tests {
+    use super::*;
+    #[test]
+    fn edit_control_style_preserves_class_specific_low_bits() {
+        let style=WindowStyle::try_from(0x54001844).unwrap();
+        assert!(style.contains(WindowStyle::CHILD));
+        assert_eq!(style.bits(),0x54001844);
+    }
+}
+
+#[win32_derive::dllexport]
+pub fn IsWindow(machine: &mut Machine, hwnd: HWND) -> bool {
+    hwnd.to_raw()==0xffff0001 || (!hwnd.is_null() && machine.state.user32.windows.get(hwnd).is_some())
+}
+
+/* Wine win32u/window.c:1075-1091; user32/win.c:1218-1220 wrapper.
+ * SHA 0738d528db522f52d9d75f2aec712688dd31d1d2; LGPL-2.1-or-later.
+ * Copyright 1993, 1994 Alexandre Julliard. list_window_parents -> HWND table;
+ * top-level owners are not parents. Message-only windows are unsupported.
+ */
+#[win32_derive::dllexport]
+pub fn IsWindowVisible(machine:&mut Machine,hWnd:HWND)->bool{
+ let mut current=hWnd;
+ for _ in 0..64{
+  if current.to_raw()==0xffff0001{return true}
+  let Some(w)=machine.state.user32.windows.get(current)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+  if !w.style.contains(WindowStyle::VISIBLE){return false}
+  if matches!(w.typ,WindowType::TopLevel(_)){return true}
+  current=w.parent;
+ }false
+}

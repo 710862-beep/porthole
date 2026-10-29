@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "recipes": {
+    "kernel32.dll!GetTickCount64": {
+      "source": "js/shim-kernel32.js",
+      "insertBefore": "    GetCurrentProcessId() { return 1; }",
+      "snippet": "ci/recipes/kernel32-gettickcount64.jsnippet",
+      "test": "ci/recipes/kernel32-gettickcount64.test.mjs",
+      "targetTest": "tests/node/autofix/kernel32-gettickcount64.test.mjs",
+      "rationale": "Expõe o contador monotônico de 64 bits já disponível em MonotonicClock; não altera o contrato de GetTickCount de 32 bits."
+    }
+  }
+}

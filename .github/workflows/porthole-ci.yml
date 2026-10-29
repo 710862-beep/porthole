@@ -1,0 +1,156 @@
+name: Porthole compatibility CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: porthole-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Syntax, runtime, stress and Wine adapter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Acquire and audit pinned Wine dialog source
+        run: |
+          node scripts/fetch-wine-source.mjs
+          node scripts/extract-wine-api.mjs user32 CreateDialogParamA
+          node scripts/translate-c-to-rust.mjs
+          node scripts/extract-wine-api.mjs comctl32 UpDownWindowProc
+          node scripts/extract-wine-api.mjs advapi32 GetUserNameA
+          node scripts/extract-wine-api.mjs kernelbase GetEnvironmentVariableA
+          node scripts/extract-wine-api.mjs kernelbase WideCharToMultiByte
+          node scripts/extract-wine-api.mjs kernelbase SetCurrentDirectoryA
+          node scripts/extract-wine-api.mjs kernelbase FindFirstFileA
+          node scripts/extract-wine-api.mjs kernelbase FileTimeToLocalFileTime
+          node scripts/extract-wine-api.mjs win32u NtUserEnableWindow
+          node scripts/extract-wine-api.mjs win32u is_window_visible
+          node scripts/extract-wine-api.mjs win32u NtUserSetWindowPlacement
+          node scripts/extract-wine-api.mjs winmm midiOutGetNumDevs
+          node scripts/extract-wine-api.mjs winmm midiOutSetVolume
+          node scripts/extract-wine-api.mjs kernelbase GetSystemInfo
+          node scripts/extract-wine-api.mjs gdi32 GetDeviceCaps
+          node scripts/extract-wine-api.mjs ddraw ddraw1_GetCaps
+          node scripts/extract-wine-api.mjs ddraw ddraw_surface_create
+          node scripts/extract-wine-api.mjs win32u NtGdiGetDeviceCaps
+          node scripts/extract-wine-api.mjs win32u nulldrv_GetDeviceCaps
+          node scripts/extract-wine-api.mjs kernelbase CreateMutexA
+          node scripts/extract-wine-api.mjs dplayx DirectPlayEnumerateA
+          node scripts/extract-wine-api.mjs user32 ComboWndProc_common
+          node scripts/extract-wine-api.mjs user32 LISTBOX_FindString
+          node scripts/extract-wine-api.mjs user32 LISTBOX_InsertString
+          node --test tests/node/wine-extraction.test.mjs
+      - name: Reject startup-only gameplay claims
+        run: node --test tests/node/gameplay.test.mjs tests/node/compatibility-gates.test.mjs
+      - name: Install pinned PE32 compiler
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+      - name: fetch-with-fallbacks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts
+          node scripts/fetch-with-fallbacks.mjs 2>&1 | tee artifacts/fetch-fallbacks.log
+      - name: thread-validation
+        if: always()
+        run: node scripts/run-synthetic.mjs thread-validation
+      - name: input-validation
+        if: always()
+        run: node scripts/run-synthetic.mjs input-test
+      - name: network-validation
+        if: always()
+        run: node scripts/run-synthetic.mjs network-test
+      - name: registry-validation
+        if: always()
+        run: node scripts/run-synthetic.mjs registry-test
+      - name: installer-validation
+        if: always()
+        run: node scripts/run-synthetic.mjs installer-test
+      - name: Probe acquired PE executables
+        if: always()
+        run: node scripts/probe-test-assets.mjs
+      - name: Enforce same-source candidate gameplay promotion gates
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-promotion.mjs --remote
+      - name: Execute all declared checks without hiding later results
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          status=0
+          set -o pipefail
+          set +e
+          npm run check:syntax 2>&1 | tee artifacts/syntax.log
+          code=${PIPESTATUS[0]}; if [ "$code" -ne 0 ]; then status=1; fi
+          npm test 2>&1 | tee artifacts/npm-test.log
+          code=${PIPESTATUS[0]}; if [ "$code" -ne 0 ]; then status=1; fi
+          npm run test:wine 2>&1 | tee artifacts/wine.log
+          code=${PIPESTATUS[0]}; if [ "$code" -ne 0 ]; then status=1; fi
+          exit "$status"
+      - name: Publish sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porthole-test-diagnostics-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Rust/Wasm candidate build and mandatory five-PE + DOOM95 aggregate gates
+  # live in rust-wasm-candidate.yml. Never copy an unvalidated candidate to vendor.
+  # This workflow continues to exercise the preserved stable backend separately.
+
+  autofix:
+    name: Reviewed-recipe autofix and conditional commit
+    needs: test
+    if: >-
+      needs.test.result == 'failure' &&
+      github.event_name == 'push' &&
+      github.ref_name == 'arena/6a52f3cb-porthole' &&
+      github.actor != 'github-actions[bot]' &&
+      contains(github.event.head_commit.message, '[autofix]') == false &&
+      vars.PORTHOLE_AUTOFIX == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-test-diagnostics-${{ github.run_id }}
+          path: artifacts
+      - name: Apply only a reviewed recipe and commit if fully green
+        shell: bash
+        env:
+          PORTHOLE_AUTOFIX_COMMIT: 1
+        run: |
+          chmod +x ci-autofix.sh
+          git config user.name "porthole-autofix[bot]"
+          git config user.email "porthole-autofix[bot]@users.noreply.github.com"
+          ./ci-autofix.sh --log artifacts/npm-test.log --log artifacts/wine.log --apply --commit
+          git push origin HEAD:arena/6a52f3cb-porthole

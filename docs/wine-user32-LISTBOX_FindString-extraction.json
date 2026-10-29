@@ -1,0 +1,79 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/user32/listbox.c",
+  "sourceSha256": "b44289a6b76597afb55f6135c858f8b05fe8fe6793438878f6172d76b5406a2e",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1996 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "LISTBOX_FindString",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "LISTBOX_FindString",
+      "startLine": 1019,
+      "endLine": 1077,
+      "calls": [
+        "HAS_STRINGS",
+        "LISTBOX_FindStringPos",
+        "LISTBOX_lstrcmpiW",
+        "SetLastError",
+        "get_item_data",
+        "get_item_string",
+        "lstrlenW"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_FindStringPos",
+      "startLine": 931,
+      "endLine": 966,
+      "calls": [
+        "GetWindowLongPtrW",
+        "HAS_STRINGS",
+        "LISTBOX_lstrcmpiW",
+        "SendMessageW",
+        "get_item_data",
+        "get_item_string"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "LISTBOX_lstrcmpiW",
+      "startLine": 913,
+      "endLine": 923,
+      "calls": [
+        "CompareStringW"
+      ],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "get_item_data",
+      "startLine": 180,
+      "endLine": 183,
+      "calls": [],
+      "source": "dlls/user32/listbox.c"
+    },
+    {
+      "name": "get_item_string",
+      "startLine": 190,
+      "endLine": 193,
+      "calls": [
+        "HAS_STRINGS"
+      ],
+      "source": "dlls/user32/listbox.c"
+    }
+  ],
+  "boundaries": [
+    "CompareStringW",
+    "GetWindowLongPtrW",
+    "HAS_STRINGS",
+    "SendMessageW",
+    "SetLastError",
+    "lstrlenW"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

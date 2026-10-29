@@ -1,0 +1,92 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/kernelbase/sync.c",
+  "sourceSha256": "dac46e293d3352cabd5c217fce4b1e000205a065aa1d624cb7e9c657a6aa61cc",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1998 Alexandre Julliard"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "CreateMutexA",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "CreateMutexA",
+      "startLine": 702,
+      "endLine": 705,
+      "calls": [
+        "CreateMutexExA"
+      ],
+      "source": "dlls/kernelbase/sync.c"
+    },
+    {
+      "name": "CreateMutexExA",
+      "startLine": 720,
+      "endLine": 736,
+      "calls": [
+        "CreateMutexExW",
+        "NtCurrentTeb",
+        "RtlAnsiStringToUnicodeString",
+        "RtlInitAnsiString",
+        "SetLastError"
+      ],
+      "source": "dlls/kernelbase/sync.c"
+    },
+    {
+      "name": "CreateMutexExW",
+      "startLine": 742,
+      "endLine": 758,
+      "calls": [
+        "NtCreateMutant",
+        "RtlNtStatusToDosError",
+        "SetLastError",
+        "get_create_object_attributes"
+      ],
+      "source": "dlls/kernelbase/sync.c"
+    },
+    {
+      "name": "get_create_object_attributes",
+      "startLine": 89,
+      "endLine": 104,
+      "calls": [
+        "BaseGetNamedObjectDirectory",
+        "RtlInitUnicodeString"
+      ],
+      "source": "dlls/kernelbase/sync.c"
+    },
+    {
+      "name": "BaseGetNamedObjectDirectory",
+      "startLine": 62,
+      "endLine": 87,
+      "calls": [
+        "ARRAY_SIZE",
+        "CloseHandle",
+        "InitializeObjectAttributes",
+        "InterlockedCompareExchangePointer",
+        "NtCurrentTeb",
+        "NtOpenDirectoryObject",
+        "RtlInitUnicodeString",
+        "swprintf"
+      ],
+      "source": "dlls/kernelbase/sync.c"
+    }
+  ],
+  "boundaries": [
+    "ARRAY_SIZE",
+    "CloseHandle",
+    "InitializeObjectAttributes",
+    "InterlockedCompareExchangePointer",
+    "NtCreateMutant",
+    "NtCurrentTeb",
+    "NtOpenDirectoryObject",
+    "RtlAnsiStringToUnicodeString",
+    "RtlInitAnsiString",
+    "RtlInitUnicodeString",
+    "RtlNtStatusToDosError",
+    "SetLastError",
+    "swprintf"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}

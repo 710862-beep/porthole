@@ -1,0 +1,25 @@
+{
+  "runId": 40736001546,
+  "module": "doomlnch.dll",
+  "sha256": "57d407804ba2e606082994fcc2fb4ea86932374c62d911bdc398e862028a075f",
+  "preferredBase": "0x10000000",
+  "runtimeBase": "0x30000",
+  "faultIP": "0x32b7c",
+  "cpuReportedOperand": null,
+  "lastApiIsNotCausal": {
+    "api": "RegisterClassA",
+    "args": "[0002f5d8]",
+    "origin": "rust-guest",
+    "timestamp": 1793208634831
+  },
+  "method": "Static PE import parsing and objdump disassembly, not inference from the last API",
+  "instructions": [
+    "0x32b76: mov edi, [0x47354]",
+    "0x32b7c: call edi"
+  ],
+  "iatRva": "0x17354",
+  "resolvedImport": "KERNEL32.dll!SetErrorMode",
+  "loaderWarning": [
+    "win32/src/pe/loader.rs:135 missing symbol kernel32.dll!SetErrorMode"
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "repository": "https://github.com/wine-mirror/wine",
+  "commit": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+  "source": "dlls/ddraw/ddraw.c",
+  "sourceSha256": "4cd17d7db44a2de84605ce77f26af309d20263bc5f7b1383a008caf2e70799b4",
+  "license": "LGPL-2.1-or-later",
+  "copyrights": [
+    "Copyright 1997-2000 Marcus Meissner",
+    "Copyright 1998-2000 Lionel Ulmer",
+    "Copyright 2000-2001 TransGaming Technologies Inc.",
+    "Copyright 2006 Stefan Dösinger",
+    "Copyright 2008 Denver Gingerich",
+    "Copyright 2007-2008, 2011, 2013 Stefan Dösinger for CodeWeavers"
+  ],
+  "scope": "Lexical same-translation-unit direct-call closure; not a complete semantic/transitive Wine dependency graph",
+  "entry": "ddraw1_GetCaps",
+  "additionalRoots": [],
+  "functions": [
+    {
+      "name": "ddraw1_GetCaps",
+      "startLine": 1632,
+      "endLine": 1639,
+      "calls": [
+        "TRACE",
+        "ddraw7_GetCaps",
+        "impl_from_IDirectDraw"
+      ],
+      "source": "dlls/ddraw/ddraw.c"
+    },
+    {
+      "name": "ddraw7_GetCaps",
+      "startLine": 1524,
+      "endLine": 1612,
+      "calls": [
+        "DDRAW_dump_DDCAPS",
+        "DD_STRUCT_COPY_BYSIZE",
+        "FAILED",
+        "IDirectDraw7_GetAvailableVidMem",
+        "IDirectDraw7_GetFourCCCodes",
+        "TRACE",
+        "TRACE_ON",
+        "WARN",
+        "get_z_buffer_caps",
+        "impl_from_IDirectDraw7",
+        "memset",
+        "wined3d_device_get_device_caps",
+        "wined3d_mutex_lock",
+        "wined3d_mutex_unlock"
+      ],
+      "source": "dlls/ddraw/ddraw.c"
+    },
+    {
+      "name": "impl_from_IDirectDraw",
+      "startLine": 93,
+      "endLine": 96,
+      "calls": [
+        "CONTAINING_RECORD"
+      ],
+      "source": "dlls/ddraw/ddraw.c"
+    },
+    {
+      "name": "get_z_buffer_caps",
+      "startLine": 1482,
+      "endLine": 1507,
+      "calls": [
+        "ARRAY_SIZE",
+        "SUCCEEDED",
+        "wined3d_check_device_format",
+        "wined3d_output_get_display_mode"
+      ],
+      "source": "dlls/ddraw/ddraw.c"
+    },
+    {
+      "name": "impl_from_IDirectDraw7",
+      "startLine": 108,
+      "endLine": 111,
+      "calls": [
+        "CONTAINING_RECORD"
+      ],
+      "source": "dlls/ddraw/ddraw.c"
+    }
+  ],
+  "boundaries": [
+    "ARRAY_SIZE",
+    "CONTAINING_RECORD",
+    "DDRAW_dump_DDCAPS",
+    "DD_STRUCT_COPY_BYSIZE",
+    "FAILED",
+    "IDirectDraw7_GetAvailableVidMem",
+    "IDirectDraw7_GetFourCCCodes",
+    "SUCCEEDED",
+    "TRACE",
+    "TRACE_ON",
+    "WARN",
+    "memset",
+    "wined3d_check_device_format",
+    "wined3d_device_get_device_caps",
+    "wined3d_mutex_lock",
+    "wined3d_mutex_unlock",
+    "wined3d_output_get_display_mode"
+  ],
+  "unresolvedIndirectCalls": true,
+  "status": "EXTRACTED_NOT_TRANSLATED_OR_VALIDATED"
+}
