@@ -232,6 +232,8 @@ pub struct Win32Kernel {
     crt_wenviron_var: u64,
     command_line_a: u64,
     command_line_w: u64,
+    timezone_daylight: u64,
+    tzname_ptr: u64,
 }
 
 impl Win32Kernel {
@@ -275,6 +277,8 @@ impl Win32Kernel {
             crt_wenviron_var: 0,
             command_line_a: 0,
             command_line_w: 0,
+            timezone_daylight: 0,
+            tzname_ptr: 0,
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -2087,6 +2091,145 @@ impl Win32Kernel {
             "GetCommandLineW" => {
                 let (_, w) = self.ensure_command_line_buffers(vmm);
                 w
+            }
+            // ------------------------------------------------------------ C strings
+            //
+            // These are the most heavily used imports of a static MinGW/ucrt binary, and a *wrong*
+            // return value here is worse than a missing one: the original stub returned 0 for
+            // every symbol, so `strcmp` reported "equal" for all comparisons and winetest's
+            // `main` took its `--list` branch instead of running the requested subtest.
+            "strlen" => {
+                let bytes = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                bytes.len() as u64
+            }
+            "strcmp" => {
+                let l = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let r = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                match l.cmp(&r) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "strncmp" => {
+                let l = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let r = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let n = a2 as usize;
+                let l = &l[..l.len().min(n)];
+                let r = &r[..r.len().min(n)];
+                match l.cmp(r) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "strcpy" | "strcpy_s" => {
+                let src = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let mut out = src;
+                out.push(0);
+                let _ = vmm.write_bytes(a0, &out);
+                a0
+            }
+            "strncpy" => {
+                let src = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let n = a2 as usize;
+                let mut out = vec![0u8; n];
+                for (i, b) in src.iter().take(n).enumerate() {
+                    out[i] = *b;
+                }
+                let _ = vmm.write_bytes(a0, &out);
+                a0
+            }
+            "strcat" => {
+                let dst = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let src = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let mut out = dst;
+                out.extend_from_slice(&src);
+                out.push(0);
+                let _ = vmm.write_bytes(a0, &out);
+                a0
+            }
+            "strchr" => {
+                let c = a1 as u8;
+                let bytes = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                match bytes.iter().position(|b| *b == c) {
+                    Some(i) => a0 + i as u64,
+                    None => {
+                        if c == 0 {
+                            a0 + bytes.len() as u64
+                        } else {
+                            0
+                        }
+                    }
+                }
+            }
+            "strrchr" => {
+                let c = a1 as u8;
+                let bytes = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                match bytes.iter().rposition(|b| *b == c) {
+                    Some(i) => a0 + i as u64,
+                    None => 0,
+                }
+            }
+            "_stricmp" | "strcasecmp" => {
+                let l = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let r = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let l = String::from_utf8_lossy(&l).to_ascii_lowercase();
+                let r = String::from_utf8_lossy(&r).to_ascii_lowercase();
+                match l.cmp(&r) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "_strdup" => {
+                let src = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let len = src.len() as u64 + 1;
+                let va = self.crt_alloc(vmm, "malloc", len, 0);
+                if va != 0 {
+                    let _ = vmm.write_bytes(va, &src);
+                    let _ = vmm.write_u8(va + len - 1, 0);
+                }
+                va
+            }
+            "wcscmp" => {
+                let l = vmm.read_wide_string(a0, 0x8000).unwrap_or_default();
+                let r = vmm.read_wide_string(a1, 0x8000).unwrap_or_default();
+                match l.cmp(&r) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "wcscpy" => {
+                let src = vmm.read_wide_string(a1, 0x8000).unwrap_or_default();
+                let mut out = Vec::with_capacity(src.len() * 2 + 2);
+                for unit in &src {
+                    out.extend_from_slice(&unit.to_le_bytes());
+                }
+                out.extend_from_slice(&0u16.to_le_bytes());
+                let _ = vmm.write_bytes(a0, &out);
+                a0
+            }
+            "__daylight" | "__timezone" => {
+                if self.timezone_daylight == 0 {
+                    let va = self.crt_alloc(vmm, "malloc", 4, 0);
+                    let _ = vmm.write_u32(va, 0);
+                    self.timezone_daylight = if va == 0 { 1 } else { va };
+                }
+                self.timezone_daylight
+            }
+            "__tzname" => {
+                if self.tzname_ptr == 0 {
+                    let va = self.crt_alloc(vmm, "malloc", 16, 0);
+                    let _ = vmm.write_bytes(va, &[0u8; 16]);
+                    self.tzname_ptr = if va == 0 { 1 } else { va };
+                }
+                self.tzname_ptr
+            }
+            "free" | "cfree" => {
+                // Bump allocator: freeing is a no-op, but the call must not touch the heap.
+                0
             }
             "__setusermatherr" | "frexp" | "atoi" | "malloc" | "calloc" | "realloc" => {
                 self.crt_alloc(vmm, symbol, a0, a1)
