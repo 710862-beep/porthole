@@ -1983,7 +1983,7 @@ impl Win32Kernel {
                         rax: 0,
                     };
                 }
-                HleAction::Return(0)
+                0
             }
             "__acrt_iob_func" => {
                 // Return stable unique FILE* sentinels for stdin/stdout/stderr (index in a1).

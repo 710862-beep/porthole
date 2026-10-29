@@ -23,7 +23,21 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - uses: dtolnay/rust-toolchain@1.81.0
+      - name: Install pinned PE32+ toolchain (zig 0.13.0)
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+      - name: Build the four Wine64 fixtures (gitignored, rebuilt from pinned source)
+        run: |
+          node scripts/fetch-wine-source.mjs
+          node scripts/build-wine64-tests.mjs 2>&1 | tee -a trace.log
+          ls -l tests/assets/wine64
       - name: Build xtrace
         working-directory: rust/porthole-x64-wasm
         run: cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
