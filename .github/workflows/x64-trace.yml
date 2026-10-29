@@ -47,7 +47,9 @@ jobs:
             echo "##### fixture=$f" >> trace.log
             if [ -f "tests/assets/wine64/$f.exe" ]; then
               ./rust/porthole-x64-wasm/target/release/xtrace \
-                "tests/assets/wine64/$f.exe" --budget 20000 --slice 4000 --trace 400 >> trace.log 2>&1 || \
+                "tests/assets/wine64/$f.exe" --budget 20000 --slice 4000 --trace 2000 \
+                --watch 0x430000:0x4300d0 --watch 0x300000000:0x300000120 \
+                --peek 0x430040 --peek 0x430048 --peek 0x300000020 >> trace.log 2>&1 || \
                 echo "xtrace exit=$?" >> trace.log
             else
               echo "fixture missing" >> trace.log

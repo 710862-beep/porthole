@@ -48,8 +48,9 @@ def main(argv):
         return
 
     lines = text.splitlines()
-    summary = "\n".join(lines[:240])[:60000]
-    rest = "\n".join(lines[240:])[:64000]
+    # Character-based split so the beginning of the trace is never truncated away.
+    summary = text[:60000]
+    rest = text[60000:124000]
 
     # Always mirror the tail through annotations (works with actions/runner workflow commands).
     for line in lines[-18:]:

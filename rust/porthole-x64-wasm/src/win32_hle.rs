@@ -2046,17 +2046,42 @@ impl Win32Kernel {
                 }
                 va
             }
-            "__p___argv" | "__p___wargv" | "__p__environ" | "__p__wenviron" => {
+            // `__p___argv` returns a `char***`: the address of the `__argv` *variable*, which in
+            // turn holds the address of the NULL-terminated vector. The caller dereferences it
+            // once (`mov (%rax),%rax` at 0x425510 in user32_test), so returning the vector directly
+            // makes the guest treat argv[0]'s characters ("test.exe") as a pointer.
+            "__p___argv" | "__p___wargv" => {
+                let var = self.heap_alloc(vmm, self.process_heap, 8);
                 let arr = self.heap_alloc(vmm, self.process_heap, 16);
                 let argv0 = self.heap_alloc(vmm, self.process_heap, 64);
+                let wide = symbol == "__p___wargv";
                 if argv0 != 0 {
-                    let _ = self.write_ansi(vmm, argv0, "test.exe");
+                    if wide {
+                        let _ = self.write_wide(vmm, argv0, "test.exe");
+                    } else {
+                        let _ = self.write_ansi(vmm, argv0, "test.exe");
+                    }
                 }
                 if arr != 0 {
                     let _ = vmm.write_u64(arr, argv0);
                     let _ = vmm.write_u64(arr + 8, 0);
                 }
-                arr
+                if var != 0 {
+                    let _ = vmm.write_u64(var, arr);
+                }
+                var
+            }
+            "__p__environ" | "__p__wenviron" => {
+                // Same double indirection, with an empty environment block.
+                let var = self.heap_alloc(vmm, self.process_heap, 8);
+                let arr = self.heap_alloc(vmm, self.process_heap, 8);
+                if arr != 0 {
+                    let _ = vmm.write_u64(arr, 0);
+                }
+                if var != 0 {
+                    let _ = vmm.write_u64(var, arr);
+                }
+                var
             }
             "__setusermatherr" | "frexp" | "atoi" | "malloc" | "calloc" | "realloc" => {
                 self.crt_alloc(vmm, symbol, a0, a1)

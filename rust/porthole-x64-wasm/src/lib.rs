@@ -564,8 +564,30 @@ impl BrowserX64Emulator {
         self.vmm.set_write_watch(lo, hi, capacity as usize);
     }
 
+    /// Adds an extra watched window (globals, heap head, ...) to the data breakpoint set.
+    pub fn add_write_watch(&mut self, lo: u64, hi: u64) {
+        self.vmm.add_write_watch(lo, hi, 4096);
+    }
+
     pub fn clear_write_watch(&mut self) {
         self.vmm.clear_write_watch();
+    }
+
+    /// Dumps `count` little-endian qwords starting at `addr`, used by the native tracer.
+    pub fn peek_qwords(&mut self, addr: u64, count: u32) -> String {
+        let mut out = String::new();
+        for i in 0..count as u64 {
+            let a = addr.wrapping_add(i * 8);
+            let mut buf = [0u8; 8];
+            match self.vmm.host_read_bytes(a, &mut buf) {
+                Ok(()) => out.push_str(&format!(
+                    "  [0x{a:x}] 0x{:016x}\n",
+                    u64::from_le_bytes(buf)
+                )),
+                Err(_) => out.push_str(&format!("  [0x{a:x}] <unmapped>\n")),
+            }
+        }
+        out
     }
 
     /// Pretty-prints one guest VA: mapping region, protection, residency, swap state and epoch.

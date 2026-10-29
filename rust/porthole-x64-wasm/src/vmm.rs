@@ -86,8 +86,7 @@ pub struct VirtualMemoryManager {
     pub dirty_pages_queued: u64,
     /// Guest RIP stamped onto [`WatchEvent`]s; maintained by the execution driver.
     pub current_rip: u64,
-    watch_lo: u64,
-    watch_hi: u64,
+    watch_ranges: Vec<(u64, u64)>,
     watch_len: usize,
     pub watch_log: Vec<WatchEvent>,
 }
@@ -108,8 +107,7 @@ impl VirtualMemoryManager {
             pages_faulted_in: 0,
             dirty_pages_queued: 0,
             current_rip: 0,
-            watch_lo: 0,
-            watch_hi: 0,
+            watch_ranges: Vec::new(),
             watch_len: 0,
             watch_log: Vec::new(),
         }
@@ -119,16 +117,21 @@ impl VirtualMemoryManager {
     /// [`Self::watch_log`] (capped at `capacity` entries) with the value written and the RIP that
     /// wrote it. `capacity == 0` disables the watch.
     pub fn set_write_watch(&mut self, lo: u64, hi: u64, capacity: usize) {
-        self.watch_lo = lo;
-        self.watch_hi = hi;
+        self.watch_ranges.clear();
+        self.watch_ranges.push((lo, hi));
         self.watch_len = capacity;
         self.watch_log.clear();
         self.watch_log.reserve(capacity.min(4096));
     }
 
+    /// Adds another watched window without disturbing the existing ones (stack + globals + heap).
+    pub fn add_write_watch(&mut self, lo: u64, hi: u64, capacity: usize) {
+        self.watch_ranges.push((lo, hi));
+        self.watch_len = self.watch_len.max(capacity);
+    }
+
     pub fn clear_write_watch(&mut self) {
-        self.watch_lo = 0;
-        self.watch_hi = 0;
+        self.watch_ranges.clear();
         self.watch_len = 0;
         self.watch_log.clear();
     }
@@ -139,7 +142,11 @@ impl VirtualMemoryManager {
             return;
         }
         let end = addr.wrapping_add(data.len() as u64);
-        if end <= self.watch_lo || addr >= self.watch_hi {
+        let hit = self
+            .watch_ranges
+            .iter()
+            .any(|&(lo, hi)| end > lo && addr < hi);
+        if !hit {
             return;
         }
         let mut head = [0u8; 8];

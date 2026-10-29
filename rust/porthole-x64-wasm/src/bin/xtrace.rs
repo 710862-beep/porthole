@@ -18,6 +18,17 @@ struct Options {
     trace: u32,
     watch: bool,
     watch_span: u64,
+    extra_watch: Vec<(u64, u64)>,
+    peeks: Vec<u64>,
+}
+
+fn parse_u64(v: &str) -> Option<u64> {
+    let t = v.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        t.parse().ok()
+    }
 }
 
 fn parse_args() -> Options {
@@ -28,6 +39,8 @@ fn parse_args() -> Options {
         trace: 600,
         watch: true,
         watch_span: 0x400,
+        extra_watch: Vec::new(),
+        peeks: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -37,6 +50,19 @@ fn parse_args() -> Options {
             "--trace" => opts.trace = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.trace),
             "--span" => opts.watch_span = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.watch_span),
             "--no-watch" => opts.watch = false,
+            "--watch" => {
+                if let Some(v) = it.next() {
+                    let mut parts = v.split(':');
+                    let lo = parts.next().and_then(|v| parse_u64(v)).unwrap_or(0);
+                    let hi = parts.next().and_then(|v| parse_u64(v)).unwrap_or(lo + 0x100);
+                    opts.extra_watch.push((lo, hi));
+                }
+            }
+            "--peek" => {
+                if let Some(v) = it.next().and_then(|v| parse_u64(&v)) {
+                    opts.peeks.push(v);
+                }
+            }
             other => opts.path = other.to_string(),
         }
     }
@@ -67,6 +93,10 @@ fn main() {
         }
     }
 
+    for (lo, hi) in &opts.extra_watch {
+        emu.add_write_watch(*lo, *hi);
+        println!("watch+=[0x{lo:x},0x{hi:x})");
+    }
     let rsp0 = emu.stack_pointer();
     if opts.watch {
         let lo = MAIN_STACK_TOP.saturating_sub(opts.watch_span);
@@ -114,6 +144,13 @@ fn main() {
         page_faults,
         emu.last_error()
     );
+    if !opts.peeks.is_empty() {
+        println!("--- memory peeks ---");
+        for addr in &opts.peeks {
+            println!("0x{addr:x}:");
+            print!("{}", emu.peek_qwords(*addr, 4));
+        }
+    }
     let console = emu.take_console();
     if !console.is_empty() {
         println!("--- guest console ---");
