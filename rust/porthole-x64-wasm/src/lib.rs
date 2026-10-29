@@ -14,7 +14,7 @@ pub mod win32_hle;
 use cpu::{CpuState, ExecOutcome};
 use jit::HybridWasmJit;
 use pe64::{load_pe64_image, init_teb, LoadedPe64Info, MAIN_STACK_BOTTOM, MAIN_STACK_TOP,
-           MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
+           IMPORT_THUNK_BASE, MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
 use vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, PAGE_READWRITE};
 use win32_hle::{HleAction, UpcallStep, Win32Kernel};
 
@@ -126,7 +126,7 @@ impl BrowserX64Emulator {
         // stub (188 imports over 4096 slots is ~4 expected collisions), which silently dispatched
         // calls to the wrong Win32 API. The BTreeMap keeps the assignment deterministic.
         let mut thunk_slots: BTreeMap<(String, String, u16), u64> = BTreeMap::new();
-        let mut next_import_thunk = THUNK_BASE + 0x1000;
+        let mut next_import_thunk = IMPORT_THUNK_BASE;
         let (info, bindings) = load_pe64_image(bytes, vmm, jit, |dll: &str, symbol: &str, ordinal: u16| {
             let key = (dll.to_string(), symbol.to_string(), ordinal);
             if let Some(&slot) = thunk_slots.get(&key) {

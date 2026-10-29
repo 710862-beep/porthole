@@ -6,6 +6,14 @@ use crate::vmm::{
 
 pub const THUNK_BASE: u64 = 0x0000_7FF0_0000_0000;
 pub const THUNK_STRIDE: u64 = 16;
+/// Import stubs (`__imp_` IAT slots patched at load time) live here, in import-table order.
+pub const IMPORT_THUNK_BASE: u64 = THUNK_BASE + 0x0000_1000;
+/// `GetProcAddress` stubs live in their own pool. They used to be hashed into the *import*
+/// pool, which aliased ~1 in 4096 unrelated exports onto an import stub and - worse - was never
+/// registered in the callable-thunk table, so calling a resolved pointer faulted with
+/// `unmapped thunk 0x7ff0...`.
+pub const EXPORT_THUNK_BASE: u64 = THUNK_BASE + 0x0001_0000; // 0x1000..0x10000 is imports
+pub const EXPORT_THUNK_END: u64 = THUNK_BASE + THUNK_REGION_SIZE - 0x0000_1000;
 pub const THUNK_REGION_SIZE: u64 = 0x0002_0000; // 8192 thunks
 pub const EXIT_THUNK_ADDR: u64 = THUNK_BASE;
 pub const THREAD_EXIT_THUNK_ADDR: u64 = THUNK_BASE + THUNK_STRIDE;

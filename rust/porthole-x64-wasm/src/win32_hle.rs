@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::d3d12_hle::D3d12Subsystem;
 use crate::pe64::{
     CURDIR_HANDLE, MAIN_STACK_BOTTOM, MAIN_STACK_TOP, MAIN_TEB_ADDR, PROC_PARAMS_ADDR, PEB_ADDR,
-    THREAD_EXIT_THUNK_ADDR, THUNK_BASE, THUNK_STRIDE,
+    EXPORT_THUNK_BASE, EXPORT_THUNK_END, THREAD_EXIT_THUNK_ADDR, THUNK_BASE, THUNK_STRIDE,
 };
 use crate::vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_READWRITE};
 use crate::win32_fmt::{
@@ -234,6 +234,8 @@ pub struct Win32Kernel {
     command_line_w: u64,
     timezone_daylight: u64,
     tzname_ptr: u64,
+    /// Next free slot in the `GetProcAddress` stub pool (`EXPORT_THUNK_BASE`..`EXPORT_THUNK_END`).
+    export_thunk_next: u64,
 }
 
 impl Win32Kernel {
@@ -279,6 +281,7 @@ impl Win32Kernel {
             command_line_w: 0,
             timezone_daylight: 0,
             tzname_ptr: 0,
+            export_thunk_next: 0,
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -289,28 +292,33 @@ impl Win32Kernel {
         kernel.env.push(("COMPUTERNAME".into(), "PORTHOLE".into()));
         kernel.env.push(("USERNAME".into(), "PORTHOLE".into()));
         kernel.env.push(("WINETEST_PLATFORM".into(), "wine".into()));
-        kernel.files.insert(
-            "C:".into(),
-            GuestFile {
-                path: "C:\\".into(),
-                data: Vec::new(),
-                position: 0,
-                writable: false,
-                is_directory: true,
-                handle_count: 1,
-            },
-        );
-        kernel.files.insert(
-            "C:\\Game".into(),
-            GuestFile {
-                path: "C:\\Game".into(),
-                data: Vec::new(),
-                position: 0,
-                writable: false,
-                is_directory: true,
-                handle_count: 1,
-            },
-        );
+        // Seed the virtual volume.
+        //
+        // `files` is keyed by the *upper-case* path (`lookup_file` normalises on every read), so
+        // seeding mixed-case keys made every one of these directories invisible: a `CreateFileW`
+        // into the default `C:\\Game` working directory failed with ERROR_PATH_NOT_FOUND(3) because
+        // `parent_exists` could not find the parent that was seeded as "C:\\Game".
+        for (path, writable) in [
+            ("C:\\", false),
+            ("C:\\Windows", false),
+            ("C:\\Windows\\System32", false),
+            ("C:\\Users", true),
+            ("C:\\Users\\Public", true),
+            ("C:\\Game", true),
+        ] {
+            let key = path.to_ascii_uppercase();
+            kernel.files.insert(
+                key,
+                GuestFile {
+                    path: path.to_string(),
+                    data: Vec::new(),
+                    position: 0,
+                    writable,
+                    is_directory: true,
+                    handle_count: 1,
+                },
+            );
+        }
         kernel.alloc_handle(); // process pseudo-handle 0x100
         kernel
     }
@@ -764,14 +772,14 @@ impl Win32Kernel {
         let bytes = path.as_bytes();
         if bytes.len() >= 2 && bytes[1] == b':' {
             let letter = bytes[0].to_ascii_uppercase();
-            if bytes.len() >= 3 && bytes[2] == b'\\' {
-                return if letter == b'C' {
-                    DRIVE_FIXED
-                } else {
-                    DRIVE_NO_ROOT_DIR
-                };
-            }
-            return DRIVE_NO_ROOT_DIR;
+            // Wine treats a bare "C:" spec as the root of the volume too, so the trailing
+            // backslash is optional. Only advertising DRIVE_FIXED for "C:\\" made
+            // `GetDriveTypeA("C:")` answer DRIVE_NO_ROOT_DIR(1) and failed drive.c:64.
+            return if letter == b'C' {
+                DRIVE_FIXED
+            } else {
+                DRIVE_NO_ROOT_DIR
+            };
         }
         DRIVE_NO_ROOT_DIR
     }
@@ -2482,18 +2490,38 @@ impl Win32Kernel {
             .find(|(_, &va)| va == hmod)
             .map(|(k, _)| k.clone())
             .unwrap_or_default();
-        // Every distinct (dll, symbol) pair maps to a stable thunk address so that
-        // GetProcAddress by name and by ordinal return identical pointers.
+        // Every distinct (dll, symbol) pair maps to a stable, *callable* thunk.
+        //
+        // Three invariants matter here:
+        //  * sequential allocation instead of `hash % 4096`, because a hash collision silently
+        //    returned the stub of an unrelated export;
+        //  * a pool disjoint from the import stubs, so a resolved pointer can never land on an
+        //    `__imp_` entry;
+        //  * the thunk is registered in `import_thunks`, otherwise `run_slice` sees an address in
+        //    the HLE region that resolves to no (dll, symbol) and reports `unmapped thunk` - which
+        //    is exactly how the `environ`/`drive`/`directory` winetests died.
         let key = if !name.is_empty() {
             name.to_string()
         } else {
             format!("#{}", ordinal)
         };
-        let hash = d3d12_hle_hash(&dll, &key);
-        let slot = (hash % 4096) as u64;
-        let thunk = THUNK_BASE + 0x1000 + slot * THUNK_STRIDE;
+        let pair = (dll.clone(), key.clone());
+        if let Some(&existing) = self.export_thunks.get(&pair) {
+            return existing;
+        }
+        let mut thunk = if self.export_thunk_next == 0 {
+            EXPORT_THUNK_BASE
+        } else {
+            self.export_thunk_next
+        };
+        if thunk + THUNK_STRIDE > EXPORT_THUNK_END {
+            thunk = EXPORT_THUNK_BASE;
+        }
+        self.export_thunk_next = thunk + THUNK_STRIDE;
         let _ = vmm.write_u8(thunk, 0xC3);
-        self.export_thunks.insert((dll.clone(), key), thunk);
+        self.export_thunks.insert(pair, thunk);
+        self.import_thunks
+            .insert(thunk, (dll, key, ordinal));
         thunk
     }
 
@@ -3021,6 +3049,7 @@ impl Win32Kernel {
         self.windows.clear();
         self.handle_map.clear();
         self.export_thunks.clear();
+        self.export_thunk_next = 0;
     }
 
     pub fn handle_map_snapshot(&self) -> Vec<(u64, String)> {
