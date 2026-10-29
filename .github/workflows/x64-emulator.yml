@@ -122,6 +122,9 @@ jobs:
         run: |
           npm run check:syntax
           npm test
+      - name: Mirror conformance results as Checks annotations
+        if: always()
+        run: python3 scripts/ci-annotate-wine64.py artifacts/wine64-report.json || true
       - name: Upload conformance evidence
         if: always()
         uses: actions/upload-artifact@v4
