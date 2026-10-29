@@ -112,14 +112,14 @@ impl BrowserX64Emulator {
                 // Deterministic per-import thunk in the HLE region; every import resolves to a
                 // RET stub that the dispatcher recognises by RIP.
                 let key_hash = thunk_hash(dll, symbol, ordinal);
-                THUNK_BASE + 0x1000 + (key_hash % 4096) * THUNK_STRIDE
+                THUNK_BASE + 0x1000 + (key_hash % 4096) as u64 * THUNK_STRIDE
             })
             .map_err(|e| JsValue::from_str(&e))?;
 
         // Fill each bound thunk with RET and record the (dll,symbol) -> thunk mapping used by
         // the dispatcher.
         for b in &bindings {
-            let thunk = THUNK_BASE + 0x1000 + (thunk_hash(&b.dll, &b.symbol, b.ordinal) % 4096) * THUNK_STRIDE;
+            let thunk = THUNK_BASE + 0x1000 + (thunk_hash(&b.dll, &b.symbol, b.ordinal) % 4096) as u64 * THUNK_STRIDE;
             let _ = self.vmm.host_write_bytes(thunk, &[0xC3]);
             self.kernel
                 .remember_import_thunk(thunk, &b.dll, &b.symbol, b.ordinal);

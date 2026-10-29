@@ -1725,7 +1725,7 @@ impl Win32Kernel {
                 for (i, slot) in self.tls_slots.iter_mut().enumerate() {
                     if slot.is_none() {
                         *slot = Some(0);
-                        return i as u64;
+                        return HleAction::Return(i as u64);
                     }
                 }
                 0xFFFF_FFFF
