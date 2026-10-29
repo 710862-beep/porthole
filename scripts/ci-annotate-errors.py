@@ -5,10 +5,10 @@ import re
 import sys
 from pathlib import Path
 
-PATTERN = re.compile(
-    r"(^error(\[|:)|^warning: unused|cannot find|no method|no field|expected|mismatched|"
-    r"-->\s*\S+\.rs:\d+|trait bound|unresolved import|missing `)"
-)
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+HEADER = re.compile(r"^\s*(error(\[\w+\])?|warning):\s*(.*)$")
+NOTE = re.compile(r"^\s*-->\s+(\S+):(\d+):(\d+)\s*$")
+CARET = re.compile(r"^\s*\|\s*\^+.*(expected .*|missing .*|found .*)$")
 
 
 def main(paths):
@@ -17,19 +17,36 @@ def main(paths):
         path = Path(raw)
         if not path.is_file():
             continue
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        for line in lines:
-            if not PATTERN.search(line):
+        lines = [ANSI.sub("", line) for line in path.read_text(encoding="utf-8", errors="replace").splitlines()]
+        i = 0
+        while i < len(lines):
+            header = HEADER.match(lines[i])
+            if not header or not header.group(1).startswith("error"):
+                i += 1
                 continue
-            message = line.strip()[:900]
-            print(f"::error file={raw}::{message}")
+            location = None
+            detail = None
+            for j in range(i + 1, min(i + 8, len(lines))):
+                note = NOTE.match(lines[j])
+                if note:
+                    location = f"{note.group(1)}:{note.group(2)}"
+                    continue
+                caret = CARET.match(lines[j])
+                if caret:
+                    detail = caret.group(1).strip()
+                    break
+            message = header.group(3).strip() or "compiler error"
+            if detail:
+                message += f" ({detail})"
+            target = location or raw
+            print(f"::error file={target}::{message[:900]}")
             emitted += 1
-            if emitted >= 80:
-                print(f"::error file={raw}::(annotations truncated at 80 lines; full log in artifacts)")
+            if emitted >= 100:
+                print("::error::(annotations truncated at 100 diagnostics)")
                 return
+            i += 1
     if emitted == 0:
         print(f"::error::No compiler diagnostics found in {', '.join(paths)}")
-    return
 
 
 if __name__ == "__main__":

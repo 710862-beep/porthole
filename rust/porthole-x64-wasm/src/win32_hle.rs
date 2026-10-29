@@ -1913,7 +1913,7 @@ impl Win32Kernel {
             | "_set_invalid_parameter_handler" | "signal" | "_fpreset"
             | "__setusermatherr" | "_configure_narrow_argv" | "_configure_wide_argv"
             | "_initialize_narrow_environment" | "_initialize_wide_environment"
-            | "_crt_atexit" | "_crt_at_quick_exit" | "_tzset" | "_cexit" => 0,
+            | "_crt_atexit" | "_crt_at_quick_exit" | "_tzset" => 0,
             "_initterm" | "_initterm_e" => {
                 // Iterate the constructor table, calling each non-null pointer.
                 let start = a0;
@@ -2533,16 +2533,16 @@ impl Win32Kernel {
         if dst == 0 || s1 == 0 || s2 == 0 {
             return 0;
         }
-        let r = |p: u64| -> (i32, i32, i32, i32) {
+        let read = |out: &mut VirtualMemoryManager, p: u64| -> (i32, i32, i32, i32) {
             (
-                vmm.read_u32(p).unwrap_or(0) as i32,
-                vmm.read_u32(p + 4).unwrap_or(0) as i32,
-                vmm.read_u32(p + 8).unwrap_or(0) as i32,
-                vmm.read_u32(p + 12).unwrap_or(0) as i32,
+                out.read_u32(p).unwrap_or(0) as i32,
+                out.read_u32(p + 4).unwrap_or(0) as i32,
+                out.read_u32(p + 8).unwrap_or(0) as i32,
+                out.read_u32(p + 12).unwrap_or(0) as i32,
             )
         };
-        let (l1, t1, rr1, b1) = r(s1);
-        let (l2, t2, rr2, b2) = r(s2);
+        let (l1, t1, rr1, b1) = read(vmm, s1);
+        let (l2, t2, rr2, b2) = read(vmm, s2);
         let write = |out: &mut VirtualMemoryManager, rect: (i32, i32, i32, i32)| {
             let _ = out.write_u32(dst, rect.0 as u32);
             let _ = out.write_u32(dst + 4, rect.1 as u32);

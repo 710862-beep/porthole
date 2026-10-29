@@ -103,7 +103,6 @@ impl BrowserX64Emulator {
             slot
         });
 
-        let kernel = &mut self.kernel;
         let vmm = &mut self.vmm;
         let jit = &mut self.jit;
 
@@ -240,8 +239,8 @@ impl BrowserX64Emulator {
                             let args = self.capture_args();
                             let rsp = self.cpu.gpr[4];
                             let result = {
-                                let d3d = &mut self.kernel.d3d12;
                                 let client_sizes = self.kernel.window_sizes();
+                                let d3d = &mut self.kernel.d3d12;
                                 d3d.dispatch_vtable_call(
                                     kind,
                                     slot,
