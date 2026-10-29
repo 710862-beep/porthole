@@ -1,6 +1,34 @@
-# plan.md — Porthole Runtime v3.0
+# plan.md — Porthole Runtime v4.0
 
-## Fase 0 vigente — plano de mineração e adaptação do Wine · 2026-10-28
+## Fase ativa — Emulador Pure-Browser x86-64 + VMM NVMe + WebGPU + Suíte Real Wine · 2026-10-29
+
+- **Branch ativa:** `arena/e737e676-porthole`
+- **Plano detalhado completo:** [`docs/x86-64-nvme-browser-emulator-plan.md`](docs/x86-64-nvme-browser-emulator-plan.md)
+
+### Escopo e pilares obrigatórios da implementação real
+
+1. **Núcleo Rust → WebAssembly (`rust/porthole-x64-wasm/` → `vendor/porthole-x64-wasm/`):**
+   - Registradores 64 bits completos (`RAX`–`R15`, `RIP`, `RFLAGS`, segmentos `GS`/`FS` com `TEB`/`PEB` Win64 e registradores vetoriais `XMM0`–`XMM15` / `YMM0`–`YMM15` de 256 bits).
+   - Decodificador e executor x86-64 (GPR, string/atômicas `LOCK XADD`/`CMPXCHG`, SSE/SSE2/SSE4 e AVX/AVX2 VEX de 128/256 bits) com cache de blocos básicos (`icache`) invalidado por época de página.
+2. **Gerenciador de Memória Virtual respaldado por NVMe (`VirtualMemoryManager` + `js/nvme-vmm-bridge.js`):**
+   - Espaço virtual esparso de 16 GB–64 GB em páginas de 4 KB (`read_page`/`write_page`), cache LRU em RAM (`HashMap<u64, Vec<u8>>`) e swap paginado em shards de 64 MB via File System Access API (`showDirectoryPicker()`).
+3. **Compilador Híbrido AOT/JIT para WebAssembly (`src/jit.rs`):**
+   - Pré-compilação AOT de blocos `.text` e compilação JIT em tempo real de blocos quentes/auto-modificáveis em módulos `.wasm` válidos (`\0asm\x01\0\0\0`), persistidos em `.porthole_jit_cache/`.
+4. **Emulação Win64 / NT HLE + Threading Cooperativo (`src/win32_hle.rs`):**
+   - Convenção Microsoft x64 (`RCX, RDX, R8, R9`, shadow space de 32 bytes), loader `PE32+` (`0x8664`), `kernel32`/`ntdll`/`ucrt`/`user32`/`gdi32`/`advapi32` e síntese real de vtables COM `d3d12.dll` + `dxgi.dll`.
+5. **Pipeline Gráfico em Camadas (`WebGPU` → `WebGL2` → `Software Rasterizer`) + UI Chromebook (`x64.html`, `js/x64-app.js`):**
+   - Tradução de `D3D12CreateDevice`, `CreateSwapChainForHwnd`, `ClearRenderTargetView`, `DrawInstanced`, `CopyTextureRegion` (readback verificável) e `Present`, além de saída Web Audio API.
+6. **Validação na Suíte Real de Conformidade do Wine (`tests/wine/`):**
+   - Compilação com `zig cc -target x86_64-windows-gnu` dos testes originais sem modificação de `vendor/wine-source` (`0738d528db522f52d9d75f2aec712688dd31d1d2`):
+     - `kernel32_test.exe` (`power`, `drive`, `atom`, `environ`, `directory`)
+     - `user32_test.exe` (`wsprintf`, `uitools`)
+     - `d3d12_test.exe` (`d3d12` — 10 subtestes completos de device, draw, swapchain, readback e refcounts)
+     - `porthole_x64_plan_test.exe` (VMM 16 GB+ com swap NVMe real, SSE/AVX2 256 bits, JIT dinâmico/auto-modificável, I/O `C:\Game` e `CreateThread`)
+   - Critério de aceite: **0 falhas (`0 failures`) e exit code `0` em todos os binários Wine**, preservando 100% da suíte `npm test` existente.
+
+---
+
+## Histórico — Fase 0 anterior — plano de mineração e adaptação do Wine · 2026-10-28
 
 ### Objetivo e ponto de partida
 
