@@ -1391,6 +1391,7 @@ mod tests {
         emu.cpu.rip = code;
         emu.cpu.gpr[4] = stack;
         emu.cpu.gpr[0] = 0x77;
+        emu.set_jit_validate(false); // exercise the ret-before-commit ordering path directly
         assert!(!emu.jit_enter_block().is_empty());
         emu.jit_ctx[0] = 0x88;
         let before = emu.cpu.instructions_executed;
