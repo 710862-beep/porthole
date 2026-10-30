@@ -14,7 +14,7 @@
       this.cache = options.cache || null;
       this.modules = new Map();
       this.instances = new Map();
-      this.stats = { compiled: 0, executedBlocks: 0, executedInstructions: 0, traps: 0, cacheHits: 0, cacheMisses: 0, saved: 0, loaded: 0, fallbackInstructions: 0 };
+      this.stats = { compiled: 0, executedBlocks: 0, executedInstructions: 0, traps: 0, cacheHits: 0, cacheMisses: 0, saved: 0, loaded: 0, fallbackInstructions: 0, discarded: 0, compileErrors: 0, cacheErrors: 0, commitPageFaults: 0 };
       this.enabled = options.enabled !== false;
       if (typeof this.emu.set_jit_enabled === 'function') this.emu.set_jit_enabled(this.enabled);
     }
@@ -33,14 +33,36 @@
       if (typeof this.emu.jit_pending_count !== 'function') return;
       const count = this.emu.jit_pending_count();
       for (let i = 0; i < count; i += 1) {
-        const meta = JSON.parse(this.emu.jit_pending_meta(i));
+        const raw = this.emu.jit_pending_meta(i);
+        // The core removes stale artifacts when a code-page epoch changes, but the pending
+        // RIP list can still contain that entry. Empty metadata is a discard, not JSON.
+        if (!raw) { this.stats.discarded += 1; continue; }
+        const meta = JSON.parse(raw);
         const bytes = this.emu.jit_pending_wasm(i);
+        if (!bytes.length) {
+          this.stats.discarded += 1;
+          this.emu.jit_invalidate_entry?.(BigInt(meta.entryRip));
+          continue;
+        }
         if (!this.modules.has(meta.codeHash)) {
           try {
             this.modules.set(meta.codeHash, await WebAssembly.compile(bytes));
             this.stats.compiled += 1;
-            if (this.cache?.saveJitModule) { await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta); this.stats.saved += 1; }
-          } catch (error) { this.stats.traps += 1; }
+          } catch (error) {
+            this.stats.compileErrors += 1;
+            this.stats.lastError = String(error?.message || error);
+            this.emu.jit_invalidate_entry?.(BigInt(meta.entryRip));
+            continue;
+          }
+          if (this.cache?.saveJitModule) {
+            try {
+              await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta);
+              this.stats.saved += 1;
+            } catch (error) {
+              this.stats.cacheErrors += 1;
+              this.stats.lastCacheError = String(error?.message || error);
+            }
+          }
         }
       }
       this.emu.jit_clear_pending();
@@ -73,7 +95,15 @@
       mod = await WebAssembly.compile(bytes);
       this.modules.set(meta.codeHash, mod);
       this.stats.compiled += 1;
-      if (this.cache?.saveJitModule) { await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta); this.stats.saved += 1; }
+      if (this.cache?.saveJitModule) {
+        try {
+          await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta);
+          this.stats.saved += 1;
+        } catch (error) {
+          this.stats.cacheErrors += 1;
+          this.stats.lastCacheError = String(error?.message || error);
+        }
+      }
       return mod;
     }
 
@@ -87,29 +117,48 @@
         const interpreted = Number(this.emu.instructions_executed()) - before;
         remaining = Math.max(0, remaining - interpreted);
         if (status !== 'jit') { await this.drainPending(); return status; }
-        const meta = JSON.parse(this.emu.jit_enter_block());
+        const raw = this.emu.jit_enter_block();
+        if (!raw) {
+          // The artifact became stale between the core's handoff and enter. Nothing was
+          // committed; resume interpretation at the unchanged RIP.
+          this.stats.discarded += 1;
+          status = 'next';
+          continue;
+        }
+        const meta = JSON.parse(raw);
         try {
-          const mod = await this.moduleFor(meta);
           if (!this.memory) throw new Error('Wasm memory export unavailable');
+          const mod = await this.moduleFor(meta);
           const instance = await this.instanceFor(meta, mod);
           const executed = instance.exports.run_block(meta.ctx >>> 0);
           if (Number(executed) !== meta.insnCount) throw new Error('JIT instruction count mismatch');
           const commit = this.emu.jit_commit_block();
-          this.stats.executedBlocks += 1;
-          this.stats.executedInstructions += meta.insnCount;
-          remaining = Math.max(0, remaining - meta.insnCount);
-          if (commit !== 'next') return commit;
+          if (commit === 'next') {
+            this.stats.executedBlocks += 1;
+            this.stats.executedInstructions += meta.insnCount;
+            remaining = Math.max(0, remaining - meta.insnCount);
+          } else {
+            if (commit.startsWith('page-fault:')) this.stats.commitPageFaults += 1;
+            await this.drainPending();
+            return commit;
+          }
         } catch (error) {
           this.stats.traps += 1;
-          this.stats.lastTrap = String(error && error.message || error);
+          this.stats.lastTrap = String(error?.message || error);
           this.emu.jit_abort_block();
           // Precise fallback: re-execute the faulting block in the interpreter. If it faults,
           // the core reports the guest exception; if it succeeds, the compiled artifact was bad.
-          const fallback = this.emu.run_slice(Math.min(remaining || 1, meta.insnCount));
-          this.stats.fallbackInstructions += Number(this.emu.instructions_executed()) - before;
+          const beforeFallback = Number(this.emu.instructions_executed());
+          const fallbackBudget = Math.max(1, Math.min(remaining || 1, meta.insnCount));
+          const fallback = this.emu.run_slice(fallbackBudget);
+          this.stats.fallbackInstructions += Number(this.emu.instructions_executed()) - beforeFallback;
+          await this.drainPending();
           if (fallback !== 'next') return fallback;
+          remaining = Math.max(0, remaining - (Number(this.emu.instructions_executed()) - beforeFallback));
+          status = 'next';
         }
       }
+      await this.drainPending();
       return status;
     }
   }

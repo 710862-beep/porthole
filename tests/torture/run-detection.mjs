@@ -41,6 +41,26 @@ export function parseDetection(suite, consoleText) {
   }
   return { checks, findings, completed: suite === 'al-khaser' ? consoleText.includes('Analysis done') : consoleText.includes('Pafish has finished analyzing') };
 }
+
+/** Pure report finalizer so serialization/scope regressions are unit-testable without a guest. */
+export function finalizeDetectionReport(report) {
+  const tests = Array.isArray(report.tests) ? report.tests : [];
+  report.summary = {
+    declared: tests.length,
+    passed: tests.filter(t => t.status === 'PASS').length,
+    failed: tests.filter(t => t.status === 'FAIL').length,
+    faults: tests.filter(t => t.status === 'GUEST_FAULT').length,
+    timeouts: tests.filter(t => t.status === 'TIMEOUT').length,
+    backendErrors: tests.filter(t => t.status === 'BACKEND_ERROR').length,
+    notRun: tests.filter(t => t.status === 'NOT_RUN').length,
+  };
+  report.status = tests.length && tests.every(t => t.status === 'PASS') ? 'PASS' : report.error ? 'NOT_RUN' : 'FAIL';
+  // Full audit lives in raw JSONL. The JSON report keeps only the bounded per-test tail;
+  // duplicating a root-level audit previously exceeded V8's maximum string length on Windows.
+  delete report.apiAudit;
+  return report;
+}
+
 async function main() {
   const o = args(process.argv.slice(2));
   const report = { version: 1, kind: 'porthole-vm-detection', generatedAt: new Date().toISOString(), status: 'NOT_RUN', tests: [] };
@@ -51,7 +71,6 @@ async function main() {
     const manifest = JSON.parse(fs.readFileSync(o.manifest, 'utf8'));
     const entries = manifest.binaries.filter(b => !o.suite || b.suite === o.suite);
     if (!entries.length) report.error = `No built fixtures for ${o.suite}`;
-    let lastAudit = [];
     for (const entry of entries) {
       const started = Date.now(), audit = [];
       const item = { name: entry.name, suite: entry.suite, sha256: entry.sha256, sourceRevision: entry.sourceRevision, argv: entry.args, status: 'NOT_RUN', findings: [], checks: [] };
@@ -99,8 +118,7 @@ async function main() {
         const guestLogBytes = emu.vfs_read(entry.suite === 'al-khaser' ? 'C:\\Game\\log.txt' : 'C:\\Game\\pafish.log');
         item.guestLog = guestLogBytes ? Buffer.from(guestLogBytes).toString('utf8') : '';
         Object.assign(item, parseDetection(entry.suite, `${item.console}\n${item.guestLog}`));
-        lastAudit = audit;
-        item.apiAudit = audit.slice(-5000); item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
+        item.apiAudit = audit.slice(-500); item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
         item.findings.forEach(f => { f.apiCandidates = audit.filter(e => e.kind === 'api').slice(-20); f.correlation = 'last-call window; upstream check does not identify a causal API'; });
         item.status = !terminal ? 'TIMEOUT' : terminal.startsWith('fault:') ? 'GUEST_FAULT' : item.exitCode !== 0 || !item.completed ? 'FAIL' : item.findings.length || item.auditOverflow.length ? 'FAIL' : 'PASS';
         if (entry.suite === 'al-khaser') item.caveat = 'Upstream --sleep 1 requested; virtual clock advances on Sleep. Headless modal policy auto-answers IDOK; pafish receives a deterministic virtual pointer profile.';
@@ -114,9 +132,8 @@ async function main() {
       console.log(`[detection] ${item.name}: ${item.status} checks=${item.checks.length} findings=${item.findings.length} instructions=${item.instructions || 0}`);
     }
   }
-  report.summary = { declared: report.tests.length, passed: report.tests.filter(t => t.status === 'PASS').length, failed: report.tests.filter(t => t.status === 'FAIL').length, faults: report.tests.filter(t => t.status === 'GUEST_FAULT').length, timeouts: report.tests.filter(t => t.status === 'TIMEOUT').length, notRun: report.tests.filter(t => t.status === 'NOT_RUN').length };
-  report.status = report.tests.length && report.tests.every(t => t.status === 'PASS') ? 'PASS' : report.error ? 'NOT_RUN' : 'FAIL';
-  fs.mkdirSync(path.dirname(o.report), { recursive: true }); report.apiAudit = lastAudit.slice(-5000);
+  finalizeDetectionReport(report);
+  fs.mkdirSync(path.dirname(o.report), { recursive: true });
   fs.writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
   process.exitCode = report.status === 'PASS' ? 0 : report.status === 'NOT_RUN' ? 2 : 1;
 }

@@ -44,13 +44,18 @@ async function initRenderer() {
 
 async function loadWasm() {
   const mod = await import(`${WASM_DIR}porthole_x64_wasm.js`);
-  if (typeof mod.default === 'function') await mod.default(`${WASM_DIR}porthole_x64_wasm_bg.wasm`);
+  const core = typeof mod.default === 'function'
+    ? await mod.default(`${WASM_DIR}porthole_x64_wasm_bg.wasm`)
+    : null;
   if (typeof mod.BrowserX64Emulator !== 'function') {
     throw new Error('Artefato Wasm ausente ou sem o binding BrowserX64Emulator. Rode o workflow x64-emulator.');
   }
+  if (!(core?.memory instanceof WebAssembly.Memory)) {
+    throw new Error('Core Wasm não exporta memory; JIT não pode compartilhar memória guest com segurança.');
+  }
   state.module = mod;
   state.emulator = new mod.BrowserX64Emulator(8192);
-  state.jit = new Porthole.X64JitHost(state.emulator, mod, { enabled: true });
+  state.jit = new Porthole.X64JitHost(state.emulator, mod, { enabled: true, memory: core.memory });
   log('Núcleo x86-64 Wasm inicializado (cache LRU de 8192 páginas = 32 MB; JIT híbrido ativo).');
 }
 

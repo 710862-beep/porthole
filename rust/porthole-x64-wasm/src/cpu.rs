@@ -370,6 +370,39 @@ impl CpuState {
         }
     }
 
+    /// Apply the architectural flags for the last flag-writing instruction in a JIT block.
+    /// The block's supported ALU ops do not read flags internally, so only the final writer
+    /// needs to be materialized before the interpreter resumes at a conditional branch.
+    /// kind: 1=add 2=or 3=and 4=sub 5=xor 6=imul 7=shl 8=shr 9=sar; width: 4 or 8 bytes.
+    pub fn apply_jit_flags(&mut self, kind: u64, width: u64, lhs: u64, rhs: u64) {
+        let size = match width { 4 => 4, 8 => 8, _ => return };
+        match kind {
+            1 => { self.alu_op(0, lhs, rhs, size); }
+            2 => { self.alu_op(1, lhs, rhs, size); }
+            3 => { self.alu_op(4, lhs, rhs, size); }
+            4 => { self.alu_op(5, lhs, rhs, size); }
+            5 => { self.alu_op(6, lhs, rhs, size); }
+            6 => {
+                let (ovf, res) = match size {
+                    4 => {
+                        let p = (lhs as u32 as i32 as i64) * (rhs as u32 as i32 as i64);
+                        (p < i32::MIN as i64 || p > i32::MAX as i64, p as u32 as u64)
+                    }
+                    _ => {
+                        let p = (lhs as i64 as i128) * (rhs as i64 as i128);
+                        (p < i64::MIN as i128 || p > i64::MAX as i128, p as u64)
+                    }
+                };
+                self.rflags = (self.rflags & !(CF | OF)) | if ovf { CF | OF } else { 0 };
+                let _ = res;
+            }
+            7 => { self.shift_op(4, lhs, rhs as u8, size); }
+            8 => { self.shift_op(5, lhs, rhs as u8, size); }
+            9 => { self.shift_op(7, lhs, rhs as u8, size); }
+            _ => {}
+        }
+    }
+
     pub fn alu_op(&mut self, op: u8, a_raw: u64, b_raw: u64, size: usize) -> u64 {
         let mask = Self::mask_for_size(size);
         let sign = Self::sign_bit_for_size(size);

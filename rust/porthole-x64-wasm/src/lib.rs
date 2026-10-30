@@ -93,7 +93,8 @@ impl BrowserX64Emulator {
             audit_seq: 0,
             audit_dropped: 0,
             jit_enabled: false,
-            jit_ctx: vec![0; 16],
+            // 0..15 GPRs; 16 flag-op kind; 17 width; 18 lhs; 19 rhs; 20 result.
+            jit_ctx: vec![0; 21],
             jit_active: None,
         }
     }
@@ -491,6 +492,17 @@ impl BrowserX64Emulator {
                                 self.console.extend_from_slice(&self.kernel.drain_stdout());
                                 self.trace_event(format!("E ExitProcess({code}) from {symbol}"));
                                 return format!("exit:{}", code);
+                            }
+                            HleAction::HostPageFault(page) => {
+                                // RIP/RSP still point at the import thunk. Critical file APIs
+                                // delay position/handle publication until their output writes
+                                // succeed, so replay after supply_page is idempotent.
+                                self.console.extend_from_slice(&self.kernel.drain_stdout());
+                                self.trace_event(format!(
+                                    "P 0x{:x} {}!{} output page-fault:0x{:x} args={:?}",
+                                    insn_rip, dll, symbol, page, args
+                                ));
+                                return format!("page-fault:{page}");
                             }
                         }
                     }
@@ -1182,10 +1194,18 @@ impl BrowserX64Emulator {
     pub fn set_virtual_input_profile(&mut self, on: bool) { self.kernel.virtual_input = on; }
 
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
+
+    /// JIT context ABI version (number of i64 slots). Hosts/tests use this to reject old
+    /// cores that lack flag-materialization slots instead of silently miscomputing RFLAGS.
+    #[wasm_bindgen]
+    pub fn jit_context_slots(&self) -> u32 { self.jit_ctx.len() as u32 }
     pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }
     pub fn jit_pending_meta(&self, index: u32) -> String { self.jit.pending_meta(index as usize).unwrap_or_default() }
     pub fn jit_pending_wasm(&self, index: u32) -> Vec<u8> { self.jit.pending_wasm(index as usize).unwrap_or_default() }
     pub fn jit_clear_pending(&mut self) { self.jit.clear_pending(); }
+    /// Discards an entry whose host WebAssembly.compile failed. Without this the next slice
+    /// would hand off the same invalid artifact forever instead of using the interpreter.
+    pub fn jit_invalidate_entry(&mut self, entry_rip: u64) { self.jit.invalidate_entry(entry_rip); }
     pub fn jit_active_wasm(&self) -> Vec<u8> { self.jit_active.as_ref().map(|a| a.wasm_bytes.clone()).unwrap_or_default() }
     pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
 
@@ -1193,7 +1213,8 @@ impl BrowserX64Emulator {
     pub fn jit_enter_block(&mut self) -> String {
         let epoch = self.vmm.page_write_epoch(self.cpu.rip & !0xFFF);
         let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
-        self.jit_ctx.copy_from_slice(&self.cpu.gpr);
+        self.jit_ctx[..16].copy_from_slice(&self.cpu.gpr);
+        self.jit_ctx[16] = 0; // no flag-writing op committed yet
         let meta = format!("{{\"entryRip\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\",\"ctx\":{}}}",
             art.entry_rip, art.page_epoch, art.byte_len, art.insn_count, art.ends_with_ret, art.code_hash, self.jit_context_ptr());
         self.jit_active = Some(art);
@@ -1203,20 +1224,40 @@ impl BrowserX64Emulator {
     /// Atomically commits a completed host-executed Wasm block. On any epoch/entry mismatch the
     /// block is discarded and the interpreter resumes at the unchanged RIP (safe SMC fallback).
     pub fn jit_commit_block(&mut self) -> String {
-        let Some(art) = self.jit_active.take() else { return "fault:no active JIT block".into(); };
+        let Some(art) = self.jit_active.clone() else { return "fault:no active JIT block".into(); };
         let epoch = self.vmm.page_write_epoch(art.entry_rip & !0xFFF);
         if art.entry_rip != self.cpu.rip || art.page_epoch != epoch {
+            self.jit_active.take();
             self.jit.invalidate_entry(art.entry_rip);
             return "next".into();
         }
-        self.cpu.gpr.copy_from_slice(&self.jit_ctx);
-        if art.ends_with_ret {
-            let rsp = self.cpu.gpr[4];
-            match self.vmm.read_u64(rsp) {
-                Ok(ret) => { self.cpu.gpr[4] = rsp.wrapping_add(8); self.cpu.rip = ret; }
-                Err(MemoryTrap::PageFault(a)) => return format!("page-fault:{a}"),
-                Err(MemoryTrap::AccessViolation(a)) => { self.status = RunStatus::Fault; self.fault_message = format!("JIT ret read access violation at 0x{a:x}"); return format!("fault:{}", self.fault_message); }
+        // Resolve the return target BEFORE committing registers/instruction count. A swapped
+        // stack page must replay the whole block, not commit it and then execute it twice.
+        let ret_target = if art.ends_with_ret {
+            match self.vmm.read_u64(self.cpu.gpr[4]) {
+                Ok(ret) => Some(ret),
+                Err(MemoryTrap::PageFault(a)) => {
+                    self.jit_active.take();
+                    self.jit.invalidate_entry(art.entry_rip);
+                    return format!("page-fault:{a}");
+                }
+                Err(MemoryTrap::AccessViolation(a)) => {
+                    self.jit_active.take();
+                    self.jit.invalidate_entry(art.entry_rip);
+                    self.status = RunStatus::Fault;
+                    self.fault_message = format!("JIT ret read access violation at 0x{a:x}");
+                    return format!("fault:{}", self.fault_message);
+                }
             }
+        } else { None };
+        self.jit_active.take();
+        self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
+        if self.jit_ctx[16] != 0 {
+            self.cpu.apply_jit_flags(self.jit_ctx[16], self.jit_ctx[17], self.jit_ctx[18], self.jit_ctx[19]);
+        }
+        if let Some(ret) = ret_target {
+            self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(8);
+            self.cpu.rip = ret;
         } else {
             self.cpu.rip = art.entry_rip.wrapping_add(art.byte_len as u64);
         }
@@ -1234,8 +1275,8 @@ impl BrowserX64Emulator {
         if byte_len == 0 || byte_len > 4096 || insn_count == 0 || insn_count > 4096 { return false; }
         let mut live = vec![0u8; byte_len as usize];
         if self.vmm.host_read_bytes(entry_rip, &mut live).is_err() { return false; }
-        if jit::HybridWasmJit::fnv1a_64(&live) != code_hash { return false; }
         if self.vmm.page_write_epoch(entry_rip & !0xFFF) != page_epoch { return false; }
+        if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm) { return false; }
         self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, wasm.to_vec())
     }
 
@@ -1271,5 +1312,37 @@ mod tests {
         assert_eq!(emu.run_slice(16), "halt");
         assert_eq!(emu.resident_pages(), 0);
         assert!(emu.telemetry_json().contains("\"instructions\":0"));
+    }
+
+    #[test]
+    fn jit_return_page_fault_does_not_commit_instruction_count_or_registers() {
+        let mut emu = BrowserX64Emulator::new(2);
+        let code = 0x8_0000_0000u64;
+        let stack = 0x8_0001_0000u64;
+        let scratch = 0x8_0002_0000u64;
+        emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
+        emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        emu.vmm.map_region(scratch, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        emu.vmm.host_write_bytes(code, &[0x90, 0xC3]).unwrap();
+        emu.vmm.host_write_bytes(stack, &0x1234u64.to_le_bytes()).unwrap();
+        emu.vmm.host_write_bytes(scratch, &[1; 4096]).unwrap();
+        let saved = emu.vmm.drain_evicted_dirty_pages();
+        let old = saved.iter().find(|p| p.page_base == stack).expect("stack evicted");
+        let epoch = emu.vmm.page_write_epoch(code);
+        emu.jit.try_compile_block(code, epoch, &[0x90, 0xC3, 0, 0]).unwrap();
+        emu.cpu.rip = code;
+        emu.cpu.gpr[4] = stack;
+        emu.cpu.gpr[0] = 0x77;
+        assert!(!emu.jit_enter_block().is_empty());
+        emu.jit_ctx[0] = 0x88;
+        let before = emu.cpu.instructions_executed;
+        assert_eq!(emu.jit_commit_block(), format!("page-fault:{stack}"));
+        assert_eq!(emu.cpu.instructions_executed, before);
+        assert_eq!(emu.cpu.gpr[0], 0x77);
+        assert_eq!(emu.cpu.rip, code);
+        assert!(emu.jit_active.is_none());
+        assert!(emu.jit.get_valid_artifact(code, epoch).is_none());
+        emu.vmm.supply_faulted_page(stack, &old.data);
+        assert_eq!(emu.vmm.read_u64(stack).unwrap(), 0x1234);
     }
 }

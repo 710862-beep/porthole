@@ -123,6 +123,9 @@ pub enum HleAction {
     ExitProcess(u32),
     /// Suspend the guest until the browser host answers a modal dialog.
     Modal { request_json: String },
+    /// An output buffer touches an evicted page. The import thunk is replayed after the
+    /// host supplies the page; file/stream position must not advance before this succeeds.
+    HostPageFault(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -1486,6 +1489,40 @@ impl Win32Kernel {
 
     // ---------------------------------------------------------- dispatch
 
+    /// Propagate a software-MMU output fault to the slice boundary instead of silently
+    /// dropping bytes. `None` means the complete write succeeded.
+    fn host_write_or_fault(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        addr: u64,
+        data: &[u8],
+    ) -> Option<HleAction> {
+        match vmm.host_write_bytes(addr, data) {
+            Ok(()) => None,
+            Err(crate::vmm::MemoryTrap::PageFault(page)) => Some(HleAction::HostPageFault(page)),
+            Err(crate::vmm::MemoryTrap::AccessViolation(_)) => {
+                self.set_last_error(998); // ERROR_NOACCESS
+                Some(HleAction::Return(0))
+            }
+        }
+    }
+
+    fn write_u32_or_fault(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        addr: u64,
+        value: u32,
+    ) -> Option<HleAction> {
+        match vmm.write_u32(addr, value) {
+            Ok(()) => None,
+            Err(crate::vmm::MemoryTrap::PageFault(page)) => Some(HleAction::HostPageFault(page)),
+            Err(crate::vmm::MemoryTrap::AccessViolation(_)) => {
+                self.set_last_error(998);
+                Some(HleAction::Return(0))
+            }
+        }
+    }
+
     /// Histogram bookkeeping for calls the driver resolves itself (XMM-argument float APIs).
     pub fn note_hle_call(&mut self, symbol: &str) {
         *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
@@ -2625,14 +2662,19 @@ impl Win32Kernel {
                             (f.data[start.min(end)..end].to_vec(), end)
                         };
                         if a1 != 0 && !chunk.is_empty() {
-                            let _ = vmm.host_write_bytes(a1, &chunk);
+                            if let Some(action) = self.host_write_or_fault(vmm, a1, &chunk) {
+                                return action;
+                            }
                         }
                         if a3 != 0 {
-                            let _ = vmm.write_u32(a3, chunk.len() as u32);
+                            if let Some(action) = self.write_u32_or_fault(vmm, a3, chunk.len() as u32) {
+                                return action;
+                            }
                         }
                         if let Some(f) = self.files.get_mut(&key) {
                             f.position = pos as u64;
                         }
+                        self.set_last_error(0);
                         1
                     }
                     None => {
@@ -2984,7 +3026,9 @@ impl Win32Kernel {
                 if let Some(key) = file_key.clone() {
                     let data = self.files[&key].data.clone();
                     if !data.is_empty() {
-                        let _ = vmm.host_write_bytes(va, &data[..data.len().min(real_size as usize)]);
+                        if let Some(action) = self.host_write_or_fault(vmm, va, &data[..data.len().min(real_size as usize)]) {
+                            return action;
+                        }
                     }
                 }
                 let h = self.alloc_handle();
@@ -3675,6 +3719,60 @@ impl Win32Kernel {
                 0
             }
 
+            // Windows SLIST_HEADER: { PSLIST_ENTRY Next; USHORT Depth; USHORT Sequence; }.
+            // The HLE is single-threaded at the API boundary, so the interlocked ops are
+            // ordinary read/modify/write with software-MMU fault propagation.
+            "InitializeSListHead" | "RtlInitializeSListHead" => {
+                if let Some(action) = self.host_write_or_fault(vmm, a0, &[0u8; 16]) { return action; }
+                0
+            }
+            "InterlockedPushEntrySList" | "RtlInterlockedPushEntrySList" => {
+                let next = match vmm.read_u64(a0) {
+                    Ok(v) => v,
+                    Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
+                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                };
+                if let Some(action) = self.host_write_or_fault(vmm, a1, &next.to_le_bytes()) { return action; }
+                if let Some(action) = self.host_write_or_fault(vmm, a0, &a1.to_le_bytes()) { return action; }
+                let hdr = vmm.read_u64(a0.wrapping_add(8)).unwrap_or(0);
+                let depth = (hdr & 0xFFFF).saturating_add(1);
+                if let Some(action) = self.host_write_or_fault(vmm, a0.wrapping_add(8), &((hdr & !0xFFFF) | depth).to_le_bytes()) { return action; }
+                next
+            }
+            "InterlockedPopEntrySList" | "RtlInterlockedPopEntrySList" => {
+                let entry = match vmm.read_u64(a0) {
+                    Ok(v) => v,
+                    Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
+                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                };
+                if entry == 0 { return HleAction::Return(0); }
+                let next = match vmm.read_u64(entry) {
+                    Ok(v) => v,
+                    Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
+                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                };
+                if let Some(action) = self.host_write_or_fault(vmm, a0, &next.to_le_bytes()) { return action; }
+                let hdr = vmm.read_u64(a0.wrapping_add(8)).unwrap_or(0);
+                let depth = (hdr & 0xFFFF).saturating_sub(1);
+                if let Some(action) = self.host_write_or_fault(vmm, a0.wrapping_add(8), &((hdr & !0xFFFF) | depth).to_le_bytes()) { return action; }
+                entry
+            }
+            "InterlockedFlushSList" | "RtlInterlockedFlushSList" => {
+                let entry = match vmm.read_u64(a0) {
+                    Ok(v) => v,
+                    Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
+                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                };
+                if let Some(action) = self.host_write_or_fault(vmm, a0, &[0u8; 16]) { return action; }
+                entry
+            }
+            "RtlFirstEntrySList" => match vmm.read_u64(a0) {
+                Ok(v) => v,
+                Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
+                Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); 0 }
+            },
+            "QueryDepthSList" => vmm.read_u64(a0.wrapping_add(8)).unwrap_or(0) & 0xFFFF,
+
             // ------------------------------------------------------- modules
             "GetModuleHandleA" | "GetModuleHandleW" => {
                 if a0 == 0 {
@@ -3899,7 +3997,15 @@ impl Win32Kernel {
                 }
                 0
             }
-            "_errno" | "__p__commode" | "__p__fmode" => {
+            "_set_fmode" => {
+                if self.fmode_cell != 0 {
+                    if let Some(action) = self.write_u32_or_fault(vmm, self.fmode_cell, a0 as u32) { return action; }
+                }
+                0
+            }
+            "__p__commode" => self.commode_cell,
+            "__p__fmode" => self.fmode_cell,
+            "_errno" => {
                 let va = self.heap_alloc(vmm, self.process_heap, 8);
                 if va != 0 {
                     let _ = vmm.write_u32(va, 0);
@@ -3946,13 +4052,15 @@ impl Win32Kernel {
             "fread" => {
                 // size_t fread(void *ptr=a0, size_t size=a1, size_t count=a2, FILE *stream=a3)
                 let total = a1.wrapping_mul(a2) as usize;
-                let data = match self.stream_remaining(a3) {
+                let data = match self.stream_take(a3, total) {
                     Some(d) => d,
                     None => return HleAction::Return(0),
                 };
-                let take = total.min(data.len());
+                let take = data.len();
                 if take > 0 && a0 != 0 {
-                    let _ = vmm.host_write_bytes(a0, &data[..take]);
+                    if let Some(action) = self.host_write_or_fault(vmm, a0, &data) {
+                        return action;
+                    }
                 }
                 self.stream_consume(a3, take);
                 if let Some(s) = self.streams.get_mut(&a3) {
@@ -5890,6 +5998,23 @@ impl Win32Kernel {
         Some(out)
     }
 
+    /// Copy at most `max` bytes from a stream without cloning the entire remaining file.
+    /// WAD lump reads can request a few KiB from a 28 MiB file; cloning the tail for every
+    /// fread turned startup into quadratic host copying.
+    fn stream_take(&self, fp: u64, max: usize) -> Option<Vec<u8>> {
+        let s = self.streams.get(&fp)?;
+        let f = self.files.get(&s.key)?;
+        let mut out = Vec::with_capacity(max.min(65536));
+        if let Some(b) = s.ungetc {
+            if max > 0 { out.push(b); }
+        }
+        let start = (s.pos as usize).min(f.data.len());
+        let remaining = max.saturating_sub(out.len());
+        let end = start.saturating_add(remaining).min(f.data.len());
+        out.extend_from_slice(&f.data[start..end]);
+        Some(out)
+    }
+
     /// Advance a stream by `n` consumed bytes (accounting for a pending ungetc byte).
     fn stream_consume(&mut self, fp: u64, mut n: usize) {
         if let Some(s) = self.streams.get_mut(&fp) {
@@ -6463,6 +6588,49 @@ mod heap_regression_tests {
         args[0] = h1;
         assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "RemoveVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 1);
         assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "RemoveVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 0);
+    }
+
+    #[test]
+    fn readfile_replays_after_output_page_fault_without_losing_position_or_neighbors() {
+        let mut k = Win32Kernel::new();
+        let mut vmm = VirtualMemoryManager::new(2);
+        let mut cpu = crate::cpu::CpuState::new();
+        let out = 0x9_0000_0000u64;
+        vmm.map_region(out, 0x2000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
+        let scratch = 0x9_0001_0000u64;
+        vmm.map_region(scratch, 0x2000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
+        vmm.host_write_bytes(out, &[0x41; 4096]).unwrap();
+        vmm.host_write_bytes(out + 0x1000, &[0x42; 4096]).unwrap();
+        vmm.host_write_bytes(scratch, &[0x43; 4096]).unwrap();
+        let saved = vmm.drain_evicted_dirty_pages();
+        let old = saved.iter().find(|p| p.page_base == out).expect("output page evicted");
+        k.vfs_insert_file("C:\\Game\\test.wad", b"0123456789abcdef");
+        let path: Vec<u16> = "C:\\Game\\test.wad".encode_utf16().chain([0]).collect();
+        let path_bytes: Vec<u8> = path.iter().flat_map(|u| u.to_le_bytes()).collect();
+        vmm.host_write_bytes(scratch + 0x100, &path_bytes).unwrap();
+        let open_args = [scratch + 0x100, 0x8000_0000, 1, 0, 3, 0x80, 0, 0, 0, 0];
+        let handle = match k.dispatch(&mut vmm, "kernel32.dll", "CreateFileW", 0, &open_args, 0, 0, &mut cpu) {
+            HleAction::Return(h) => h, _ => panic!("CreateFileW failed"),
+        };
+        let count = scratch + 0x200;
+        let read_args = [handle, out + 1, 16, count, 0, 0, 0, 0, 0, 0];
+        assert!(matches!(
+            k.dispatch(&mut vmm, "kernel32.dll", "ReadFile", 0, &read_args, 0, 0, &mut cpu),
+            HleAction::HostPageFault(p) if p == out
+        ));
+        let key = k.handle_path(handle).unwrap();
+        assert_eq!(k.files[&key].position, 0, "faulted ReadFile advanced the file position");
+        vmm.supply_faulted_page(out, &old.data);
+        assert!(matches!(
+            k.dispatch(&mut vmm, "kernel32.dll", "ReadFile", 0, &read_args, 0, 0, &mut cpu),
+            HleAction::Return(1)
+        ));
+        let mut got = [0u8; 16];
+        vmm.read_bytes(out + 1, &mut got).unwrap();
+        assert_eq!(&got, b"0123456789abcdef");
+        assert_eq!(vmm.read_u8(out).unwrap(), 0x41);
+        assert_eq!(vmm.read_u32(count).unwrap(), 16);
+        assert_eq!(k.files[&key].position, 16);
     }
 
     #[test]

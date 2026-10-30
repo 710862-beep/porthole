@@ -361,23 +361,17 @@ where
         tls_array_ptr,
     );
 
-    // Hybrid AOT pass: scan `.text` entry & 16-byte aligned prologue candidates to pre-emit `.wasm` blocks
+    // Conservative AOT entry-block pass. A 16-byte-aligned address is NOT an x86 basic-block
+    // boundary: the old heuristic decoded mid-instruction and cached semantically wrong Wasm.
+    // Additional blocks are discovered only at RIPs the interpreter actually executes.
     let mut aot_blocks_compiled = 0usize;
-    if text_size >= 16 {
+    if text_size >= 2 {
         let mut scan_buf = [0u8; 64];
-        let mut candidate_rips = vec![image_base + entry_rva];
-        let max_scan = text_size.min(65536);
-        let mut off = 0u64;
-        while off + 64 <= max_scan && candidate_rips.len() < 24 {
-            candidate_rips.push(text_base + off);
-            off += 256;
-        }
-        for cand_rip in candidate_rips {
-            if vmm.host_read_bytes(cand_rip, &mut scan_buf).is_ok() {
-                let epoch = vmm.page_write_epoch(cand_rip & !0xFFF);
-                if jit.try_compile_block(cand_rip, epoch, &scan_buf).is_some() {
-                    aot_blocks_compiled += 1;
-                }
+        let cand_rip = image_base + entry_rva;
+        if vmm.host_read_bytes(cand_rip, &mut scan_buf).is_ok() {
+            let epoch = vmm.page_write_epoch(cand_rip & !0xFFF);
+            if jit.try_compile_block(cand_rip, epoch, &scan_buf).is_some() {
+                aot_blocks_compiled += 1;
             }
         }
     }
