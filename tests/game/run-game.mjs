@@ -26,6 +26,7 @@ function parseArgs(argv) {
     report: 'artifacts/game-report.json',
     wasmDir: process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm',
     fixtures: 'tests/assets/game',
+    summaryOut: 'artifacts/game-report.txt',
     build: false,
     only: null,
     slice: 2_000_000,
@@ -37,6 +38,7 @@ function parseArgs(argv) {
     if (a === '--report') out.report = argv[++i];
     else if (a === '--wasm-dir') out.wasmDir = argv[++i];
     else if (a === '--fixtures') out.fixtures = argv[++i];
+    else if (a === '--summary-out') out.summaryOut = argv[++i];
     else if (a === '--build') out.build = true;
     else if (a === '--only') out.only = argv[++i];
     else if (a === '--slice') out.slice = Number(argv[++i]);
@@ -183,12 +185,13 @@ async function runOne(binding, entry, options) {
   item.durationMs = Date.now() - started;
   // A frame is only "presented" if the renderer produced pixels: capture them and hash the
   // buffer so the report proves a frame, not just a successful Present() return value.
-  item.framesPresented = emu.frames_presented ? emu.frames_presented() : 0;
+  // wasm-bindgen maps u64 to BigInt, and JSON.stringify refuses BigInt.
+  item.framesPresented = emu.frames_presented ? Number(emu.frames_presented()) : 0;
   const frame = emu.take_frame ? emu.take_frame() : null;
   if (frame && frame.length) {
     item.frame = {
-      width: emu.frame_width ? emu.frame_width() : 0,
-      height: emu.frame_height ? emu.frame_height() : 0,
+      width: emu.frame_width ? Number(emu.frame_width()) : 0,
+      height: emu.frame_height ? Number(emu.frame_height()) : 0,
       bytes: frame.length,
       sha256: crypto.createHash('sha256').update(Buffer.from(frame)).digest('hex'),
       sample: Array.from(frame.slice(0, 16)),
@@ -224,26 +227,32 @@ async function runOne(binding, entry, options) {
   return item;
 }
 
+const summaryLines = [];
+function say(line = '') {
+  summaryLines.push(line);
+  console.log(line);
+}
+
 function printBlock(item) {
-  console.log(`\n=== ${item.name} :: ${item.status}${item.error ? ` (${item.error})` : ''}`);
-  console.log(`    instructions=${item.instructions} exit=${item.exitCode} slices=${item.slices} page_faults=${item.pageFaults}`);
+  say(`\n=== ${item.name} :: ${item.status}${item.error ? ` (${item.error})` : ''}`);
+  say(`    instructions=${item.instructions} exit=${item.exitCode} slices=${item.slices} page_faults=${item.pageFaults}`);
   if (item.load) {
-    console.log(`    imageBase=0x${item.load.imageBase.toString(16)} entryPoint=0x${item.load.entryPoint.toString(16)} imports=${item.load.imports}`);
+    say(`    imageBase=0x${item.load.imageBase.toString(16)} entryPoint=0x${item.load.entryPoint.toString(16)} imports=${item.load.imports}`);
   }
   if (item.frame) {
-    console.log(
+    say(
       `    frame: ${item.frame.width}x${item.frame.height} bytes=${item.frame.bytes} ` +
       `nonZero=${item.frame.nonZeroBytes} sha256=${item.frame.sha256.slice(0, 16)}… ` +
       `pixel0=[${item.frame.sample.slice(0, 4).join(',')}]`
     );
   }
-  if (item.hle.length) console.log(`    win32: ${item.hle.slice(0, 22).join(' ')}`);
-  if (item.com.length) console.log(`    com:   ${item.com.slice(0, 22).join(' ')}`);
-  if (item.unimplementedApis.length) console.log(`    unimplemented win32: ${item.unimplementedApis.join(' ')}`);
-  if (item.unimplementedMethods.length) console.log(`    unimplemented com:   ${item.unimplementedMethods.join(' ')}`);
-  if (item.stage?.lastStage) console.log(`    last stage: ${item.stage.lastStage.stage} ${item.stage.lastStage.api}`);
+  if (item.hle.length) say(`    win32: ${item.hle.slice(0, 22).join(' ')}`);
+  if (item.com.length) say(`    com:   ${item.com.slice(0, 22).join(' ')}`);
+  if (item.unimplementedApis.length) say(`    unimplemented win32: ${item.unimplementedApis.join(' ')}`);
+  if (item.unimplementedMethods.length) say(`    unimplemented com:   ${item.unimplementedMethods.join(' ')}`);
+  if (item.stage?.lastStage) say(`    last stage: ${item.stage.lastStage.stage} ${item.stage.lastStage.api}`);
   const lines = item.console.split('\n').filter((l) => /^(STAGE|DOOM_STARTUP|GAME_STARTUP|HELLO_WORLD|  )/.test(l));
-  if (lines.length) console.log(lines.slice(-14).map((l) => `    | ${l}`).join('\n'));
+  if (lines.length) say(lines.slice(-18).map((l) => `    | ${l}`).join('\n'));
 }
 
 async function main() {
@@ -322,11 +331,18 @@ async function main() {
     console.log(`::notice title=porthole-game-fixture::${bits.join(' ')}`);
   }
 
-  console.log(
+  say(
     `\n[game] ${report.status}: ${report.summary.passed}/${report.summary.declared} pass · ` +
     `${report.summary.stageBlocked} blocked at a named stage · ${report.summary.faults} faults · ` +
     `report ${options.report}`
   );
+  if (options.summaryOut) {
+    fs.mkdirSync(path.dirname(options.summaryOut), { recursive: true });
+    fs.writeFileSync(
+      options.summaryOut,
+      `${report.status} ${JSON.stringify(report.summary)} wasm=${report.wasmSha256}\n${summaryLines.join('\n')}\n`
+    );
+  }
   process.exitCode = report.status === 'PASS' ? 0 : 1;
 }
 

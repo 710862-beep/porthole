@@ -120,6 +120,16 @@ jobs:
         run: node scripts/build-game-fixtures.mjs
       - name: Load real PE32+ game-shaped executables in the Wasm emulator
         run: node tests/game/run-game.mjs --report artifacts/game-report.json --fixtures tests/assets/game
+      - name: Publish the real-game startup report through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/game-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/game-report.txt porthole-x64-game
+          else
+            echo "::warning::artifacts/game-report.txt missing"
+          fi
       - name: Run Wine conformance inside the Wasm x86-64 emulator
         run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64
       - name: Preserve JS regressions for the existing runtime
