@@ -1,6 +1,18 @@
 # agents.md — Porthole Runtime
 
-## Fase 0 vigente — mineração do Wine · 2026-10-28
+## Fase ativa — Emulador Pure-Browser x86-64 + Suíte Real Wine · 2026-10-29
+
+- **Branch obrigatória da sessão:** `arena/e737e676-porthole` (nunca trocar, criar ou fazer push em outra branch).
+- **Plano arquitetural versionado:** [`docs/x86-64-nvme-browser-emulator-plan.md`](docs/x86-64-nvme-browser-emulator-plan.md).
+- **Compromisso de engenharia real:**
+  1. Compilar o núcleo `rust/porthole-x64-wasm` para WebAssembly real (`wasm32-unknown-unknown` + `wasm-bindgen`) via GitHub Actions quando `rustc` local não estiver instalado, validando integridade SHA-256 antes de vendorear em `vendor/porthole-x64-wasm/`.
+  2. Implementar de verdade todos os cinco pilares do plano: interpretador x86-64 + SSE/AVX2 + `icache`, `VirtualMemoryManager` de 16 GB+ com LRU e swap assíncrono em shards via File System Access API, compilador híbrido AOT/JIT emitindo bytecode `.wasm` válido, camada HLE Win64 (`kernel32`, `ntdll`, `ucrt`, `user32`, `gdi32`, `d3d12`, `dxgi`, `CreateThread`) e pipeline gráfico `WebGPU` → `WebGL2` → `Software` + UI `x64.html`.
+  3. Validar contra binários `PE32+` (`x86_64`) reais compilados a partir dos testes upstream não modificados do Wine (`vendor/wine-source`, commit `0738d528db522f52d9d75f2aec712688dd31d1d2`) até atingir `0 failures` e exit code `0`, sem quebrar nenhuma regressão preexistente do Porthole (`npm test`, `npm run check:syntax`).
+  4. Manter honestidade estrita: documentar a expectativa real de desempenho (`0.1-1 FPS` em cargas pesadas por latência de I/O e interpretação) e recusar qualquer evasão de anti-cheat, DRM ou drivers Ring 0.
+
+---
+
+## Histórico — Fase 0 anterior — mineração do Wine · 2026-10-28
 
 ### Persona e compromisso obrigatório
 

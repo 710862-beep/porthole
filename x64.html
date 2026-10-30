@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Porthole x86-64 · NVMe-backed browser emulator</title>
+  <style>
+    :root {
+      --bg: #060b14;
+      --panel: #0d1626;
+      --line: #1d2c44;
+      --text: #dce7f5;
+      --muted: #7f93ad;
+      --accent: #5eead4;
+      --warn: #fbbf24;
+      --bad: #f87171;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: radial-gradient(1200px 600px at 20% -10%, #10233d, var(--bg));
+      color: var(--text); font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      min-height: 100vh; padding: 24px;
+    }
+    header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+    h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+    h1 span { color: var(--accent); }
+    .sub { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin: 0 0 10px; }
+    canvas { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; display: block; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      font: inherit; font-size: 13px; padding: 8px 12px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--line); background: #142033; color: var(--text);
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #04211c; font-weight: 600; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .metric { background: #0a1320; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    .metric b { display: block; font-family: var(--mono); font-size: 15px; }
+    .metric small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+    pre#log {
+      font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: #a9bed6;
+      background: #050a12; border: 1px solid var(--line); border-radius: 8px;
+      padding: 10px; height: 190px; overflow: auto; margin: 0; white-space: pre-wrap;
+    }
+    .note { font-size: 12px; color: var(--muted); line-height: 1.55; }
+    .badge { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+    .badge[data-state="PASS"] { color: var(--accent); border-color: var(--accent); }
+    .badge[data-state="FAIL"] { color: var(--bad); border-color: var(--bad); }
+    input[type="text"] {
+      width: 100%; font-family: var(--mono); font-size: 12.5px; padding: 8px 10px;
+      background: #050a12; border: 1px solid var(--line); border-radius: 8px; color: var(--text);
+    }
+    label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 10px 0 4px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>porthole<span>.</span> x86-64</h1>
+  <span class="sub">PE32+ · Wasm interpreter · NVMe-backed virtual memory · WebGPU → WebGL2 → software</span>
+  <span id="tier-badge" class="badge">RENDERER —</span>
+</header>
+
+<div class="grid">
+  <main class="panel">
+    <h2>Scanout / D3D12 swapchain</h2>
+    <canvas id="x64-canvas" width="640" height="360" aria-label="Framebuffer do convidado x86-64"></canvas>
+    <div class="row">
+      <button id="mount" class="primary" type="button">Montar NVMe (escolher pasta)</button>
+      <button id="load-exe" type="button" disabled>Carregar .exe do C:\Game</button>
+      <button id="run" type="button" disabled>Executar</button>
+      <button id="pause" type="button" disabled>Pausar</button>
+    </div>
+    <label for="exe-path">Caminho do convidado</label>
+    <input id="exe-path" type="text" value="C:\Game\test64.exe" spellcheck="false" autocomplete="off">
+    <div class="row" style="margin-top:14px">
+      <div class="panel" style="flex:1;min-width:220px">
+        <h2>Telemetria</h2>
+        <div class="metrics">
+          <div class="metric"><small>Instruções/s</small><b id="m-ips">0</b></div>
+          <div class="metric"><small>FPS</small><b id="m-fps">0.0</b></div>
+          <div class="metric"><small>Páginas NVMe/s</small><b id="m-pages">0</b></div>
+          <div class="metric"><small>Páginas em RAM</small><b id="m-resident">0</b></div>
+          <div class="metric"><small>Páginas em swap</small><b id="m-swapped">0</b></div>
+          <div class="metric"><small>Blocos JIT</small><b id="m-jit">0</b></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <aside style="display:grid;gap:16px">
+    <section class="panel">
+      <h2>Estado</h2>
+      <pre id="log">Aguardando montagem do NVMe…</pre>
+    </section>
+    <section class="panel">
+      <h2>Limites reais</h2>
+      <p class="note">
+        Este ambiente executa um <strong>interpretador x86-64 em WebAssembly</strong> com paginação
+        em NVMe. Cargas pesadas rodam na ordem de <strong>0.1–1 FPS</strong> por latência de I/O e
+        custo de interpretação: o objetivo é <em>inicializar e renderizar</em>, não jogar.
+        Anti-cheat de kernel, DRM de VM e drivers Ring 0 falham por projeto e não são contornados.
+      </p>
+      <p class="note">
+        Requer Chrome com File System Access API e contexto seguro (HTTPS ou localhost).
+      </p>
+    </section>
+  </aside>
+</div>
+
+<script src="js/x64-nvme-vfs.js"></script>
+<script src="js/x64-d3d12-renderer.js"></script>
+<script type="module" src="js/x64-app.js"></script>
+</body>
+</html>

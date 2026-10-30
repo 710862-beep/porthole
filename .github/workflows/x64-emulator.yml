@@ -1,0 +1,197 @@
+name: x86-64 emulator (Wasm core + real Wine64 conformance)
+
+on:
+  push:
+    branches: [arena/e737e676-porthole]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: porthole-x64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-unit-tests:
+    name: Rust core unit tests (VMM paging, JIT emitter, PE32+ loader)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - name: cargo test
+        working-directory: rust/porthole-x64-wasm
+        run: |
+          set -o pipefail
+          cargo test --all-targets 2>&1 | tee cargo-test.log
+      - name: Surface compiler errors as Checks annotations
+        if: failure()
+        run: |
+          python3 scripts/ci-annotate-errors.py \
+            rust/porthole-x64-wasm/cargo-test.log \
+            rust/porthole-x64-wasm/cargo-build.log || true
+      - name: Upload cargo diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x64-cargo-diagnostics
+          path: rust/porthole-x64-wasm/cargo-test.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  wasm-build:
+    name: Build porthole-x64-wasm
+    needs: rust-unit-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-bindgen
+          key: porthole-x64-bindgen-0.2.92-${{ hashFiles('rust/porthole-x64-wasm/Cargo.toml') }}
+      - name: Install wasm-bindgen-cli 0.2.92
+        run: |
+          if ! command -v wasm-bindgen || ! wasm-bindgen --version | grep -Fx 'wasm-bindgen 0.2.92'; then
+            cargo install wasm-bindgen-cli --version 0.2.92 --locked
+          fi
+      - name: cargo build (wasm32-unknown-unknown, release)
+        working-directory: rust/porthole-x64-wasm
+        run: |
+          set -o pipefail
+          cargo build --release --target wasm32-unknown-unknown 2>&1 | tee cargo-build.log
+      - name: wasm-bindgen (web target)
+        run: |
+          mkdir -p artifacts/porthole-x64-wasm
+          wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm \
+            rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
+          ls -lh artifacts/porthole-x64-wasm
+          sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: artifacts/porthole-x64-wasm/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Surface compiler errors as Checks annotations
+        if: failure()
+        run: |
+          python3 scripts/ci-annotate-errors.py \
+            rust/porthole-x64-wasm/cargo-test.log \
+            rust/porthole-x64-wasm/cargo-build.log || true
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x64-cargo-build-log
+          path: rust/porthole-x64-wasm/cargo-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  tier-a-independent-7zip:
+    name: GATE 1 Tier A — unmodified 7-Zip x64 PE archive round-trip
+    needs: wasm-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: vendor/porthole-x64-wasm
+      - name: Acquire and hash the pinned third-party 7za.exe
+        run: node scripts/fetch-7za.mjs
+      - name: Execute 7za archive create/extract in the Wasm core and byte-compare
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          node tests/third-party/run-7za.mjs 2>&1 | tee artifacts/7za-run.log
+      - name: Publish the Tier A guest trace through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/7za-tier-a-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/7za-tier-a-report.txt porthole-x64-tier-a-7zip
+          else
+            echo "::error::Tier A guest report missing"
+          fi
+      - name: Upload Tier A evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porthole-x64-tier-a-7zip
+          path: |
+            artifacts/7za-tier-a-report.json
+            artifacts/7za-tier-a-report.txt
+            artifacts/7za-run.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  wine64-conformance:
+    name: Real Wine 64-bit conformance inside the Wasm emulator
+    needs: wasm-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: vendor/porthole-x64-wasm
+      - name: Install pinned PE32+ toolchain (zig 0.13.0)
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+      - name: Acquire pinned Wine source (verified commit)
+        run: node scripts/fetch-wine-source.mjs
+      - name: Build unmodified Wine 64-bit test binaries
+        run: node scripts/build-wine64-tests.mjs
+      - name: Build the real-game startup fixtures (PE32+ x86_64)
+        run: node scripts/build-game-fixtures.mjs
+      - name: Load real PE32+ game-shaped executables in the Wasm emulator
+        run: node tests/game/run-game.mjs --report artifacts/game-report.json --fixtures tests/assets/game
+      - name: Publish the real-game startup report through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/game-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/game-report.txt porthole-x64-game
+          else
+            echo "::warning::artifacts/game-report.txt missing"
+          fi
+      - name: Run Wine conformance inside the Wasm x86-64 emulator
+        run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64
+      - name: Preserve JS regressions for the existing runtime
+        run: |
+          npm run check:syntax
+          npm test
+      - name: Mirror conformance results as Checks annotations
+        if: always()
+        run: python3 scripts/ci-annotate-wine64.py artifacts/wine64-report.json || true
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine64-conformance
+          path: |
+            artifacts/wine64-report.json
+            artifacts/wine64-report.json.xml
+            artifacts/game-report.json
+            tests/assets/wine64/MANIFEST.json
+            tests/assets/game/MANIFEST.json
+          if-no-files-found: warn
+          retention-days: 14

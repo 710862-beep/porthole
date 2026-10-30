@@ -1,0 +1,136 @@
+name: x86-64 guest trace (fault diagnostics)
+
+# Fast, single-job diagnostic lane. Builds the x86-64 core natively (no wasm-bindgen needed),
+# runs the four real Wine64 PE32+ fixtures through `xtrace`, and publishes the whole trace to a
+# check run so it can be read back from a sandbox where artifact/log downloads are blocked.
+
+on:
+  push:
+    branches: [arena/e737e676-porthole]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: porthole-x64-trace-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    name: Guest trace + stack invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - name: Install pinned PE32+ toolchain (zig 0.13.0)
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+      - name: Build the four Wine64 fixtures (gitignored, rebuilt from pinned source)
+        run: |
+          node scripts/fetch-wine-source.mjs
+          node scripts/build-wine64-tests.mjs 2>&1 | tee -a trace.log
+          ls -l tests/assets/wine64
+      - name: Build the real-game startup fixtures (PE32+ x86_64)
+        run: |
+          node scripts/build-game-fixtures.mjs 2>&1 | tee -a trace.log
+          ls -l tests/assets/game
+      - name: Build xtrace
+        working-directory: rust/porthole-x64-wasm
+        # pipefail: `cargo build | tee` reports tee's exit status, so a compile error used to
+        # leave every following trace saying "xtrace: No such file or directory" while the step
+        # showed a green check.
+        run: |
+          set -o pipefail
+          cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
+      - name: Run the four Wine64 fixtures through the tracer
+        run: |
+          # run <fixture> <subtest> [tag] [extra xtrace flags...]
+          run() {
+            f="$1"; sub="$2"; tag=""
+            shift 2
+            if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then tag="$1"; shift; fi
+            out="trace-$f$sub${tag:+-$tag}.log"
+            echo "##### fixture=$f subtest=${sub:-none}" > "$out"
+            if [ -f "tests/assets/wine64/$f.exe" ]; then
+              ./rust/porthole-x64-wasm/target/release/xtrace "tests/assets/wine64/$f.exe" \
+                --budget 60000 --slice 4000 --trace 260 \
+                --watch 0x430000:0x4300d0 --watch 0x300000000:0x300000120 \
+                --peek 0x430040 --peek 0x430048 --peek 0x300000020 \
+                ${sub:+--args "$f.exe $sub"} "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
+            else
+              echo "fixture missing" >> "$out"
+            fi
+            cat "$out" >> trace.log
+          }
+          # run_game <path.exe> [tag] [extra xtrace flags...]
+          run_game() {
+            img="$1"; tag=""
+            shift 1
+            if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then tag="$1"; shift; fi
+            base="$(basename "$img" .exe)"
+            out="trace-game$base${tag:+-$tag}.log"
+            echo "##### game=$img" > "$out"
+            if [ ! -x ./rust/porthole-x64-wasm/target/release/xtrace ]; then
+              echo "xtrace binary missing" >> "$out"
+            elif [ -f "$img" ]; then
+              ./rust/porthole-x64-wasm/target/release/xtrace "$img" \
+                --budget 4000000 --slice 200000 --trace 400 --no-watch \
+                --args "C:\\Game\\$(basename "$img")${GAME_EXTRA_ARGS:-}" "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
+            else
+              echo "fixture missing" >> "$out"
+            fi
+            cat "$out" >> trace.log
+          }
+          run user32_test wsprintf
+          run user32_test uitools
+          run kernel32_test atom
+          run kernel32_test environ
+          run kernel32_test drive
+          run kernel32_test power
+          run kernel32_test directory
+          run d3d12_test d3d12
+          run porthole_x64_plan_test x64_plan
+          # Same fixtures again, with the trace filtered down to HLE traffic so the *whole* run
+          # fits in the ring buffer - this is what identifies which API the guest is stuck on.
+          run user32_test wsprintf hle --hle-only --no-watch \
+            --hle-match "MultiByte,IsDBCS,GetCPInfo,K " --trace 300
+          run kernel32_test atom hle --hle-only --no-watch --budget 3000000 --trace 300
+          run kernel32_test directory hle --hle-only --no-watch --budget 400000 --trace 300 \
+            --hle-match "K ,CreateDirectory,SetCurrentDirectory,GetCurrentDirectory"
+          # ---- real-game-shaped PE32+ fixtures ------------------------------------------
+          # Full API view first (no instruction tracing), then a filtered HLE view.
+          run_game tests/assets/game/hello_world.exe
+          run_game tests/assets/game/game_startup.exe
+          run_game tests/assets/game/doom_d3d12_startup.exe
+          run_game tests/assets/game/doom_d3d12_startup.exe hle --hle-only --trace 400
+          # The failure-report path itself: stops before CreateSwapChainForHwnd and prints
+          # API / expected / actual / fix, then exits 13.
+          GAME_EXTRA_ARGS=' /blockstage:13' \
+            run_game tests/assets/game/doom_d3d12_blocked.exe blocked --hle-only --trace 200
+          wc -l trace.log
+      - name: Publish each fixture trace through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in trace-*.log; do
+            [ -e "$f" ] || continue
+            python3 scripts/ci-publish-trace.py "$f" "porthole-x64-trace:${f#trace-}"
+          done
+      - name: Stack-symmetry regression tests
+        run: |
+          cd rust/porthole-x64-wasm
+          cargo test --release --test wine64_startup -- --nocapture 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
+      - name: Publish the combined trace
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci-publish-trace.py trace.log
