@@ -52,6 +52,8 @@ pub struct BrowserX64Emulator {
     trace_enabled: bool,
     /// Suppress the per-instruction `I`/`W` lines so the ring buffer holds only HLE traffic.
     hle_trace_only: bool,
+    /// Optional substring filters: a trace line is kept only if it contains one of them.
+    trace_filter: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -73,6 +75,7 @@ impl BrowserX64Emulator {
             trace_max: 0,
             trace_enabled: false,
             hle_trace_only: false,
+            trace_filter: Vec::new(),
         }
     }
 
@@ -444,7 +447,20 @@ impl BrowserX64Emulator {
     }
 
     fn trace_event(&mut self, line: String) {
+        if !self.trace_filter.is_empty()
+            && !self.trace_filter.iter().any(|pat| line.contains(pat.as_str()))
+        {
+            return;
+        }
         self.trace_push(line);
+    }
+
+    /// Keeps only trace lines containing one of `patterns`.
+    ///
+    /// The ring buffer is 260-1000 lines, but a winetest subtest issues tens of thousands of API
+    /// calls; filtering by symbol name (e.g. `MultiByteToWideChar`) keeps the *whole* run.
+    pub fn set_trace_filter(&mut self, patterns: Vec<String>) {
+        self.trace_filter = patterns;
     }
 
     fn trace_instruction(&mut self, insn_rip: u64, rsp_before: u64) {

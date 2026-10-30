@@ -956,6 +956,10 @@ impl Win32Kernel {
                     u
                 };
                 let needed = need_units.len();
+                self.note(format!(
+                    "K MultiByteToWideChar cp={codepage} src=0x{src:x} srclen={srclen} dst=0x{dst:x} dstlen={dstlen} needed={needed} first={:x}",
+                    need_units.first().copied().unwrap_or(0)
+                ));
                 if dstlen == 0 || dst == 0 {
                     return HleAction::Return(needed as u64);
                 }
@@ -1390,8 +1394,9 @@ impl Win32Kernel {
             "GetDiskFreeSpaceA" | "GetDiskFreeSpaceW" => {
                 // A NULL path means "the root of the current drive", which succeeds; only the
                 // empty string is an error (drive.c:146).
-                let raw = if a0 == 0 {
-                    self.cwd.clone()
+                let null_path = a0 == 0;
+                let raw = if null_path {
+                    "\\".to_string()
                 } else if symbol.ends_with('A') {
                     self.read_ansi(vmm, a0)
                 } else {
@@ -1399,7 +1404,8 @@ impl Win32Kernel {
                 };
                 let is_volume_guid = raw.starts_with("\\\\?\\") || raw.starts_with("\\??\\");
                 let trimmed = raw.trim_end_matches('\\');
-                let valid = is_volume_guid
+                let valid = null_path
+                    || is_volume_guid
                     || trimmed.is_empty() && !raw.is_empty()
                     || trimmed.eq_ignore_ascii_case("c:")
                     || raw == "\\"

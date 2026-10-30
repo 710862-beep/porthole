@@ -22,6 +22,7 @@ struct Options {
     peeks: Vec<u64>,
     args: Option<String>,
     hle_only: bool,
+    match_patterns: Vec<String>,
 }
 
 fn parse_u64(v: &str) -> Option<u64> {
@@ -45,6 +46,7 @@ fn parse_args() -> Options {
         peeks: Vec::new(),
         args: None,
         hle_only: false,
+        match_patterns: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -55,6 +57,17 @@ fn parse_args() -> Options {
             "--span" => opts.watch_span = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.watch_span),
             "--no-watch" => opts.watch = false,
             "--hle-only" => opts.hle_only = true,
+            "--hle-match" => {
+                if let Some(v) = it.next() {
+                    opts.match_patterns = v
+                        .split(',')
+                        // Patterns keep their trailing space on purpose: "K " matches the HLE
+                        // notes but not the word "kernel32.dll" in an `H` line.
+                        .map(|p| p.to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect();
+                }
+            }
             "--args" => opts.args = it.next(),
             "--watch" => {
                 if let Some(v) = it.next() {
@@ -94,6 +107,10 @@ fn main() {
         // Only Win32/NT HLE traffic: the whole run then fits in a 260-line buffer.
         emu.set_hle_trace_only(true);
         println!("trace_filter=hle-only");
+    }
+    if !opts.match_patterns.is_empty() {
+        println!("trace_match={}", opts.match_patterns.join(","));
+        emu.set_trace_filter(opts.match_patterns.clone());
     }
     match emu.load_pe(&bytes) {
         Ok(info) => println!("load={info}"),
