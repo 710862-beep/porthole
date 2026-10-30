@@ -108,6 +108,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: torture-jit-benchmark, path: artifacts/torture/, if-no-files-found: warn, retention-days: 14}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: torture-doom-assets, path: tests/assets/third-party/, if-no-files-found: warn, retention-days: 7}
 
   wine-d3d12:
     needs: core

@@ -284,6 +284,9 @@ where
         }
     }
 
+    // KUSER_SHARED_DATA is fixed at 0x7FFE0000 on Windows x64. Zeroed => no kernel debugger.
+    vmm.map_region(0x7FFE0000, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+
     // Initialize PEB, RTL_USER_PROCESS_PARAMETERS, and Main Thread TEB + Stack
     vmm.map_region(PEB_ADDR, 0x20000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
     vmm.map_region(

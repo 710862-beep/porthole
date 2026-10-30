@@ -243,13 +243,13 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
 
   // MinGW lacks libd3d10_1.a; generate a real import library from the upstream Wine export spec.
   if (toolchain === 'mingw') {
-    const specFile = 'vendor/wine-source/dlls/d3d10_1/d3d10_1.spec';
-    if (fs.existsSync(specFile)) {
-      const names = [...fs.readFileSync(specFile, 'utf8').matchAll(/^@ stdcall (\w+)\(/gm)].map(m => m[1]);
-      const defPath = path.join(outDir, 'd3d10_1.def');
-      fs.writeFileSync(defPath, `LIBRARY d3d10_1.dll\nEXPORTS\n${names.join('\n')}\n`);
-      const dlltool = spawnSync('x86_64-w64-mingw32-dlltool', ['-d', defPath, '-l', path.join(outDir, 'libd3d10_1.a')], { encoding: 'utf8' });
-      if (dlltool.status !== 0) throw new Error(`dlltool failed: ${dlltool.stderr || dlltool.error}`);
+    for (const [dll, specFile] of [['d3d10_1', 'vendor/wine-source/dlls/d3d10_1/d3d10_1.spec'], ['vulkan-1', 'vendor/wine-source/dlls/vulkan-1/vulkan-1.spec']]) {
+      if (!fs.existsSync(specFile)) continue;
+      const names = [...fs.readFileSync(specFile, 'utf8').matchAll(/^@ (?:stdcall|cdecl) (\w+)\(?/gm)].map(m => m[1]);
+      const defPath = path.join(outDir, `${dll}.def`);
+      fs.writeFileSync(defPath, `LIBRARY ${dll}.dll\nEXPORTS\n${names.join('\n')}\n`);
+      const dlltool = spawnSync('x86_64-w64-mingw32-dlltool', ['-d', defPath, '-l', path.join(outDir, `lib${dll}.a`)], { encoding: 'utf8' });
+      if (dlltool.status !== 0) throw new Error(`dlltool failed for ${dll}: ${dlltool.stderr || dlltool.error}`);
     }
   }
 

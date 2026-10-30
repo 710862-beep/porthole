@@ -286,3 +286,30 @@ and Sleep/tick coherence. DialogBox/TaskDialog and comdlg32 file dialogs remain 
   Fixed by linking `-lntdll`. Pending rerun.
 - **al-khaser:** unchanged 14 findings / GUEST_FAULT at SharedUserData KdDebuggerEnabled;
   trap-flag, PAGE_GUARD, NtYieldExecution and SystemKernelDebuggerInformation remain open.
+
+### Full-lane acquisition/build evidence (run `41118906889`, commit `3b07749`)
+
+- **VKD3D-Proton internal tests: build SUCCESS.** The pinned upstream `tests/d3d12.exe`
+  (62/62 ninja targets) now cross-compiles with MinGW + widl after supplying Win10
+  `_WIN32_WINNT`/`PATHCCH_NONE` definitions. The runner executed 53 upstream subtests
+  (root signatures, descriptor heaps, pipeline state, raytracing root signatures, mesh shaders,
+  work graphs). All 53 currently report `GUEST_FAULT` during MSVCRT startup
+  (`unhandled guest exception 0xc0000005`, ~590 instructions), with exact unimplemented imports
+  `msvcrt.dll!__iob_func` and `msvcrt.dll!_lock`. This is real upstream execution evidence, not a
+  synthetic pass; the CRT import fixes are committed for rerun.
+- **Vulkan CTS:** acquisition of all external dependencies succeeded on the Windows runner;
+  the CMake source-path bug was fixed. The full `deqp-vk` build is still in progress at the time
+  of this entry; no CTS pass rate is claimed yet.
+- **Expanded Wine:** `d3d11_test.exe` and `dxgi_test.exe` now build (ntdll link + generated
+  `d3d10_1` import library). `vulkan_test.exe` link failed on missing `-lvulkan-1`; a generated
+  import library from the upstream Wine `vulkan-1.spec` is committed for rerun.
+- **Chocolate Doom A/B regression:** both interpreter and JIT lanes currently fail with
+  `W_GetNumForName: PNAMES not found!` and `exit:-1`. The runner now verifies the asset itself:
+  `freedoom2.wad` has 3610 lumps and `hasPNAMES=true`, so this is a guest file-mapping/read
+  regression, not a missing asset. Historical baseline remains ~5.95–7.99 MIPS; current measured
+  lanes are ~0.08 MIPS because the guest aborts early. No JIT speedup is claimed. JIT abort now
+  invalidates the faulting artifact so fallback cannot loop on the same bad block.
+- **Wine d3d12 local retest (8192 pages):** 667 upstream assertions executed, 9 `todo_wine`
+  successes are Windows-correct refcount results, 1 remaining failure is the DXCore adapter path.
+  DXCore factory/list/adapter COM objects and `DXCoreCreateAdapterFactory` are implemented;
+  `LoadLibraryA("dxcore.dll")` now returns a stable module handle. Pending CI rerun.

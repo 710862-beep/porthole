@@ -2369,6 +2369,42 @@ impl Win32Kernel {
             // ------------------------------------------------------- version
             "GetVersion" => 0x0A00_0000u64, // NT 10.0, high bit clear
 
+            // ------------------------------------------------- NT native debug/system queries
+            "NtQueryInformationProcess" => {
+                let class = a1 as u32;
+                match class {
+                    0x1F => { // ProcessDebugFlags: NoDebugInherit=1 when not debugged
+                        if a2 != 0 { let _ = vmm.write_u32(a2, 1); }
+                        if a4 != 0 { let _ = vmm.write_u32(a4, 4); }
+                        0
+                    }
+                    0x1E => { // ProcessDebugObjectHandle: no debug port
+                        if a2 != 0 { let _ = vmm.write_u64(a2, 0); }
+                        0xC000_0353 // STATUS_PORT_NOT_SET
+                    }
+                    0x07 => { // ProcessDebugPort
+                        if a2 != 0 { let _ = vmm.write_u64(a2, 0); }
+                        0
+                    }
+                    _ => 0xC000_0005u64 & 0xFFFF_FFFF, // STATUS_ACCESS_VIOLATION for unsupported classes
+                }
+            }
+            "NtSetInformationThread" => {
+                if a1 == 0x11 { 0 } else { 0xC000_0005u64 & 0xFFFF_FFFF } // ThreadHideFromDebugger
+            }
+            "NtSystemDebugControl" => 0xC000_0354, // STATUS_DEBUGGER_INACTIVE
+            "NtYieldExecution" => 0,
+            "NtQuerySystemInformation" => {
+                if a0 == 0x23 { // SystemKernelDebuggerInformation
+                    if a1 != 0 {
+                        let _ = vmm.write_u8(a1, 0); // KernelDebuggerEnabled = FALSE
+                        let _ = vmm.write_u8(a1 + 1, 1); // KernelDebuggerNotPresent = TRUE
+                    }
+                    if a3 != 0 { let _ = vmm.write_u32(a3, 2); }
+                    0
+                } else { 0xC000_0005u64 & 0xFFFF_FFFF }
+            }
+
             // ------------------------------------------------- host-integrated modals/input
             "MessageBoxA" | "MessageBoxW" | "MessageBoxExA" | "MessageBoxExW" => {
                 let wide = symbol.ends_with('W') || symbol.ends_with("ExW");
@@ -3675,6 +3711,8 @@ impl Win32Kernel {
             }
 
             // --------------------------------------------------------- console
+            "__iob_func" => self.iob_base,
+            "_lock" | "_unlock" => 0,
             "_fileno" => 1,
             "_isatty" => 0,
             "_get_osfhandle" => {
@@ -5086,6 +5124,11 @@ impl Win32Kernel {
         }
         if key.starts_with("api-ms-win-crt") || key == "ucrtbase.dll" || key == "msvcrt.dll" {
             return 0x7FFE_1000_8000;
+        }
+        if key == "dxcore.dll" {
+            let va = 0x7FFE_1000_9000;
+            self.modules.insert(key, va);
+            return va;
         }
         self.set_last_error(ERROR_MOD_NOT_FOUND);
         0
