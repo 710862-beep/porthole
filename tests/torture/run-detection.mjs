@@ -5,6 +5,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEmulator } from '../wine64/run-wine64.mjs';
+function writeJsonl(file, rows) {
+  const fd = fs.openSync(file, 'w');
+  try {
+    let chunk = '';
+    for (const row of rows) {
+      chunk += JSON.stringify(row) + '\n';
+      if (chunk.length >= 1 << 20) { fs.writeSync(fd, chunk); chunk = ''; }
+    }
+    if (chunk) fs.writeSync(fd, chunk);
+  } finally { fs.closeSync(fd); }
+}
+
 
 function args(argv) {
   const o = { manifest: 'tests/assets/torture/MANIFEST.json', suite: null, wasmDir: process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm', report: 'artifacts/torture/detection-report.json', rawDir: 'artifacts/torture/detection', timeoutMs: 600000, slice: 250000, maxSlices: 2000 };
@@ -125,7 +137,7 @@ async function main() {
         fs.mkdirSync(o.rawDir, { recursive: true });
         const stem = path.join(o.rawDir, entry.name);
         fs.writeFileSync(`${stem}.console.log`, item.console);
-        fs.writeFileSync(`${stem}.api.jsonl`, audit.map(e => JSON.stringify(e)).join('\n') + '\n');
+        writeJsonl(`${stem}.api.jsonl`, audit);
         fs.writeFileSync(`${stem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
         if (guestLogBytes) fs.writeFileSync(`${stem}.guest.log`, guestLogBytes);
       } catch (e) { item.status = 'BACKEND_ERROR'; item.error = e.stack || String(e); }

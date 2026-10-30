@@ -14,6 +14,18 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { buildWine64Suite } from '../../scripts/build-wine64-tests.mjs';
+function writeJsonl(file, rows) {
+  const fd = fs.openSync(file, 'w');
+  try {
+    let chunk = '';
+    for (const row of rows) {
+      chunk += JSON.stringify(row) + '\n';
+      if (chunk.length >= 1 << 20) { fs.writeSync(fd, chunk); chunk = ''; }
+    }
+    if (chunk) fs.writeSync(fd, chunk);
+  } finally { fs.closeSync(fd); }
+}
+
 
 function parseArgs(argv) {
   const out = {
@@ -187,7 +199,7 @@ async function runOne(binding, manifestEntry, options, testName = null) {
     fs.mkdirSync(options.auditDir, { recursive: true });
     const stem = path.join(options.auditDir, item.name.replace(/[^a-z0-9_.-]/gi, '_'));
     fs.writeFileSync(`${stem}.console.log`, item.console);
-    fs.writeFileSync(`${stem}.api.jsonl`, audit.map(e => JSON.stringify(e)).join('\n') + '\n');
+    writeJsonl(`${stem}.api.jsonl`, audit);
     fs.writeFileSync(`${stem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
   }
 
