@@ -4,6 +4,7 @@ use crate::d3d12_hle::D3d12Subsystem;
 use crate::pe64::{
     CURDIR_HANDLE, MAIN_STACK_BOTTOM, MAIN_STACK_TOP, MAIN_TEB_ADDR, PROC_PARAMS_ADDR, PEB_ADDR,
     EXPORT_THUNK_BASE, EXPORT_THUNK_END, THREAD_EXIT_THUNK_ADDR, THUNK_BASE, THUNK_STRIDE,
+    PeResource, ResourceKey,
 };
 use crate::vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, MEM_RELEASE, PAGE_READWRITE};
 use crate::win32_fmt::{
@@ -35,6 +36,9 @@ pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_INVALID_ADDRESS: u32 = 487;
 pub const ERROR_NOT_SUPPORTED: u32 = 50;
+pub const ERROR_RESOURCE_TYPE_NOT_FOUND: u32 = 1813;
+pub const ERROR_RESOURCE_NAME_NOT_FOUND: u32 = 1814;
+const RESOURCE_HANDLE_BASE: u64 = 0x0000_7FF2_0000_0000;
 
 /// Guest VA of the synthetic CRT data-import cells (`_fmode`, `_commode`, `_iob`, `__initenv`).
 ///
@@ -268,6 +272,7 @@ struct FileMapping {
 pub struct Win32Kernel {
     pub last_error: u32,
     pub exe_image_base: u64,
+    pub exe_resources: Vec<PeResource>,
     atoms_global: AtomTable,
     atoms_local: AtomTable,
     env: Vec<(String, String)>,
@@ -360,6 +365,7 @@ impl Win32Kernel {
         let mut kernel = Self {
             last_error: 0,
             exe_image_base: 0,
+            exe_resources: Vec::new(),
             atoms_global: AtomTable::new(),
             atoms_local: AtomTable::new(),
             env: Vec::new(),
@@ -3945,6 +3951,106 @@ impl Win32Kernel {
             }
             "OutputDebugStringW" => 0,
             "FreeLibrary" => 1,
+            "FindResourceA" | "FindResourceW" | "FindResourceExA" | "FindResourceExW" => {
+                if a0 != 0 && a0 != self.exe_image_base {
+                    self.set_last_error(ERROR_MOD_NOT_FOUND);
+                    return HleAction::Return(0);
+                }
+                let wide = symbol.ends_with('W');
+                let ty = self.resource_key_from_guest(vmm, a1, wide);
+                let nm = self.resource_key_from_guest(vmm, a2, wide);
+                let lang = if symbol.contains("Ex") { a3 as u16 } else { 0 };
+                match self.find_resource_index(&ty, &nm, lang) {
+                    Some(i) => {
+                        self.set_last_error(ERROR_SUCCESS);
+                        RESOURCE_HANDLE_BASE + (i as u64 + 1)
+                    }
+                    None => {
+                        self.set_last_error(ERROR_RESOURCE_TYPE_NOT_FOUND);
+                        0
+                    }
+                }
+            }
+            "LoadResource" => {
+                if self.resource_from_handle(a1).is_some() {
+                    self.set_last_error(ERROR_SUCCESS);
+                    a1
+                } else {
+                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    0
+                }
+            }
+            "LockResource" => {
+                let rva = self.resource_from_handle(a0).map(|r| r.data_rva);
+                match rva {
+                    Some(rva) => {
+                        self.set_last_error(ERROR_SUCCESS);
+                        self.exe_image_base + rva as u64
+                    }
+                    None => {
+                        self.set_last_error(ERROR_INVALID_HANDLE);
+                        0
+                    }
+                }
+            }
+            "SizeofResource" => {
+                let size = self.resource_from_handle(a1).map(|r| r.size);
+                match size {
+                    Some(size) => {
+                        self.set_last_error(ERROR_SUCCESS);
+                        size as u64
+                    }
+                    None => {
+                        self.set_last_error(ERROR_INVALID_HANDLE);
+                        0
+                    }
+                }
+            }
+            "FreeResource" => 1,
+            "LoadStringA" | "LoadStringW" => {
+                let wide = symbol.ends_with('W');
+                let id = a1 as u32;
+                let buf = a2;
+                let max = a3 as usize;
+                let ty = ResourceKey::Id(6); // RT_STRING
+                let nm = ResourceKey::Id((id >> 4) + 1);
+                let idx = match self.find_resource_index(&ty, &nm, 0) {
+                    Some(i) => i,
+                    None => {
+                        self.set_last_error(ERROR_RESOURCE_NAME_NOT_FOUND);
+                        return HleAction::Return(0);
+                    }
+                };
+                let data_rva = self.exe_resources[idx].data_rva;
+                let mut ptr = self.exe_image_base + data_rva as u64;
+                for _ in 0..(id & 15) {
+                    let len = vmm.read_u16(ptr).unwrap_or(0) as u64;
+                    ptr += 2 + len * 2;
+                }
+                let len = vmm.read_u16(ptr).unwrap_or(0) as usize;
+                ptr += 2;
+                if max == 0 || buf == 0 {
+                    self.set_last_error(ERROR_SUCCESS);
+                    return HleAction::Return(0);
+                }
+                let copy = len.min(max - 1);
+                for i in 0..copy {
+                    let ch = vmm.read_u16(ptr + (i as u64) * 2).unwrap_or(0);
+                    if wide {
+                        if let Some(action) = self.host_write_or_fault(vmm, buf + (i as u64) * 2, &ch.to_le_bytes()) { return action; }
+                    } else {
+                        let byte = if ch < 256 { ch as u8 } else { b'?' };
+                        if let Some(action) = self.host_write_or_fault(vmm, buf + i as u64, &[byte]) { return action; }
+                    }
+                }
+                if wide {
+                    if let Some(action) = self.host_write_or_fault(vmm, buf + (copy as u64) * 2, &[0, 0]) { return action; }
+                } else {
+                    if let Some(action) = self.host_write_or_fault(vmm, buf + copy as u64, &[0]) { return action; }
+                }
+                self.set_last_error(ERROR_SUCCESS);
+                copy as u64
+            }
             "GetProcAddress" => {
                 let hmod = a0;
                 let (name, ord) = if a1 < 0x1_0000 {
@@ -5372,6 +5478,37 @@ impl Win32Kernel {
     }
 
     // ------------------------------------------------------------- helpers
+
+    fn resource_key_from_guest(&mut self, vmm: &mut VirtualMemoryManager, value: u64, wide: bool) -> ResourceKey {
+        if value < 0x1_0000 {
+            ResourceKey::Id(value as u32)
+        } else if wide {
+            ResourceKey::Name(self.read_wide(vmm, value))
+        } else {
+            ResourceKey::Name(self.read_ansi(vmm, value))
+        }
+    }
+
+    fn find_resource_index(&self, ty: &ResourceKey, nm: &ResourceKey, lang: u16) -> Option<usize> {
+        let mut fallback = None;
+        for (i, r) in self.exe_resources.iter().enumerate() {
+            if &r.type_key == ty && &r.name_key == nm {
+                if lang == 0 || r.language == lang {
+                    return Some(i);
+                }
+                if fallback.is_none() { fallback = Some(i); }
+            }
+        }
+        fallback
+    }
+
+    fn resource_from_handle(&self, handle: u64) -> Option<&PeResource> {
+        if handle > RESOURCE_HANDLE_BASE && handle < RESOURCE_HANDLE_BASE + 0x1_0000_0000 {
+            self.exe_resources.get((handle - RESOURCE_HANDLE_BASE) as usize - 1)
+        } else {
+            None
+        }
+    }
 
     fn image_base(&self) -> u64 {
         if self.exe_image_base != 0 { self.exe_image_base } else { self.modules.get("kernel32.dll").copied().unwrap_or(0) }

@@ -38,6 +38,22 @@ pub struct LoadedPe64Info {
     pub import_count: usize,
     pub aot_blocks_compiled: usize,
     pub tls_callbacks: Vec<u64>,
+    pub resources: Vec<PeResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceKey {
+    Id(u32),
+    Name(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct PeResource {
+    pub type_key: ResourceKey,
+    pub name_key: ResourceKey,
+    pub language: u16,
+    pub data_rva: u32,
+    pub size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +77,89 @@ fn read_le_u32(b: &[u8], off: usize) -> Option<u32> {
 fn read_le_u64(b: &[u8], off: usize) -> Option<u64> {
     b.get(off..off + 8)
         .map(|s| u64::from_le_bytes(s.try_into().unwrap()))
+}
+
+fn rva_to_offset(sections: &[(u64, u64, u64, u64)], b: &[u8], rva: u64) -> Option<usize> {
+    for &(va, vsize, raw, rsize) in sections {
+        let span = vsize.max(rsize);
+        if rva >= va && rva < va + span {
+            let off = raw + (rva - va);
+            if off < b.len() as u64 {
+                return Some(off as usize);
+            }
+        }
+    }
+    None
+}
+
+fn read_resource_name(b: &[u8], off: usize) -> String {
+    let len = match read_le_u16(b, off) {
+        Some(v) => v as usize,
+        None => return String::new(),
+    };
+    let mut units = Vec::with_capacity(len.min(512));
+    for i in 0..len.min(512) {
+        match read_le_u16(b, off + 2 + i * 2) {
+            Some(v) => units.push(v),
+            None => break,
+        }
+    }
+    String::from_utf16_lossy(&units)
+}
+
+fn walk_resource_dir(
+    b: &[u8],
+    sections: &[(u64, u64, u64, u64)],
+    base: usize,
+    dir_off: usize,
+    level: u8,
+    ty: Option<ResourceKey>,
+    nm: Option<ResourceKey>,
+    out: &mut Vec<PeResource>,
+) {
+    if level > 2 || out.len() >= 8192 {
+        return;
+    }
+    let named = read_le_u16(b, dir_off + 12).unwrap_or(0) as usize;
+    let ids = read_le_u16(b, dir_off + 14).unwrap_or(0) as usize;
+    let count = named.saturating_add(ids).min(4096);
+    for i in 0..count {
+        let ent = dir_off + 16 + i * 8;
+        let name_raw = match read_le_u32(b, ent) { Some(v) => v, None => break };
+        let off_raw = match read_le_u32(b, ent + 4) { Some(v) => v, None => break };
+        let key = if name_raw & 0x8000_0000 != 0 {
+            ResourceKey::Name(read_resource_name(b, base + (name_raw & 0x7FFF_FFFF) as usize))
+        } else {
+            ResourceKey::Id(name_raw & 0xFFFF)
+        };
+        if off_raw & 0x8000_0000 != 0 {
+            let (nt, nn) = match level {
+                0 => (Some(key), None),
+                1 => (ty.clone(), Some(key)),
+                _ => (ty.clone(), nm.clone()),
+            };
+            walk_resource_dir(b, sections, base, base + (off_raw & 0x7FFF_FFFF) as usize, level + 1, nt, nn, out);
+        } else if level == 2 {
+            if let (Some(t), Some(n), ResourceKey::Id(lang)) = (ty.clone(), nm.clone(), key) {
+                let data_ent = base + off_raw as usize;
+                let data_rva = read_le_u32(b, data_ent).unwrap_or(0);
+                let size = read_le_u32(b, data_ent + 4).unwrap_or(0);
+                if data_rva != 0 && rva_to_offset(sections, b, data_rva as u64).is_some() {
+                    out.push(PeResource { type_key: t, name_key: n, language: lang as u16, data_rva, size });
+                }
+            }
+        }
+        if out.len() >= 8192 { break; }
+    }
+}
+
+fn parse_pe_resources(b: &[u8], sections: &[(u64, u64, u64, u64)], rva: u32, _size: u32) -> Vec<PeResource> {
+    let mut out = Vec::new();
+    if rva == 0 { return out; }
+    if let Some(base) = rva_to_offset(sections, b, rva as u64) {
+        walk_resource_dir(b, sections, base, base, 0, None, None, &mut out);
+    }
+    out
 }
 
 pub fn load_pe64_image<F>(
@@ -134,6 +233,7 @@ where
     let sec_table = opt + size_opt_hdr;
     let mut text_base = image_base + entry_rva;
     let mut text_size = 0u64;
+    let mut sections: Vec<(u64, u64, u64, u64)> = Vec::new();
 
     for i in 0..num_sections {
         let sh = sec_table + i * 40;
@@ -146,6 +246,7 @@ where
         let raw_size = read_le_u32(pe_bytes, sh + 16).unwrap_or(0) as usize;
         let raw_ptr = read_le_u32(pe_bytes, sh + 20).unwrap_or(0) as usize;
         let characteristics = read_le_u32(pe_bytes, sh + 36).unwrap_or(0);
+        sections.push((virt_addr, virt_size as u64, raw_ptr as u64, raw_size as u64));
 
         let copy_len = raw_size.min(if virt_size > 0 { virt_size } else { raw_size });
         if raw_ptr < pe_bytes.len() && copy_len > 0 {
@@ -285,6 +386,16 @@ where
         }
     }
 
+    // Parse the PE resource directory (DataDirectory[2]) so FindResource/LoadString can
+    // return real dialog templates and string-table entries instead of NULL.
+    let mut resources = Vec::new();
+    if num_rva > 2 {
+        let res_dir = opt + 112 + 2 * 8;
+        let res_rva = read_le_u32(pe_bytes, res_dir).unwrap_or(0);
+        let res_size = read_le_u32(pe_bytes, res_dir + 4).unwrap_or(0);
+        resources = parse_pe_resources(pe_bytes, &sections, res_rva, res_size);
+    }
+
     // KUSER_SHARED_DATA is fixed at 0x7FFE0000 on Windows x64. Zeroed => no kernel debugger.
     vmm.map_region(0x7FFE0000, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
 
@@ -397,6 +508,7 @@ where
             import_count: bindings.len(),
             aot_blocks_compiled,
             tls_callbacks,
+            resources,
         },
         bindings,
     ))

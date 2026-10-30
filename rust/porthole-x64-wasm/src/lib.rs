@@ -188,6 +188,7 @@ impl BrowserX64Emulator {
         .map_err(|e| JsValue::from_str(&e))?;
         let thunk_slot_count = thunk_slots.len();
         self.kernel.exe_image_base = info.image_base;
+        self.kernel.exe_resources = info.resources.clone();
 
         // Fill each bound thunk with RET and record the thunk -> (dll,symbol) mapping used by the
         // dispatcher when RIP enters the HLE region.
