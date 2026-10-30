@@ -609,70 +609,105 @@ impl Win32Kernel {
         }
     }
 
-    fn expand_env(&self, src: &str) -> String {
-        self.expand_env_tokens(src).into_iter().map(|t| t.1).collect()
-    }
-
-    /// Splits `src` into expansion units: `(atomic, text)`.
+    /// Faithful port of wine's `RtlExpandEnvironmentStrings` (dlls/ntdll/env.c).
     ///
-    /// `atomic` is true for a resolved `%VAR%` (and for the literal text of an unresolved one):
-    /// wine copies a variable's value into the destination only if it fits *whole* and otherwise
-    /// stops, while literal characters are copied one at a time until the buffer is full. That
-    /// distinction is what environ.c:440-465 (ExpandEnvironmentStrings tests 8-20) measures.
-    fn expand_env_tokens(&self, src: &str) -> Vec<(bool, String)> {
-        let chars: Vec<char> = src.chars().collect();
-        let mut out: Vec<(bool, String)> = Vec::with_capacity(chars.len());
+    /// Returns `(destination, required_length_including_terminator)`. The destination is `count`
+    /// characters long and starts as the caller's current buffer, because the algorithm leaves
+    /// parts of it untouched - and environ.c checks exactly that:
+    ///
+    /// * a literal run is copied character by character, and truncating it writes no terminator;
+    /// * a `%VAR%` value is copied whole or not at all, and the terminator is planted where the
+    ///   value would start when it does not fit;
+    /// * the final terminator is only written while capacity remains.
+    fn expand_env_into(&self, src: &[u16], count: usize, existing: &[u16]) -> (Vec<u16>, usize) {
+        let mut dst: Vec<u16> = existing.to_vec();
+        dst.resize(count.max(dst.len()), 0);
+        dst.truncate(count);
+        let mut remaining = count;
+        let mut pos = 0usize;
+        let mut total = 1usize; // the terminating NUL
+        let pct = b'%' as u16;
         let mut i = 0usize;
-        while i < chars.len() {
-            if chars[i] == '%' {
-                if let Some(close) = chars[i + 1..].iter().position(|&c| c == '%') {
-                    let name: String = chars[i + 1..i + 1 + close].iter().collect();
-                    if let Some(val) = self.env_get(&name) {
-                        out.push((true, val.to_string()));
-                        i = i + 1 + close + 1;
-                        continue;
+        while i < src.len() {
+            let (len, mut copy, units): (usize, usize, Vec<u16>);
+            if src[i] != pct {
+                let mut n = 0usize;
+                while i + n < src.len() && src[i + n] != pct {
+                    n += 1;
+                }
+                units = src[i..i + n].to_vec();
+                i += n;
+                len = n;
+                copy = n;
+            } else {
+                let mut n = 1usize;
+                while i + n < src.len() && src[i + n] != pct {
+                    n += 1;
+                }
+                if i + n < src.len() {
+                    let name = String::from_utf16_lossy(&src[i + 1..i + n]);
+                    match self.env_get(&name) {
+                        Some(val) => {
+                            let value: Vec<u16> = val.encode_utf16().collect();
+                            i += n + 1;
+                            len = value.len();
+                            copy = value.len();
+                            if remaining <= copy {
+                                copy = 0;
+                            }
+                            if remaining != 0 && count != 0 {
+                                let idx = pos + copy;
+                                if idx < dst.len() {
+                                    dst[idx] = 0;
+                                }
+                            }
+                            units = value;
+                        }
+                        None => {
+                            units = src[i..i + n + 1].to_vec();
+                            i += n + 1;
+                            len = units.len();
+                            copy = len;
+                        }
                     }
-                    if close > 0 {
-                        let literal: String = chars[i..i + 1 + close + 1].iter().collect();
-                        out.push((true, literal));
-                        i = i + 1 + close + 1;
-                        continue;
-                    }
+                } else {
+                    units = src[i..].to_vec();
+                    i = src.len();
+                    len = units.len();
+                    copy = len;
                 }
             }
-            out.push((false, chars[i].to_string()));
-            i += 1;
+            total += len;
+            if remaining != 0 && count != 0 {
+                let mut l = len;
+                if remaining < l {
+                    l = remaining;
+                }
+                if remaining <= copy {
+                    copy = remaining - 1;
+                }
+                for k in 0..copy {
+                    let idx = pos + k;
+                    if idx < dst.len() && k < units.len() {
+                        dst[idx] = units[k];
+                    }
+                }
+                remaining -= l;
+                pos += copy;
+            }
         }
-        out
+        if remaining != 0 && count != 0 && pos < dst.len() {
+            dst[pos] = 0;
+        }
+        (dst, total)
     }
 
-    /// Copies an expansion into a `count`-character destination the way wine does.
-    ///
-    /// Returns the number of characters the full expansion needs, *including* the terminator.
-    /// A complete copy is NUL-terminated; a copy that fills the buffer exactly is not, and a copy
-    /// that stops early because the next variable did not fit is NUL-terminated.
-    fn copy_expansion(tokens: &[(bool, String)], needed: usize, dst_chars: usize) -> Vec<u16> {
-        if dst_chars == 0 {
-            return Vec::new();
-        }
-        let cap = dst_chars - 1;
-        let mut out: Vec<u16> = Vec::with_capacity(dst_chars);
-        'outer: for (atomic, text) in tokens {
-            let units: Vec<u16> = text.encode_utf16().collect();
-            if *atomic && out.len() + units.len() > cap {
-                break 'outer;
-            }
-            for u in units {
-                if out.len() >= cap {
-                    break 'outer;
-                }
-                out.push(u);
-            }
-        }
-        if out.len() < cap || out.len() + 1 >= needed {
-            out.push(0);
-        }
-        out
+    fn expand_env(&self, src: &str) -> String {
+        let units: Vec<u16> = src.encode_utf16().collect();
+        let (dst, total) = self.expand_env_into(&units, units.len() + 1, &[]);
+        let text = String::from_utf16_lossy(&dst);
+        let _ = total;
+        text.trim_end_matches('\0').to_string()
     }
 
     // --------------------------------------------------------------- atoms
@@ -1261,45 +1296,50 @@ impl Win32Kernel {
                 if a0 == 0 {
                     return HleAction::Return(if a1 == 0 || a2 == 0 { 1 } else { 0 });
                 }
-                let src = self.read_wide(vmm, a0);
-                let tokens = self.expand_env_tokens(&src);
-                let needed: usize = 1 + tokens
-                    .iter()
-                    .map(|(_, t)| t.encode_utf16().count())
-                    .sum::<usize>();
+                let src: Vec<u16> = self.read_wide(vmm, a0).encode_utf16().collect();
                 let count = a2 as u32 as usize;
-                if a1 == 0 || count == 0 {
-                    return HleAction::Return(needed as u64);
+                let existing: Vec<u16> = if a1 != 0 && count != 0 {
+                    let mut raw = vec![0u8; count * 2];
+                    let _ = vmm.read_bytes(a1, &mut raw);
+                    raw.chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let (dst, total) = self.expand_env_into(&src, count, &existing);
+                if a1 != 0 && count != 0 {
+                    let mut buf = Vec::with_capacity(count * 2);
+                    for u in dst.iter().take(count) {
+                        buf.extend_from_slice(&u.to_le_bytes());
+                    }
+                    let _ = vmm.write_bytes(a1, &buf);
                 }
-                let units = Self::copy_expansion(&tokens, needed, count);
-                let mut buf = Vec::with_capacity(units.len() * 2);
-                for u in &units {
-                    buf.extend_from_slice(&u.to_le_bytes());
-                }
-                let _ = vmm.write_bytes(a1, &buf);
-                needed as u64
+                total as u64
             }
             "ExpandEnvironmentStringsA" => {
+                // kernelbase implements this on top of the wide call: expand fully, measure the
+                // ANSI form (terminator included), then copy only if it fits - otherwise just
+                // plant a NUL - and over-report by one byte when the buffer was too small.
                 if a0 == 0 {
                     return HleAction::Return(if a1 == 0 || a2 == 0 { 1 } else { 0 });
                 }
-                let src = self.read_ansi(vmm, a0);
-                let tokens = self.expand_env_tokens(&src);
-                let needed: usize = 1 + tokens
-                    .iter()
-                    .map(|(_, t)| wide_to_mb(ANSI_CODEPAGE, &t.encode_utf16().collect::<Vec<_>>()).0.len())
-                    .sum::<usize>();
+                let src_ansi = self.read_ansi(vmm, a0);
+                let src_wide: Vec<u16> = mb_to_wide(ANSI_CODEPAGE, src_ansi.as_bytes());
+                let (full, total) = self.expand_env_into(&src_wide, src_wide.len() + 1, &[]);
+                let (bytes, _) = wide_to_mb(ANSI_CODEPAGE, &full[..total.min(full.len())]);
+                let needed_a = bytes.len(); // includes the terminator
                 let count = a2 as u32 as usize;
-                if a1 == 0 || count == 0 {
-                    return HleAction::Return(needed as u64);
+                if count > needed_a {
+                    let _ = vmm.write_bytes(a1, &bytes);
+                } else if a1 != 0 {
+                    let _ = vmm.write_bytes(a1, &[0]);
                 }
-                let units = Self::copy_expansion(&tokens, needed, count);
-                let (mut bytes, _) = wide_to_mb(ANSI_CODEPAGE, &units);
-                if bytes.last() != Some(&0) && bytes.len() < count {
-                    bytes.push(0);
+                if needed_a >= count {
+                    (needed_a + 1) as u64
+                } else {
+                    needed_a as u64
                 }
-                let _ = vmm.write_bytes(a1, &bytes);
-                needed as u64
             }
 
             // ------------------------------------------------- tokens / profile
