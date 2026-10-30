@@ -988,12 +988,18 @@ impl Win32Kernel {
                     1
                 }
             }
+            // MultiByteToWideChar(CodePage, dwFlags, lpMultiByteStr, cbMultiByte,
+            //                     lpWideCharStr, cchWideChar)
+            //
+            // `dwFlags` is the *second* argument. Reading the parameters one slot early made
+            // `src` the flags word (always 0), so every conversion failed and returned 0 - which is
+            // why the winetest's `my_btowc()` helper produced 0 for every byte (wsprintf.c:190).
             "MultiByteToWideChar" => {
                 let codepage = a0 as u32;
-                let src = a1;
-                let srclen = a2 as i32;
-                let dst = a3;
-                let dstlen = a4 as i32;
+                let src = a2;
+                let srclen = a3 as i32;
+                let dst = a4;
+                let dstlen = a5 as i32;
                 if src == 0 {
                     return HleAction::Return(0);
                 }
@@ -1030,12 +1036,14 @@ impl Win32Kernel {
                 let _ = vmm.write_bytes(dst, &buf);
                 needed as u64
             }
+            // WideCharToMultiByte(CodePage, dwFlags, lpWideCharStr, cchWideChar,
+            //                     lpMultiByteStr, cbMultiByte, lpDefaultChar, lpUsedDefaultChar)
             "WideCharToMultiByte" => {
                 let codepage = a0 as u32;
-                let src = a1;
-                let srclen = a2 as i32;
-                let dst = a3;
-                let dstlen = a4 as i32;
+                let src = a2;
+                let srclen = a3 as i32;
+                let dst = a4;
+                let dstlen = a5 as i32;
                 if src == 0 {
                     return HleAction::Return(0);
                 }
@@ -1059,8 +1067,8 @@ impl Win32Kernel {
                     return HleAction::Return(0);
                 }
                 let _ = vmm.write_bytes(dst, &bytes);
-                if used_default && a5 != 0 && a6 != 0 {
-                    let _ = vmm.write_u32(a5, 1);
+                if used_default && a7 != 0 {
+                    let _ = vmm.write_u32(a7, 1);
                 }
                 bytes.len() as u64
             }
