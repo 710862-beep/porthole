@@ -65,7 +65,7 @@ subtests themselves have not started. `__getmainargs` receives `argc == 2` (the 
 `[0x430044]/[0x430048]` triple in `fault_snapshot()` and watch the printf path - `__stdio_common_vfprintf`
 is already HLE'd, so the exact format string that reaches it identifies the branch.
 
-### Subtest results (measured, run 40982219204)
+### Subtest results (measured, run 40984730853)
 
 The CRTs reach `main`, run the requested subtest, and four of the six wine fixtures now pass
 inside the interpreter:
@@ -77,8 +77,8 @@ inside the interpreter:
 | `kernel32_test.exe atom` | **PASS** | 164 049 683 | `1 049 715 tests executed, 0 failures` |
 | `kernel32_test.exe drive` | **PASS** | 18 843 | `131 tests executed, 0 failures` |
 | `kernel32_test.exe power` | **PASS** | 1 529 | `5 tests executed, 0 failures` |
-| `kernel32_test.exe environ` | 35 failures | 71 853 | expansion/profile edge cases |
-| `kernel32_test.exe directory` | 29 failures | 18 314 | `CreateDirectoryA(C:\\Windows\\System32): err=3` |
+| `kernel32_test.exe environ` | 35 failures | 71 853 | buffer-size reporting edge cases |
+| `kernel32_test.exe directory` | 23 failures | 17 602 | wildcard-component name errors |
 | `d3d12_test.exe d3d12` | access violation at 0x0 | 1 005 | call through a NULL vtable slot |
 | `porthole_x64_plan_test.exe x64_plan` | access violation at 0x0 | 14 703 | `CreateFileW on C:\\Game failed` (now fixed) |
 
@@ -111,9 +111,9 @@ truncate without a terminator; a variable value is copied whole or not at all).
 
 ### Next blockers
 
-1. `CreateDirectoryA("C:\\Windows\\System32")` returns `ERROR_PATH_NOT_FOUND` — the fixture runs
-   as a normal user, so wine expects the call to fail with `ERROR_ACCESS_DENIED`; and
-   `C:\\Please Remove Me*...` style names expect `ERROR_INVALID_NAME`.
+1. `directory`: a wildcard in a *non-final* path component must fail with `ERROR_PATH_NOT_FOUND`
+   (the parent cannot exist) while a wildcard in the final component is `ERROR_INVALID_NAME`
+   (directory.c:234-249). The VFS currently checks the name before the parent.
 2. `environ`'s last 35 failures are `GetEnvironmentVariableA/W` buffer-size reporting and
    `ExpandEnvironmentStrings` over-reporting rules.
 3. `d3d12_test` and `porthole_x64_plan_test` die on a NULL vtable slot - the COM objects the D3D12
