@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: u64 = 0xFFF;
@@ -89,6 +89,9 @@ pub struct VirtualMemoryManager {
     watch_ranges: Vec<(u64, u64)>,
     watch_len: usize,
     pub watch_log: Vec<WatchEvent>,
+    /// MEM_WRITE_WATCH allocations and the page-granular dirty set returned by GetWriteWatch.
+    ww_regions: Vec<(u64, u64)>,
+    ww_hits: BTreeSet<u64>,
 }
 
 impl VirtualMemoryManager {
@@ -110,6 +113,8 @@ impl VirtualMemoryManager {
             watch_ranges: Vec::new(),
             watch_len: 0,
             watch_log: Vec::new(),
+            ww_regions: Vec::new(),
+            ww_hits: BTreeSet::new(),
         }
     }
 
@@ -136,8 +141,51 @@ impl VirtualMemoryManager {
         self.watch_log.clear();
     }
 
+    /// Register a MEM_WRITE_WATCH allocation (page-granular, independent of the diagnostic watch log).
+    pub fn add_write_watch_region(&mut self, base: u64, size: u64) {
+        let lo = Self::align_down(base);
+        let hi = Self::align_up(base.saturating_add(size));
+        self.ww_regions.push((lo, hi));
+    }
+
+    pub fn remove_write_watch_region(&mut self, base: u64) {
+        let lo = Self::align_down(base);
+        if let Some(pos) = self.ww_regions.iter().position(|&(l, _)| l == lo) {
+            let (_, hi) = self.ww_regions.remove(pos);
+            self.ww_hits.retain(|&p| p < lo || p >= hi);
+        }
+    }
+
+    pub fn is_write_watch(&self, base: u64, size: u64) -> bool {
+        let lo = Self::align_down(base);
+        let hi = Self::align_up(base.saturating_add(size));
+        self.ww_regions.iter().any(|&(l, h)| l <= lo && hi <= h)
+    }
+
+    pub fn write_watch_pages(&mut self, base: u64, size: u64, reset: bool) -> Vec<u64> {
+        let lo = Self::align_down(base);
+        let hi = Self::align_up(base.saturating_add(size));
+        let pages: Vec<u64> = self.ww_hits.range(lo..hi).copied().collect();
+        if reset {
+            self.ww_hits.retain(|&p| p < lo || p >= hi);
+        }
+        pages
+    }
+
     #[inline]
     fn note_write(&mut self, addr: u64, data: &[u8], host: bool) {
+        if !self.ww_regions.is_empty() && !data.is_empty() {
+            let end = addr.saturating_add(data.len() as u64);
+            let mut page = Self::align_down(addr);
+            let last = Self::align_down(end.saturating_sub(1));
+            loop {
+                if self.ww_regions.iter().any(|&(lo, hi)| page >= lo && page < hi) {
+                    self.ww_hits.insert(page);
+                }
+                if page == last { break; }
+                page = page.saturating_add(PAGE_SIZE as u64);
+            }
+        }
         if self.watch_len == 0 || self.watch_log.len() >= self.watch_len {
             return;
         }

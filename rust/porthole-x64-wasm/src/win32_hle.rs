@@ -342,6 +342,7 @@ pub struct Win32Kernel {
     free_blocks: Vec<(u64, u64)>,
     qpc_ticks: u64,
     app_type: u32,
+    thread_hidden_from_debugger: bool,
 }
 
 impl Win32Kernel {
@@ -419,6 +420,7 @@ impl Win32Kernel {
             free_blocks: Vec::new(),
             qpc_ticks: 0,
             app_type: 0,
+            thread_hidden_from_debugger: false,
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -2421,8 +2423,11 @@ impl Win32Kernel {
                         if a4 != 0 { let _ = vmm.write_u32(a4, 4); }
                         0
                     }
-                    0x1E => { // ProcessDebugObjectHandle: no debug port
+                    0x1E => { // ProcessDebugObjectHandle: no debug port.
+                        // Windows still reports ReturnLength; al-khaser deliberately aliases it
+                        // with the handle buffer to catch hooks that zero the wrong bytes.
                         if a2 != 0 { let _ = vmm.write_u64(a2, 0); }
+                        if a4 != 0 { let _ = vmm.write_u32(a4, a3 as u32); }
                         0xC000_0353 // STATUS_PORT_NOT_SET
                     }
                     0x07 => { // ProcessDebugPort
@@ -2433,7 +2438,26 @@ impl Win32Kernel {
                 }
             }
             "NtSetInformationThread" => {
-                if a1 == 0x11 { 0 } else { 0xC000_0005u64 & 0xFFFF_FFFF } // ThreadHideFromDebugger
+                if a1 == 0x11 { // ThreadHideFromDebugger
+                    // Bogus length/info pointer must fail (hook detection), then bogus handle.
+                    if a2 != 0 || a3 != 0 { return HleAction::Return(0xC000_0004); } // INFO_LENGTH_MISMATCH
+                    let current = a0 == 0xFFFF_FFFF_FFFF_FFFE || a0 == 0xFFFF_FFFF_FFFF_FFFC
+                        || self.threads.iter().any(|t| t.handle == a0);
+                    if !current { return HleAction::Return(0xC000_0008); } // INVALID_HANDLE
+                    self.thread_hidden_from_debugger = true;
+                    0
+                } else { 0xC000_0005u64 & 0xFFFF_FFFF }
+            }
+            "NtQueryInformationThread" => {
+                if a1 == 0x11 { // ThreadHideFromDebugger: BOOLEAN, 4-byte aligned pointer.
+                    if a2 & 3 != 0 { return HleAction::Return(0x8000_0002); } // DATATYPE_MISALIGNMENT
+                    if a3 != 1 { return HleAction::Return(0xC000_0004); } // INFO_LENGTH_MISMATCH
+                    if a2 != 0 {
+                        if let Some(action) = self.host_write_or_fault(vmm, a2, &[self.thread_hidden_from_debugger as u8]) { return action; }
+                    }
+                    if a4 != 0 { let _ = vmm.write_u32(a4, 1); }
+                    0
+                } else { 0xC000_0005u64 & 0xFFFF_FFFF }
             }
             "NtSystemDebugControl" => 0xC000_0354, // STATUS_DEBUGGER_INACTIVE
             "NtYieldExecution" => 0x4000_0024, // STATUS_NO_YIELD_PERFORMED
@@ -2536,16 +2560,48 @@ impl Win32Kernel {
                 let addr = vmm.virtual_alloc(a0, a1, a2 as u32, a3 as u32);
                 if addr == 0 {
                     self.set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+                } else if a2 as u32 & 0x0020_0000 != 0 { // MEM_WRITE_WATCH
+                    vmm.add_write_watch_region(addr, a1);
                 }
                 addr
             }
             "VirtualFree" => {
                 if vmm.virtual_free(a0, a1, a2 as u32) {
+                    if a2 as u32 & MEM_RELEASE != 0 { vmm.remove_write_watch_region(a0); }
                     1
                 } else {
                     self.set_last_error(ERROR_INVALID_PARAMETER);
                     0
                 }
+            }
+            "GetWriteWatch" => {
+                // ULONG GetWriteWatch(flags, base, size, PVOID *addresses, ULONG_PTR *count, ULONG *granularity)
+                let (flags, base, size, addresses, count_ptr, gran_ptr) = (a0 as u32, a1, a2, a3, a4, a5);
+                if addresses == 0 || count_ptr == 0 || !vmm.is_write_watch(base, size) {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(ERROR_INVALID_PARAMETER as u64);
+                }
+                let cap = vmm.read_u64(count_ptr).unwrap_or(0);
+                let pages = vmm.write_watch_pages(base, size, flags & 1 != 0);
+                if pages.len() as u64 > cap {
+                    let _ = vmm.write_u64(count_ptr, pages.len() as u64);
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(ERROR_INSUFFICIENT_BUFFER as u64);
+                }
+                for (i, page) in pages.iter().enumerate() {
+                    let _ = vmm.write_u64(addresses + (i as u64) * 8, *page);
+                }
+                let _ = vmm.write_u64(count_ptr, pages.len() as u64);
+                if gran_ptr != 0 { let _ = vmm.write_u32(gran_ptr, 4096); }
+                0
+            }
+            "ResetWriteWatch" => {
+                if !vmm.is_write_watch(a0, a1) {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(ERROR_INVALID_PARAMETER as u64);
+                }
+                vmm.write_watch_pages(a0, a1, true);
+                0
             }
             "VirtualProtect" => {
                 if a3 == 0 {
@@ -6656,6 +6712,69 @@ mod heap_regression_tests {
         assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "Sleep", 0, &sleep_args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 0);
         let t1 = match k.dispatch(&mut vmm, "kernel32.dll", "GetTickCount", 0, &[0;10], 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() };
         assert_eq!(t1.wrapping_sub(t0), 500);
+    }
+
+    #[test]
+    fn process_debug_object_reports_return_length_even_when_aliased() {
+        let mut k = Win32Kernel::new();
+        let mut vmm = VirtualMemoryManager::new(64);
+        let mut cpu = crate::cpu::CpuState::new();
+        let out = 0xA_0000_0000u64;
+        vmm.map_region(out, 0x1000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
+        let args = [u64::MAX, 0x1E, out, 8, out, 0, 0, 0, 0, 0];
+        let status = match k.dispatch(&mut vmm, "ntdll.dll", "NtQueryInformationProcess", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() };
+        assert_eq!(status, 0xC000_0353);
+        assert_eq!(vmm.read_u64(out).unwrap(), 8, "aliased ReturnLength must survive as the handle value");
+    }
+
+    #[test]
+    fn thread_hide_from_debugger_validates_length_handle_alignment_and_persists() {
+        let mut k = Win32Kernel::new();
+        let mut vmm = VirtualMemoryManager::new(64);
+        let mut cpu = crate::cpu::CpuState::new();
+        let out = 0xA_0000_1000u64;
+        vmm.map_region(out, 0x1000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
+        let current = 0xFFFF_FFFF_FFFF_FFFEu64;
+        let ret = |a| match a { HleAction::Return(v) => v, _ => panic!("expected Return") };
+        let bogus_len = [current, 0x11, out, 12345, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "ntdll.dll", "NtSetInformationThread", 0, &bogus_len, 0, 0, &mut cpu)), 0xC000_0004);
+        let bogus_handle = [0xFFFF, 0x11, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "ntdll.dll", "NtSetInformationThread", 0, &bogus_handle, 0, 0, &mut cpu)), 0xC000_0008);
+        let legit = [current, 0x11, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "ntdll.dll", "NtSetInformationThread", 0, &legit, 0, 0, &mut cpu)), 0);
+        let query = [current, 0x11, out, 1, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "ntdll.dll", "NtQueryInformationThread", 0, &query, 0, 0, &mut cpu)), 0);
+        assert_eq!(vmm.read_u8(out).unwrap(), 1);
+        let wrong_size = [current, 0x11, out, 4, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "ntdll.dll", "NtQueryInformationThread", 0, &wrong_size, 0, 0, &mut cpu)), 0xC000_0004);
+        let unaligned = [current, 0x11, out + 1, 4, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "ntdll.dll", "NtQueryInformationThread", 0, &unaligned, 0, 0, &mut cpu)), 0x8000_0002);
+    }
+
+    #[test]
+    fn write_watch_tracks_guest_pages_and_reset_clears_them() {
+        let mut k = Win32Kernel::new();
+        let mut vmm = VirtualMemoryManager::new(64);
+        let mut cpu = crate::cpu::CpuState::new();
+        let scratch = 0xA_0000_2000u64;
+        vmm.map_region(scratch, 0x1000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
+        let ret = |a| match a { HleAction::Return(v) => v, _ => panic!("expected Return") };
+        let alloc = [0, 0x2000, 0x0020_3000, 0x04, 0, 0, 0, 0, 0, 0];
+        let buffer = ret(k.dispatch(&mut vmm, "kernel32.dll", "VirtualAlloc", 0, &alloc, 0, 0, &mut cpu));
+        assert_ne!(buffer, 0);
+        vmm.write_u32(buffer, 1234).unwrap();
+        let (addresses, count, gran) = (scratch, scratch + 0x100, scratch + 0x108);
+        vmm.write_u64(count, 4096).unwrap();
+        let gww = [0, buffer, 0x1000, addresses, count, gran, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "kernel32.dll", "GetWriteWatch", 0, &gww, 0, 0, &mut cpu)), 0);
+        assert_eq!(vmm.read_u64(count).unwrap(), 1);
+        assert_eq!(vmm.read_u64(addresses).unwrap(), buffer & !0xFFF);
+        assert_eq!(vmm.read_u32(gran).unwrap(), 4096);
+        let reset = [buffer, 0x1000, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(ret(k.dispatch(&mut vmm, "kernel32.dll", "ResetWriteWatch", 0, &reset, 0, 0, &mut cpu)), 0);
+        vmm.write_u64(count, 4096).unwrap();
+        assert_eq!(ret(k.dispatch(&mut vmm, "kernel32.dll", "GetWriteWatch", 0, &gww, 0, 0, &mut cpu)), 0);
+        assert_eq!(vmm.read_u64(count).unwrap(), 0);
     }
 
 }

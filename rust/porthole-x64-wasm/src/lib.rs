@@ -523,7 +523,7 @@ impl BrowserX64Emulator {
             // The host owns WebAssembly.Module compilation. When a valid artifact exists at RIP,
             // yield a distinct status so the JS bridge can execute it with the core's exported
             // memory, then commit registers atomically. Diagnostics lanes stay interpreted.
-            if self.jit_enabled && !self.trace_enabled && self.jit_active.is_none() {
+            if self.jit_enabled && !self.trace_enabled && self.jit_active.is_none() && (self.cpu.rflags & 0x100) == 0 {
                 let epoch = self.vmm.page_write_epoch(insn_rip & !0xFFF);
                 if self.jit.get_valid_artifact(insn_rip, epoch).is_some() {
                     self.console.extend_from_slice(&self.kernel.drain_stdout());
@@ -541,6 +541,19 @@ impl BrowserX64Emulator {
                         self.trace_instruction(insn_rip, rsp_before);
                     }
                     if self.jit_enabled { self.maybe_jit_compile(insn_rip); }
+                    // x86 TF: deliver one EXCEPTION_SINGLE_STEP after the armed instruction.
+                    // The VEH handler resumes with TF cleared, matching al-khaser's trap-flag probe.
+                    if (self.cpu.rflags & 0x100) != 0 {
+                        self.cpu.rflags &= !0x100;
+                        if self.kernel.has_exception_handlers() {
+                            let snapshot = self.cpu.clone();
+                            if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0x8000_0004, 0, self.cpu.rip, snapshot.gpr[4], &[]) {
+                                self.cpu = snapshot;
+                                self.stage_exception(action);
+                                continue;
+                            }
+                        }
+                    }
                 }
                 Ok(ExecOutcome::Fault(msg)) => {
                     if let Some(snapshot) = exception_snapshot.clone() {

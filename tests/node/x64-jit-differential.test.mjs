@@ -35,13 +35,13 @@ function pe64(code) {
 async function runToEnd(emu, host) {
   for (let i = 0; i < 20000; i++) {
     const status = host ? await host.runSlice(512) : emu.run_slice(512);
-    if (status === 'stopped') return status;
+    if (status === 'stopped' || status.startsWith('exit:')) return status;
     if (!['next', 'hostcall', 'upcall', 'jit', 'fallback'].includes(status)) return status;
   }
   return 'budget';
 }
 function regs(emu) {
-  const r = JSON.parse(emu.registers_json());
+  const r = JSON.parse(emu.register_json());
   return { rax: BigInt(r.rax), rcx: BigInt(r.rcx), rdx: BigInt(r.rdx), rflags: BigInt(r.rflags) };
 }
 
@@ -63,7 +63,8 @@ test('JIT and interpreter agree on RFLAGS across a hot sub/nop block followed by
   const interp = first.emu;
   interp.load_pe(pe64(code));
   interp.set_jit_enabled(false);
-  assert.equal(await runToEnd(interp), 'stopped');
+  const interpStatus = await runToEnd(interp);
+  assert.ok(interpStatus === 'stopped' || interpStatus === 'exit:0', interpStatus);
   const expected = regs(interp);
   assert.equal(expected.rcx, 0n);
   assert.equal((expected.rflags >> 6n) & 1n, 1n, 'final sub must set ZF');
@@ -73,7 +74,8 @@ test('JIT and interpreter agree on RFLAGS across a hot sub/nop block followed by
   jit.load_pe(pe64(code));
   const host = new X64JitHost(jit, {}, { memory: second.memory });
   jit.set_jit_enabled(true);
-  assert.equal(await runToEnd(jit, host), 'stopped');
+  const jitStatus = await runToEnd(jit, host);
+  assert.ok(jitStatus === 'stopped' || jitStatus === 'exit:0', jitStatus);
   await host.drainPending();
   const actual = regs(jit);
   assert.deepEqual(actual, expected, 'JIT must materialize flags consumed by the interpreter after the block');
