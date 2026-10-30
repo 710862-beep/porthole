@@ -19,14 +19,16 @@ browser loads** — not the native tracer.
 ## Loading real Windows code (not Wine tests)
 
 Four PE32+ x86-64 executables, compiled from C in this repository, mounted on the virtual
-`C:\Game` volume and executed by the emulator's PE64 loader:
+`C:\Game` volume and executed by the emulator's PE64 loader. They are rebuilt from source on every
+run (zig embeds a build-id, so a byte hash is only stable for one build — the source hash in
+`tests/assets/game/MANIFEST.json` is the stable identity):
 
-| Image | Bytes | sha256 (truncated) | What it does |
-| --- | --- | --- | --- |
-| `hello_world.exe` | 150 016 | `40019c0819e13e00…` | ucrt startup, `main`, stdio, `ExitProcess(0)` |
-| `game_startup.exe` | 152 576 | `54253519f269a94b…` | `CreateFileW`/`WriteFile` on `C:\Game`, 2 GB `MEM_RESERVE`, 64 MB `MEM_COMMIT` write+readback on all 16 384 pages, `GetModuleHandleW`, `GetProcAddress`, indirect call through the resolved thunk, `D3D12CreateDevice`, `ExitProcess(0)` |
-| `doom_d3d12_blocked.exe` | 160 768 | `b993cd3ac9c4fe45…` | the same image code, launched with `/blockstage:13`, so the *failure report* is measured as well |
-| `doom_d3d12_startup.exe` | 160 768 | `0c455783a7a9211c…` | 25-stage D3D12 boot: window → `CreateDXGIFactory2` → `EnumAdapters1` → `D3D12CreateDevice` → `CheckFeatureSupport` → queue → allocator → command list → fence → RTV heap → `D3D12SerializeRootSignature`+`CreateRootSignature` → PSO → `CreateSwapChainForHwnd` → `QueryInterface(IDXGISwapChain3)` → back buffers → RTVs → barriers → `ClearRenderTargetView` → `DrawInstanced` → `Close` → `ExecuteCommandLists` → `Present` |
+| Image | Bytes | What it does |
+| --- | --- | --- |
+| `hello_world.exe` | 150 016 | ucrt startup, `main`, stdio, `ExitProcess(0)` |
+| `game_startup.exe` | 152 576 | `CreateFileW`/`WriteFile` on `C:\Game`, 2 GB `MEM_RESERVE`, 64 MB `MEM_COMMIT` write+readback on all 16 384 pages, `GetModuleHandleW`, `GetProcAddress`, indirect call through the resolved thunk, `D3D12CreateDevice`, `ExitProcess(0)` |
+| `doom_d3d12_blocked.exe` | 160 768 | the same image code, launched with `/blockstage:13`, so the *failure report* is measured as well |
+| `doom_d3d12_startup.exe` | 160 768 | 25-stage D3D12 boot: window → `CreateDXGIFactory2` → `EnumAdapters1` → `D3D12CreateDevice` → `CheckFeatureSupport` → queue → allocator → command list → fence → RTV heap → `D3D12SerializeRootSignature`+`CreateRootSignature` → PSO → `CreateSwapChainForHwnd` → `QueryInterface(IDXGISwapChain3)` → back buffers → RTVs → barriers → `ClearRenderTargetView` → `DrawInstanced` → `Close` → `ExecuteCommandLists` → `Present` |
 
 Measured in `run 40994645347` (`gh api repos/710862-beep/porthole/check-runs/123865450546 -q .output.summary`):
 
