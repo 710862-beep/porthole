@@ -17,6 +17,7 @@ enum JitOp {
     MovImm64 { dst: u8, imm: u64 },
     MovReg64 { dst: u8, src: u8 },
     MovReg32 { dst: u8, src: u8 },
+    XorReg32 { dst: u8, src: u8 },
     AddReg64 { dst: u8, src: u8 },
     SubReg64 { dst: u8, src: u8 },
     AndReg64 { dst: u8, src: u8 },
@@ -264,8 +265,9 @@ impl HybridWasmJit {
                         ops.push(JitOp::MovReg32 { dst: rm, src: reg });
                     } else if !rex_w && op == 0x8B {
                         ops.push(JitOp::MovReg32 { dst: reg, src: rm });
-                    } else if !rex_w && op == 0x31 && reg == rm {
-                        ops.push(JitOp::MovImm64 { dst: rm, imm: 0 });
+                    } else if !rex_w && (op == 0x31 || op == 0x33) {
+                        let (dst, src) = if (op & 2) == 0 { (rm, reg) } else { (reg, rm) };
+                        ops.push(JitOp::XorReg32 { dst, src });
                     } else if !rex_w {
                         pc = start;
                         break;
@@ -480,6 +482,7 @@ impl HybridWasmJit {
             JitOp::AndReg64 { dst, src } => Some((3, 8, dst, dst, Some(src), 0)),
             JitOp::OrReg64 { dst, src } => Some((2, 8, dst, dst, Some(src), 0)),
             JitOp::XorReg64 { dst, src } => Some((5, 8, dst, dst, Some(src), 0)),
+            JitOp::XorReg32 { dst, src } => Some((5, 4, dst, dst, Some(src), 0)),
             JitOp::ImulReg64 { dst, src } => Some((6, 8, dst, dst, Some(src), 0)),
             JitOp::AddImm64 { dst, imm } => Some((1, 8, dst, dst, None, imm)),
             JitOp::SubImm64 { dst, imm } => Some((4, 8, dst, dst, None, imm)),
@@ -555,6 +558,7 @@ impl HybridWasmJit {
                 | JitOp::AndReg64 { dst, src }
                 | JitOp::OrReg64 { dst, src }
                 | JitOp::XorReg64 { dst, src }
+                | JitOp::XorReg32 { dst, src }
                 | JitOp::ImulReg64 { dst, src } => {
                     read_mask |= (1 << dst) | (1 << src);
                     write_mask |= 1 << dst;
@@ -634,6 +638,12 @@ impl HybridWasmJit {
                     body.push(0x83); // i64.and
                     body.push(0x21);
                     body.push(dst + 1);
+                }
+                JitOp::XorReg32 { dst, src } => {
+                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x85]);
+                    body.push(0x42);
+                    Self::push_i64_sleb(&mut body, 0xFFFF_FFFF);
+                    body.extend_from_slice(&[0x83, 0x21, dst + 1]);
                 }
                 JitOp::AddReg64 { dst, src } => {
                     body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x7C, 0x21, dst + 1]);

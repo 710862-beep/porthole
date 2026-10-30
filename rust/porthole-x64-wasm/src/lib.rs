@@ -1269,7 +1269,17 @@ impl BrowserX64Emulator {
                     _ => { ok = false; break; }
                 }
             }
-            if !ok || shadow.gpr[..] != self.jit_ctx[..16] {
+            // The shadow interpreter executed `ret` and already popped the return address;
+            // the JIT context intentionally holds the pre-ret RSP (the non-validating commit
+            // path applies the pop after reading the target). Normalize before comparing.
+            if art.ends_with_ret {
+                self.jit_ctx[4] = self.jit_ctx[4].wrapping_add(8);
+            }
+            let mut flag_cpu = self.cpu.clone();
+            if self.jit_ctx[16] != 0 {
+                flag_cpu.apply_jit_flags(self.jit_ctx[16], self.jit_ctx[17], self.jit_ctx[18], self.jit_ctx[19]);
+            }
+            if !ok || shadow.gpr[..] != self.jit_ctx[..16] || flag_cpu.rflags != shadow.rflags {
                 self.jit_active.take();
                 self.jit_shadow.take();
                 self.jit.invalidate_entry(art.entry_rip);
@@ -1401,5 +1411,59 @@ mod tests {
         assert!(emu.jit.get_valid_artifact(code, epoch).is_none());
         emu.vmm.supply_faulted_page(stack, &old.data);
         assert_eq!(emu.vmm.read_u64(stack).unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn jit_validation_ret_normalizes_rsp_and_commits() {
+        let mut emu = BrowserX64Emulator::new(4);
+        let code = 0x8_0000_0000u64;
+        let stack = 0x8_0001_0000u64;
+        emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
+        emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        // add rsp,0x38; ret — the exact epilogue shape that shadow validation rejected.
+        let block = [0x48, 0x83, 0xC4, 0x38, 0xC3];
+        emu.vmm.host_write_bytes(code, &block).unwrap();
+        emu.vmm.host_write_bytes(stack + 0x38, &0x1234u64.to_le_bytes()).unwrap();
+        let epoch = emu.vmm.page_write_epoch(code);
+        emu.jit.try_compile_block(code, epoch, &block).unwrap();
+        emu.cpu.rip = code;
+        emu.cpu.gpr[4] = stack;
+        emu.cpu.gpr[0] = 0x77;
+        assert!(!emu.jit_enter_block().is_empty());
+        // Simulate the Wasm block's pre-ret register result.
+        emu.jit_ctx[4] = stack + 0x38;
+        let before = emu.cpu.instructions_executed;
+        assert_eq!(emu.jit_commit_block(), "next");
+        assert_eq!(emu.cpu.rip, 0x1234);
+        assert_eq!(emu.cpu.gpr[4], stack + 0x40);
+        assert_eq!(emu.cpu.gpr[0], 0x77);
+        assert_eq!(emu.cpu.instructions_executed, before + 2);
+        assert!(emu.jit_active.is_none());
+    }
+
+    #[test]
+    fn jit_validation_checks_rflags_not_only_gprs() {
+        let mut emu = BrowserX64Emulator::new(4);
+        let code = 0x8_0000_0000u64;
+        emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
+        // xor eax,eax; nop — a 32-bit xor must zero-extend and set ZF/PF, clear SF/CF/OF.
+        let block = [0x31, 0xC0, 0x90];
+        emu.vmm.host_write_bytes(code, &block).unwrap();
+        let epoch = emu.vmm.page_write_epoch(code);
+        emu.jit.try_compile_block(code, epoch, &block).unwrap();
+        emu.cpu.rip = code;
+        emu.cpu.gpr[0] = 0xFFFF_FFFF_1234_5678;
+        assert!(!emu.jit_enter_block().is_empty());
+        emu.jit_ctx[0] = 0;
+        emu.jit_ctx[16] = 5; // xor
+        emu.jit_ctx[17] = 4; // 32-bit
+        emu.jit_ctx[18] = 0x1234_5678;
+        emu.jit_ctx[19] = 0x1234_5678;
+        assert_eq!(emu.jit_commit_block(), "next");
+        assert_eq!(emu.cpu.gpr[0], 0);
+        assert_ne!(emu.cpu.rflags & 0x40, 0); // ZF
+        assert_eq!(emu.cpu.rflags & 0x80, 0); // SF
+        assert_eq!(emu.cpu.rflags & 0x1, 0); // CF
+        assert_eq!(emu.cpu.rflags & 0x800, 0); // OF
     }
 }
