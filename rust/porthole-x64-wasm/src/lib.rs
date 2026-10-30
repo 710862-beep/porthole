@@ -65,6 +65,8 @@ pub struct BrowserX64Emulator {
     jit_enabled: bool,
     jit_ctx: Vec<u64>,
     jit_active: Option<jit::CompiledJitArtifact>,
+    jit_shadow: Option<cpu::CpuState>,
+    jit_validate: bool,
 }
 
 #[wasm_bindgen]
@@ -96,6 +98,8 @@ impl BrowserX64Emulator {
             // 0..15 GPRs; 16 flag-op kind; 17 width; 18 lhs; 19 rhs; 20 result.
             jit_ctx: vec![0; 21],
             jit_active: None,
+            jit_shadow: None,
+            jit_validate: true,
         }
     }
 
@@ -217,6 +221,15 @@ impl BrowserX64Emulator {
             0x1004,
             0,
         );
+
+        // Run loader TLS callbacks before the CRT entry point (al-khaser TLS attach probes).
+        if let Some(first) = self.kernel.begin_tls(info.tls_callbacks.clone(), info.entry_point, MAIN_STACK_TOP - 0x108) {
+            self.cpu.gpr[0] = info.image_base;
+            self.cpu.gpr[1] = 1; // DLL_PROCESS_ATTACH
+            self.cpu.gpr[2] = 0;
+            self.cpu.rip = first;
+            self.pending_upcall = true;
+        }
 
         let summary = format!(
             "{{\"imageBase\":{},\"entryPoint\":{},\"sizeOfImage\":{},\"textSize\":{},\"imports\":{},\"aotBlocks\":{},\"bindings\":{}}}",
@@ -1207,6 +1220,8 @@ impl BrowserX64Emulator {
     pub fn set_virtual_input_profile(&mut self, on: bool) { self.kernel.virtual_input = on; }
 
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
+    /// When true (default), each JIT commit is shadow-validated against the interpreter.
+    pub fn set_jit_validate(&mut self, on: bool) { self.jit_validate = on; }
 
     /// JIT context ABI version (number of i64 slots). Hosts/tests use this to reject old
     /// cores that lack flag-materialization slots instead of silently miscomputing RFLAGS.
@@ -1228,6 +1243,7 @@ impl BrowserX64Emulator {
         let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
         self.jit_ctx[..16].copy_from_slice(&self.cpu.gpr);
         self.jit_ctx[16] = 0; // no flag-writing op committed yet
+        self.jit_shadow = Some(self.cpu.clone());
         let meta = format!("{{\"entryRip\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\",\"ctx\":{}}}",
             art.entry_rip, art.page_epoch, art.byte_len, art.insn_count, art.ends_with_ret, art.code_hash, self.jit_context_ptr());
         self.jit_active = Some(art);
@@ -1242,6 +1258,29 @@ impl BrowserX64Emulator {
         if art.entry_rip != self.cpu.rip || art.page_epoch != epoch {
             self.jit_active.take();
             self.jit.invalidate_entry(art.entry_rip);
+            return "next".into();
+        }
+        // Safety net: re-execute the pure-GPR block in a shadow interpreter and compare.
+        // A miscompile is invalidated and replayed by the host fallback instead of corrupting
+        // the guest. Once an artifact class is differential-proven it can skip this via
+        // set_jit_validate(false); correctness lanes keep it on.
+        if self.jit_validate {
+            let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
+            let mut ok = true;
+            for _ in 0..art.insn_count {
+                match shadow.step_one(&mut self.vmm) {
+                    Ok(cpu::ExecOutcome::Next) | Ok(cpu::ExecOutcome::Branch(_)) => {}
+                    _ => { ok = false; break; }
+                }
+            }
+            if !ok || shadow.gpr[..] != self.jit_ctx[..16] {
+                self.jit.invalidate_entry(art.entry_rip);
+                return format!("fault:jit-validation:0x{:x}", art.entry_rip);
+            }
+            self.jit_active.take();
+            let base_insns = self.cpu.instructions_executed;
+            self.cpu = shadow;
+            self.cpu.instructions_executed = base_insns + art.insn_count as u64;
             return "next".into();
         }
         // Resolve the return target BEFORE committing registers/instruction count. A swapped

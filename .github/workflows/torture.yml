@@ -96,7 +96,7 @@ jobs:
   jit-benchmark:
     needs: core
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -104,24 +104,28 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
       - run: node scripts/fetch-chocolate-doom.mjs
-      - name: Chocolate Doom interpreter baseline (100M instructions)
+      - name: Chocolate Doom interpreter baseline (full timedemo)
         id: doom-baseline
         continue-on-error: true
         run: |
-          set -o pipefail
           mkdir -p artifacts/torture
           rm -f artifacts/chocolate-doom-tier-b-report.json
-          PORTHOLE_JIT=0 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600 PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_DEBUG_WAD=0 PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-baseline.log
-          cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-baseline-report.json
-      - name: Chocolate Doom hybrid JIT candidate (100M instructions)
+          set +e
+          PORTHOLE_JIT=0 PORTHOLE_DOOM_MAX_INSTRUCTIONS=0 PORTHOLE_DOOM_TIMEOUT_S=900 PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_DEBUG_WAD=0 PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-baseline.log
+          rc=${PIPESTATUS[0]}
+          cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-baseline-report.json || true
+          exit "$rc"
+      - name: Chocolate Doom hybrid JIT candidate (full timedemo)
         id: doom-jit
         continue-on-error: true
         run: |
-          set -o pipefail
           mkdir -p artifacts/torture
           rm -f artifacts/chocolate-doom-tier-b-report.json
-          PORTHOLE_JIT=1 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600 PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_DEBUG_WAD=0 PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-jit.log
-          cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-jit-report.json
+          set +e
+          PORTHOLE_JIT=1 PORTHOLE_DOOM_MAX_INSTRUCTIONS=0 PORTHOLE_DOOM_TIMEOUT_S=900 PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_DEBUG_WAD=0 PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-jit.log
+          rc=${PIPESTATUS[0]}
+          cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-jit-report.json || true
+          exit "$rc"
       - name: Stage pinned Doom inputs for restricted-egress diagnosis
         if: always()
         run: |

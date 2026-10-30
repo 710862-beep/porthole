@@ -92,6 +92,13 @@ pub enum UpcallState {
         end: u64,
         resume_rip: u64,
     },
+    Tls {
+        callbacks: Vec<u64>,
+        index: usize,
+        reason: u64,
+        resume_rip: u64,
+        entry_rsp: u64,
+    },
     Exception {
         context_va: u64,
         pointers_va: u64,
@@ -2626,6 +2633,12 @@ impl Win32Kernel {
                     return HleAction::Return(0);
                 }
                 let mut buf = [0u8; 48];
+                if vmm.find_region(a0).is_none() {
+                    // VirtualQuery on an unmapped address fails; returning success with a
+                    // zero RegionSize made al-khaser's memory walk spin and corrupt the CRT heap.
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
                 if let Some(reg) = vmm.find_region(a0) {
                     let base = reg.base;
                     let size = reg.size;
@@ -4047,7 +4060,7 @@ impl Win32Kernel {
                     self.exit_code = Some(a0 as u32);
                     return HleAction::ExitProcess(a0 as u32);
                 }
-                if symbol == "abort" {
+                if symbol == "abort" || symbol == "_invoke_watson" || symbol == "_invoke_watson_noreturn" {
                     self.exit_code = Some(3);
                     return HleAction::ExitProcess(3);
                 }
@@ -6465,6 +6478,20 @@ impl Win32Kernel {
     /// Called when the guest returned into the upcall sentinel. Either call the next guest
     /// constructor or resume the interrupted HLE stub; `None` only when no upcall is in flight
     /// (i.e. the process entry point itself returned).
+    /// Queue loader TLS callbacks (DLL_PROCESS_ATTACH then DLL_THREAD_ATTACH) before the entry
+    /// point. Returns the first callback RIP for the driver to stage on the startup stack.
+    pub fn begin_tls(&mut self, callbacks: Vec<u64>, entry_rip: u64, entry_rsp: u64) -> Option<u64> {
+        let first = *callbacks.first()?;
+        self.upcall_stack.push(UpcallState::Tls {
+            callbacks,
+            index: 0,
+            reason: 1,
+            resume_rip: entry_rip,
+            entry_rsp,
+        });
+        Some(first)
+    }
+
     pub fn finish_upcall(&mut self, vmm: &mut VirtualMemoryManager, cpu: &mut crate::cpu::CpuState) -> Option<UpcallStep> {
         if let Some(UpcallState::Exception { context_va, .. }) = self.upcall_stack.last().cloned() {
             let disposition = cpu.gpr[0] as i32;
@@ -6498,6 +6525,25 @@ impl Win32Kernel {
             return Some(UpcallStep::Fault(format!("unhandled guest exception 0x{code:08x}")));
         }
         match self.upcall_stack.last().cloned() {
+            Some(UpcallState::Tls { callbacks, index, reason, resume_rip, entry_rsp }) => {
+                let image_base = self.image_base();
+                let next_index = index + 1;
+                if next_index < callbacks.len() {
+                    if let Some(UpcallState::Tls { index: i, .. }) = self.upcall_stack.last_mut() { *i = next_index; }
+                    cpu.gpr[0] = image_base; cpu.gpr[1] = reason; cpu.gpr[2] = 0;
+                    return Some(UpcallStep::Call(callbacks[next_index]));
+                }
+                if reason == 1 && !callbacks.is_empty() {
+                    if let Some(UpcallState::Tls { reason: r, index: i, .. }) = self.upcall_stack.last_mut() { *r = 2; *i = 0; }
+                    cpu.gpr[0] = image_base; cpu.gpr[1] = 2; cpu.gpr[2] = 0;
+                    return Some(UpcallStep::Call(callbacks[0]));
+                }
+                self.upcall_stack.pop();
+                cpu.gpr[4] = entry_rsp;
+                let _ = vmm.write_u64(entry_rsp, crate::pe64::UPCALL_RETURN_THUNK);
+                cpu.rip = resume_rip;
+                return Some(UpcallStep::ResumeGuest);
+            }
             Some(UpcallState::Initterm {
                 next_slot,
                 end,

@@ -37,6 +37,7 @@ pub struct LoadedPe64Info {
     pub text_size: u64,
     pub import_count: usize,
     pub aot_blocks_compiled: usize,
+    pub tls_callbacks: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -325,6 +326,7 @@ where
 
     // Handle static TLS directory (DataDirectory[9]) if present
     let mut tls_array_ptr = 0u64;
+    let mut tls_callbacks: Vec<u64> = Vec::new();
     if num_rva > 9 {
         let tls_dir = opt + 112 + 9 * 8;
         let tls_rva = read_le_u32(pe_bytes, tls_dir).unwrap_or(0) as u64;
@@ -348,6 +350,15 @@ where
             }
             let _ = vmm.write_u64(tls_arr_va, tls_block_va);
             tls_array_ptr = tls_arr_va;
+            // AddressOfCallBacks (TLS directory + 24): null-terminated PIMAGE_TLS_CALLBACK array.
+            let callbacks_va = vmm.read_u64(tls_va + 24).unwrap_or(0);
+            if callbacks_va != 0 {
+                for i in 0..64u64 {
+                    let cb = vmm.read_u64(callbacks_va + i * 8).unwrap_or(0);
+                    if cb == 0 { break; }
+                    if vmm.find_region(cb).is_some() { tls_callbacks.push(cb); }
+                }
+            }
         }
     }
 
@@ -385,6 +396,7 @@ where
             text_size,
             import_count: bindings.len(),
             aot_blocks_compiled,
+            tls_callbacks,
         },
         bindings,
     ))

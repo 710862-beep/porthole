@@ -352,3 +352,37 @@ resolved the earlier `PNAMES not found` abort. The guest now progresses further 
 fails on `F_END not found`; the benchmark still reports FAIL, 0 gametics, ~0.07 MIPS. A host-side
 `hasF_END` probe is added to distinguish asset content from guest directory-read truncation.
 No JIT speedup is claimed while the timedemo cannot start.
+
+### JIT correctness and evidence-transport hardening (commits `424cf66`…`c2c702b`)
+
+- **RFLAGS differential test PASS against the CI-built candidate.** The authored PE64 fixture
+  `mov rcx,1000; mov rdx,1; L: sub rcx,rdx; nop; jnz L; ret` makes the hot-block handoff land on
+  `sub+nop`, after which the *interpreter* executes `jnz`. The 21-slot JIT context now materializes
+  the final flag writer's kind/width/lhs/rhs/result, and commit applies interpreter-identical
+  RFLAGS. `tests/node/x64-jit-differential.test.mjs` passes against candidate
+  `artifacts/remote/41134521742/core/artifacts/torture/candidate/` (full `npm run test:unit`: 25/25).
+  The previous core ignored flags entirely, so this was a real miscompile class, not a benchmark artifact.
+- **Fault-safe commit ordering.** `jit_commit_block` resolves the `ret` target before copying GPRs or
+  adding the instruction count. A swapped stack page invalidates the artifact and replays in the
+  interpreter without double execution. Native regression tests create real LRU pressure (the VMM
+  enforces a 64-page minimum resident budget) for VMM partial writes, ReadFile replay, and JIT ret faults.
+- **AOT scan narrowed to the entry block.** The old 256-byte-aligned `.text` scan decoded
+  mid-instruction and cached semantically wrong Wasm; only RIPs actually executed are now compiled.
+  OPFS artifacts are re-validated against live guest bytes before import.
+- **JS JIT host binds the core's exported memory**, discards stale pending metadata instead of
+  `JSON.parse("")`, separates cache-save errors from guest traps, and counts only committed blocks.
+  The Doom A/B workflow no longer copies a stale baseline over a failed candidate report.
+- **Evidence transport is gzip Git blobs** with original+blob SHA256 verification; a Node test exercises
+  publish/download round-trip and rejects tampering. This replaces the raw-base64 transport that lost
+  expanded-wine/VKD3D reports when pretty-printed audits exceeded the blob cap.
+- **Vulkan CTS startup fault diagnosed:** run `41127156564` faulted at ~57 k instructions with missing
+  `kernel32!InitializeSListHead` and `api-ms-win-crt-stdio!_set_fmode`. SLIST init/interlocked ops and
+  `_set_fmode`/stable `__p__fmode` are implemented for rerun. CTS still has **no claimed pass rate**.
+- **al-khaser leak fixes pending rerun:** ProcessDebugObjectHandle aliased ReturnLength,
+  ThreadHideFromDebugger length/handle/alignment validation, TF single-step exception, and
+  MEM_WRITE_WATCH/GetWriteWatch/ResetWriteWatch page tracking. Native regressions cover the exact
+  upstream al-khaser expectations. TLS callbacks and PAGE_GUARD/SEH remain open.
+- **Doom:** the host WAD probe now actually checks `F_END` (the earlier report's probe claim was
+  incorrect), records marker indices and directory SHA256, and the runner/CI resident budget is restored
+  to 65536 pages. The timedemo still FAILs at `F_END not found` in the last measured run; no JIT speedup
+  is claimed. Pinned Doom inputs are staged for restricted-egress download via the verified blob transport.
