@@ -49,7 +49,7 @@ jobs:
             shift 2
             if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then tag="$1"; shift; fi
             extra="$*"
-            out="trace-$f$sub$tag.log"
+            out="trace-$f$sub${tag:+-$tag}.log"
             echo "##### fixture=$f subtest=${sub:-none}" > "$out"
             if [ -f "tests/assets/wine64/$f.exe" ]; then
               ./rust/porthole-x64-wasm/target/release/xtrace "tests/assets/wine64/$f.exe" \
@@ -73,10 +73,10 @@ jobs:
           run porthole_x64_plan_test x64_plan
           # Same fixtures again, with the trace filtered down to HLE traffic so the *whole* run
           # fits in the ring buffer - this is what identifies which API the guest is stuck on.
-          run user32_test wsprintf -hle --hle-only --no-watch \
+          run user32_test wsprintf hle --hle-only --no-watch \
             --hle-match "MultiByte,IsDBCS,GetCPInfo,K " --trace 300
-          run kernel32_test atom -hle --hle-only --no-watch --budget 3000000 --trace 300
-          run kernel32_test directory -hle --hle-only --no-watch --budget 400000 --trace 300 \
+          run kernel32_test atom hle --hle-only --no-watch --budget 3000000 --trace 300
+          run kernel32_test directory hle --hle-only --no-watch --budget 400000 --trace 300 \
             --hle-match "K ,CreateDirectory,SetCurrentDirectory,GetCurrentDirectory"
           wc -l trace.log
       - name: Publish each fixture trace through the Checks API
