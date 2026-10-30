@@ -832,7 +832,7 @@ impl Win32Kernel {
     // ------------------------------------------------------------- strings
 
     fn json_escape(s: &str) -> String {
-        let mut out = String::from(""");
+        let mut out = String::from("\"");
         for c in s.chars() {
             match c {
                 '"' => { out.push('\\'); out.push('"'); }
