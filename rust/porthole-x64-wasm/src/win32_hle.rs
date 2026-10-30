@@ -2326,7 +2326,7 @@ impl Win32Kernel {
                         self.heaps[i].end = va + size;
                     }
                 }
-                self.heap_alloc(vmm, a0, a1)
+                self.heap_alloc(vmm, a0, a2)
             }
             "HeapFree" => {
                 self.heap_free(a2);

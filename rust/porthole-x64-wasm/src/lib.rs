@@ -335,7 +335,8 @@ impl BrowserX64Emulator {
                 self.status = RunStatus::Fault;
                 self.fault_message = format!("unregistered COM thunk 0x{insn_rip:x}");
                 self.trace_event(format!("F unregistered COM thunk 0x{insn_rip:x}"));
-                return format!("fault:{}", self.fault_message);
+                self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return format!("fault:{}", self.fault_message);
             }
 
             // --- HLE thunk range ---------------------------------------------------------------
@@ -468,7 +469,8 @@ impl BrowserX64Emulator {
                         self.status = RunStatus::Fault;
                         self.fault_message = format!("unmapped thunk 0x{insn_rip:x}");
                         self.trace_event(format!("F unmapped thunk 0x{insn_rip:x} rsp=0x{rsp_before:x}"));
-                        return format!("fault:{}", self.fault_message);
+                        self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return format!("fault:{}", self.fault_message);
                     }
                 }
             }
@@ -498,6 +500,7 @@ impl BrowserX64Emulator {
                         "F decode/exec fault at 0x{insn_rip:x}: {}",
                         self.fault_message
                     ));
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
                     return format!("fault:{}", self.fault_message);
                 }
                 Err(MemoryTrap::PageFault(addr)) => {
@@ -521,6 +524,7 @@ impl BrowserX64Emulator {
                         "F access violation 0x{addr:x} at 0x{insn_rip:x} rsp=0x{:x}",
                         self.cpu.gpr[4]
                     ));
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
                     return format!("fault:{}", self.fault_message);
                 }
             }

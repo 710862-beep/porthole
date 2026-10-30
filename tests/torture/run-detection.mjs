@@ -82,7 +82,9 @@ async function main() {
         item.terminal = terminal; item.exitCode = terminal?.startsWith('exit:') ? Number(terminal.slice(5)) : null;
         item.console = emu.take_console(); item.instructions = Number(emu.instructions_executed()); item.durationMs = Date.now() - started;
         item.faultSnapshot = emu.fault_snapshot(); item.trace = emu.take_trace(); item.telemetry = JSON.parse(emu.telemetry_json());
-        Object.assign(item, parseDetection(entry.suite, item.console));
+        const guestLogBytes = emu.vfs_read(entry.suite === 'al-khaser' ? 'C:\\Game\\log.txt' : 'C:\\Game\\pafish.log');
+        item.guestLog = guestLogBytes ? Buffer.from(guestLogBytes).toString('utf8') : '';
+        Object.assign(item, parseDetection(entry.suite, `${item.console}\n${item.guestLog}`));
         item.apiAudit = audit; item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
         item.findings.forEach(f => { f.apiCandidates = audit.filter(e => e.kind === 'api').slice(-20); f.correlation = 'last-call window; upstream check does not identify a causal API'; });
         item.status = !terminal ? 'TIMEOUT' : terminal.startsWith('fault:') ? 'GUEST_FAULT' : item.exitCode !== 0 || !item.completed ? 'FAIL' : item.findings.length || item.auditOverflow.length ? 'FAIL' : 'PASS';
@@ -92,8 +94,7 @@ async function main() {
         fs.writeFileSync(`${stem}.console.log`, item.console);
         fs.writeFileSync(`${stem}.api.jsonl`, audit.map(e => JSON.stringify(e)).join('\n') + '\n');
         fs.writeFileSync(`${stem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
-        const log = emu.vfs_read(entry.suite === 'al-khaser' ? 'C:\\Game\\log.txt' : 'C:\\Game\\pafish.log');
-        if (log) fs.writeFileSync(`${stem}.guest.log`, log);
+        if (guestLogBytes) fs.writeFileSync(`${stem}.guest.log`, guestLogBytes);
       } catch (e) { item.status = 'BACKEND_ERROR'; item.error = e.stack || String(e); }
       console.log(`[detection] ${item.name}: ${item.status} checks=${item.checks.length} findings=${item.findings.length} instructions=${item.instructions || 0}`);
     }
