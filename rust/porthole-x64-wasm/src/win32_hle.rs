@@ -258,6 +258,8 @@ pub struct Win32Kernel {
     pub tls_slots: Vec<Option<u64>>,
     pub crit_sections: HashMap<u64, u32>,
     pub d3d12: D3d12Subsystem,
+    /// SDL2 subsystem (Gate 2): guest-presented frames are counted/captured here.
+    pub sdl: crate::sdl_hle::SdlState,
     pub stdout: Vec<u8>,
     pub exit_code: Option<u32>,
     pub ticks: u64,
@@ -338,6 +340,7 @@ impl Win32Kernel {
             tls_slots: vec![None; 64],
             crit_sections: HashMap::new(),
             d3d12: D3d12Subsystem::new(),
+            sdl: crate::sdl_hle::SdlState::new(),
             stdout: Vec::new(),
             exit_code: None,
             ticks: 0x1000,
@@ -624,7 +627,7 @@ impl Win32Kernel {
 
     // ---------------------------------------------------------------- memory
 
-    fn heap_alloc(&mut self, vmm: &mut VirtualMemoryManager, heap: u64, size: u64) -> u64 {
+    pub(crate) fn heap_alloc(&mut self, vmm: &mut VirtualMemoryManager, heap: u64, size: u64) -> u64 {
         let aligned = (size.max(1) + 15) & !15;
         // Reuse freed blocks before growing the bump frontier. A pure bump allocator exhausts
         // any fixed region under a real C++ workload (7-Zip churns thousands of new/delete
@@ -661,7 +664,7 @@ impl Win32Kernel {
         va
     }
 
-    fn heap_free(&mut self, ptr: u64) {
+    pub(crate) fn heap_free(&mut self, ptr: u64) {
         if ptr == 0 {
             return;
         }
@@ -809,7 +812,7 @@ impl Win32Kernel {
         String::from_utf16_lossy(&units)
     }
 
-    fn write_ansi(&mut self, vmm: &mut VirtualMemoryManager, addr: u64, s: &str) -> Result<usize, ()> {
+    pub(crate) fn write_ansi(&mut self, vmm: &mut VirtualMemoryManager, addr: u64, s: &str) -> Result<usize, ()> {
         let units: Vec<u16> = s.encode_utf16().collect();
         let (mut bytes, _) = wide_to_mb(ANSI_CODEPAGE, &units);
         bytes.push(0);
@@ -817,7 +820,7 @@ impl Win32Kernel {
         Ok(bytes.len() - 1)
     }
 
-    fn write_wide(&mut self, vmm: &mut VirtualMemoryManager, addr: u64, s: &str) -> Result<usize, ()> {
+    pub(crate) fn write_wide(&mut self, vmm: &mut VirtualMemoryManager, addr: u64, s: &str) -> Result<usize, ()> {
         let units: Vec<u16> = s.encode_utf16().collect();
         let mut buf = Vec::with_capacity((units.len() + 1) * 2);
         for u in &units {
@@ -1524,6 +1527,22 @@ impl Win32Kernel {
                 return HleAction::Return(self.variant_copy(vmm, a0, a1));
             }
             _ => {}
+        }
+
+        // SDL-family DLLs are dispatched by the SDL subsystem (Gate 2): their symbol names are
+        // unique to those DLLs, and the object model (windows/renderers/textures/surfaces)
+        // lives in sdl_hle.rs. This is also where guest-presented frames are captured.
+        if matches!(
+            dll,
+            "sdl2.dll"
+                | "sdl2_mixer.dll"
+                | "sdl2_net.dll"
+                | "libpng16-16.dll"
+                | "libfluidsynth-3.dll"
+                | "libsamplerate-0.dll"
+                | "winmm.dll"
+        ) {
+            return HleAction::Return(self.sdl_dispatch(vmm, dll, symbol, args));
         }
 
         let result: u64 = match symbol {

@@ -24,7 +24,7 @@ import { pathToFileURL } from 'node:url';
 const wasmDir = process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm';
 const exeRel = 'tests/assets/third-party/chocolate-doom.exe';
 const wadRel = 'tests/assets/third-party/freedoom2.wad';
-const guestArgs = process.env.PORTHOLE_DOOM_ARGS ?? '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nodraw -nosound';
+const guestArgs = process.env.PORTHOLE_DOOM_ARGS ?? '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound';
 const residentPages = Math.max(64, Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536) || 65536);
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 540) || 540) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
@@ -114,7 +114,7 @@ function writeReport(report) {
     `runner=${report.runner} device=${JSON.stringify(report.device)}`,
     `argv=chocolate-doom.exe ${guestArgs} resident_pages=${residentPages}`,
     `claim_scope=EXECUTION probe; RENDERING requires guest-presented frames (see presented_frames)`,
-    `presented_frames=${run.presentedFrames ?? 0} framebuffer_checksum=${run.frameChecksum || 'none'}`,
+    `presented_frames=${run.presentedFrames ?? 0} framebuffer_checksum=${run.frameChecksum || 'none'} frame_size=${run.frameWidth || 0}x${run.frameHeight || 0}`,
     `reason=${report.reason || 'none'}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
@@ -251,6 +251,8 @@ async function main() {
     // Gate 2 accounting: only frames the GUEST presented through the emulator frame path count.
     presentedFrames: Number(emu.presented_frames?.() || 0),
     frameChecksum: emu.frame_checksum?.() || '',
+    frameWidth: Number(emu.guest_frame_width?.() || 0),
+    frameHeight: Number(emu.guest_frame_height?.() || 0),
   };
 
   if (terminal === 'exit:0' && report.run.presentedFrames > 0 && report.run.frameChecksum) {

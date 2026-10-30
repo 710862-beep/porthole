@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod cpu_simd;
 pub mod d3d12_hle;
 pub mod jit;
+pub mod sdl_hle;
 pub mod pe64;
 pub mod vmm;
 pub mod win32_fmt;
@@ -110,6 +111,7 @@ impl BrowserX64Emulator {
         self.kernel.init_runtime_tables();
         self.kernel.init_heaps(&mut self.vmm);
         self.kernel.d3d12 = d3d12_hle::D3d12Subsystem::new();
+        self.kernel.sdl = sdl_hle::SdlState::new();
 
         // Reserve the whole HLE thunk region as executable before COM/D3D12 setup allocates
         // vtable slots inside it.
@@ -823,6 +825,51 @@ impl BrowserX64Emulator {
         let delta = total.saturating_sub(self.frames_presented_seen);
         self.frames_presented_seen = total;
         delta
+    }
+
+    /// Total frames the GUEST presented through the SDL path (Gate 2 accounting). This counter
+    /// advances only inside `SDL_RenderPresent`/`SDL_UpdateWindowSurface` on guest-issued draws;
+    /// there is no host-side increment and no host-authored pixels behind it.
+    pub fn presented_frames(&self) -> u64 {
+        self.kernel.sdl.presented_frames
+    }
+
+    /// Checksum of the last guest-presented SDL frame: FNV-1a/64 over `w|h|RGBA8` bytes,
+    /// formatted `fnv1a64:<16 hex>`. Empty until the guest presents a frame. The algorithm is
+    /// deliberately trivial so a reference renderer (same binary on real Wine/Windows) can
+    /// reproduce it byte-for-byte for the Gate 2 comparison.
+    pub fn frame_checksum(&self) -> String {
+        if self.kernel.sdl.presented_frames == 0 || self.kernel.sdl.last_frame_rgba.is_empty() {
+            return String::new();
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for b in self.kernel.sdl.last_frame_w.to_le_bytes() {
+            mix(b);
+        }
+        for b in self.kernel.sdl.last_frame_h.to_le_bytes() {
+            mix(b);
+        }
+        for &b in &self.kernel.sdl.last_frame_rgba {
+            mix(b);
+        }
+        format!("fnv1a64:{h:016x}")
+    }
+
+    /// Last guest-presented SDL frame (tight RGBA8) without consuming it.
+    pub fn guest_frame_rgba(&self) -> Vec<u8> {
+        self.kernel.sdl.last_frame_rgba.clone()
+    }
+
+    pub fn guest_frame_width(&self) -> u32 {
+        self.kernel.sdl.last_frame_w
+    }
+
+    pub fn guest_frame_height(&self) -> u32 {
+        self.kernel.sdl.last_frame_h
     }
 
     /// Returns the last presented swapchain frame as tightly packed RGBA8 (width/height are
