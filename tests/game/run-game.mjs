@@ -181,6 +181,20 @@ async function runOne(binding, entry, options) {
   item.finalRip = `0x${emu.rip().toString(16)}`;
   item.lastError = emu.last_error();
   item.durationMs = Date.now() - started;
+  // A frame is only "presented" if the renderer produced pixels: capture them and hash the
+  // buffer so the report proves a frame, not just a successful Present() return value.
+  item.framesPresented = emu.frames_presented ? emu.frames_presented() : 0;
+  const frame = emu.take_frame ? emu.take_frame() : null;
+  if (frame && frame.length) {
+    item.frame = {
+      width: emu.frame_width ? emu.frame_width() : 0,
+      height: emu.frame_height ? emu.frame_height() : 0,
+      bytes: frame.length,
+      sha256: crypto.createHash('sha256').update(Buffer.from(frame)).digest('hex'),
+      sample: Array.from(frame.slice(0, 16)),
+      nonZeroBytes: frame.reduce((n, b) => (b ? n + 1 : n), 0),
+    };
+  }
   item.hle = emu.hle_histogram(40).split(' ').filter(Boolean);
   item.com = (emu.com_histogram ? emu.com_histogram(60) : '').split(' ').filter(Boolean);
   item.unimplementedApis = (emu.unimplemented_symbols() || '').split(' ').filter(Boolean);
@@ -215,6 +229,13 @@ function printBlock(item) {
   console.log(`    instructions=${item.instructions} exit=${item.exitCode} slices=${item.slices} page_faults=${item.pageFaults}`);
   if (item.load) {
     console.log(`    imageBase=0x${item.load.imageBase.toString(16)} entryPoint=0x${item.load.entryPoint.toString(16)} imports=${item.load.imports}`);
+  }
+  if (item.frame) {
+    console.log(
+      `    frame: ${item.frame.width}x${item.frame.height} bytes=${item.frame.bytes} ` +
+      `nonZero=${item.frame.nonZeroBytes} sha256=${item.frame.sha256.slice(0, 16)}… ` +
+      `pixel0=[${item.frame.sample.slice(0, 4).join(',')}]`
+    );
   }
   if (item.hle.length) console.log(`    win32: ${item.hle.slice(0, 22).join(' ')}`);
   if (item.com.length) console.log(`    com:   ${item.com.slice(0, 22).join(' ')}`);
@@ -283,6 +304,23 @@ async function main() {
   fs.writeFileSync(options.report, `${JSON.stringify(report, null, 2)}\n`);
 
   for (const item of report.tests) printBlock(item);
+
+  // GitHub Actions renders `::notice::` as a Checks annotation, which is how these numbers stay
+  // quotable after the job log is gone.
+  for (const item of report.tests) {
+    const bits = [
+      `${item.name}: ${item.status}`,
+      `instructions=${item.instructions}`,
+      `exit=${item.exitCode}`,
+      `slices=${item.slices}`,
+      `page_faults=${item.pageFaults}`,
+    ];
+    if (item.frame) bits.push(`frame=${item.frame.width}x${item.frame.height}/${item.frame.bytes}B/sha256:${item.frame.sha256.slice(0, 16)}`);
+    if (item.stage?.failedStage) bits.push(`failed_stage=${item.stage.failedStage}:${item.stage.failedApi}:${item.stage.hresult}`);
+    if (item.unimplementedMethods.length) bits.push(`missing_com=${item.unimplementedMethods.length}`);
+    if (item.unimplementedApis.length) bits.push(`missing_api=${item.unimplementedApis.length}`);
+    console.log(`::notice title=porthole-game-fixture::${bits.join(' ')}`);
+  }
 
   console.log(
     `\n[game] ${report.status}: ${report.summary.passed}/${report.summary.declared} pass · ` +
