@@ -195,7 +195,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
       - name: Install MinGW-w64
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 wine-tools
       - run: node scripts/fetch-wine-source.mjs
       - name: Build expanded upstream PE32+ matrix
         id: expanded-build

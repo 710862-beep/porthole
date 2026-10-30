@@ -140,6 +140,13 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
     fs.copyFileSync(src, dst);
   }
   fs.writeFileSync(path.join(incDir, 'winternl.h'), WINTERNL_OVERLAY);
+  if (toolchain === 'mingw') {
+    // Ubuntu MinGW-w64 predates d3d9on12.h. Generate it from the pinned Wine IDL
+    // rather than editing the upstream test or substituting a stub header.
+    const widl = process.env.PORTHOLE_WIDL || 'widl';
+    const r = spawnSync(widl, ['-I', 'vendor/wine-source/include', '-h', '-H', path.join(incDir, 'd3d9on12.h'), 'vendor/wine-source/include/d3d9on12.idl'], { encoding: 'utf8', timeout: 180000 });
+    if (r.status !== 0) throw new Error(`widl failed for d3d9on12.h (install wine-tools): ${r.stderr || r.stdout || r.error}`);
+  }
   const testHeaderPath = path.join(incDir, 'wine/test.h');
   let testHeader = fs.readFileSync(testHeaderPath, 'utf8');
   const observer = fs.readFileSync('tests/torture/wine-observer.h', 'utf8');
