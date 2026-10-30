@@ -89,7 +89,10 @@ jobs:
       - name: Execute upstream Wine d3d12 assertions
         id: run
         continue-on-error: true
-        run: node tests/wine64/run-wine64.mjs --only d3d12 --report artifacts/torture/wine-d3d12-report.json --audit-dir artifacts/torture/wine64 --timeout-ms 180000
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/torture
+          node tests/wine64/run-wine64.mjs --only d3d12 --report artifacts/torture/wine-d3d12-report.json --audit-dir artifacts/torture/wine64 --timeout-ms 180000 2>&1 | tee artifacts/torture/wine-d3d12-runner.log
       - name: Preserve raw evidence
         if: always()
         env: {GH_TOKEN: '${{ github.token }}'}
@@ -125,7 +128,10 @@ jobs:
         id: run
         continue-on-error: true
         shell: bash
-        run: node tests/torture/run-detection.mjs --suite al-khaser --report artifacts/torture/al-khaser-report.json --raw-dir artifacts/torture/al-khaser
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/torture
+          node tests/torture/run-detection.mjs --suite al-khaser --report artifacts/torture/al-khaser-report.json --raw-dir artifacts/torture/al-khaser 2>&1 | tee artifacts/torture/al-khaser-runner.log
       - name: Preserve raw evidence
         if: always()
         shell: bash
@@ -162,7 +168,10 @@ jobs:
       - name: Execute upstream pafish64
         id: run
         continue-on-error: true
-        run: node tests/torture/run-detection.mjs --suite pafish --report artifacts/torture/pafish-report.json --raw-dir artifacts/torture/pafish
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/torture
+          node tests/torture/run-detection.mjs --suite pafish --report artifacts/torture/pafish-report.json --raw-dir artifacts/torture/pafish 2>&1 | tee artifacts/torture/pafish-runner.log
       - name: Preserve raw evidence
         if: always()
         env: {GH_TOKEN: '${{ github.token }}'}
