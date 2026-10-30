@@ -240,7 +240,7 @@ impl BrowserX64Emulator {
         while executed < max_instructions {
             // --- upcall sentinel: a guest function that the HLE invoked has returned -------------
             if self.cpu.rip == UPCALL_RETURN_THUNK {
-                match self.kernel.finish_upcall(&mut self.vmm) {
+                match self.kernel.finish_upcall(&mut self.vmm, &mut self.cpu) {
                     Some(UpcallStep::Call(target)) => {
                         // The upcalled function's own `ret` already popped the sentinel, so RSP is
                         // back at the interrupted HLE stub's frame. Stage a *new* sentinel one slot
@@ -253,6 +253,7 @@ impl BrowserX64Emulator {
                             target, rsp, ret_slot
                         ));
                         self.cpu.gpr[4] = ret_slot;
+                        if let Some(ptr) = self.kernel.pending_exception_pointers() { self.cpu.gpr[1] = ptr; }
                         self.cpu.rip = target;
                         self.pending_upcall = true;
                         continue;
@@ -271,6 +272,17 @@ impl BrowserX64Emulator {
                         self.cpu.rip = resume_rip;
                         self.pending_upcall = false;
                         continue;
+                    }
+                    Some(UpcallStep::ResumeGuest) => {
+                        self.pending_upcall = false;
+                        continue;
+                    }
+                    Some(UpcallStep::Fault(msg)) => {
+                        self.pending_upcall = false;
+                        self.status = RunStatus::Fault;
+                        self.fault_message = msg;
+                        self.console.extend_from_slice(&self.kernel.drain_stdout());
+                        return format!("fault:{}", self.fault_message);
                     }
                     None => {
                         // No upcall in flight: the process entry point returned.
@@ -404,6 +416,7 @@ impl BrowserX64Emulator {
                             &args,
                             rsp,
                             insn_rip,
+                            &mut self.cpu,
                         );
                         if !self.kernel.hle_notes.is_empty() {
                             let notes: Vec<String> = self.kernel.hle_notes.drain(..).collect();
@@ -431,7 +444,10 @@ impl BrowserX64Emulator {
                                 executed += 1;
                                 continue;
                             }
-                            HleAction::Upcall { target, resume_rip, .. } => {
+                            HleAction::Upcall { target, resume_rip, rax } => {
+                                if matches!(self.kernel.pending_upcall(), Some(UpcallState::Exception { .. })) {
+                                    self.cpu.gpr[1] = rax; // EXCEPTION_POINTERS*
+                                }
                                 // Stage a *real* Win64 call frame 0x30 below the HLE stub's rsp:
                                 // [ret_slot]=sentinel, [ret_slot+8, ret_slot+0x28) = the callee's
                                 // 32-byte register home/shadow space, which the upcalled guest
@@ -476,6 +492,7 @@ impl BrowserX64Emulator {
             }
 
             // --- ordinary guest instruction ----------------------------------------------------
+            let exception_snapshot = if self.kernel.has_exception_handlers() { Some(self.cpu.clone()) } else { None };
             let outcome = self.cpu.step_one(&mut self.vmm);
             match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {
@@ -486,6 +503,23 @@ impl BrowserX64Emulator {
                     self.maybe_jit_compile(insn_rip);
                 }
                 Ok(ExecOutcome::Fault(msg)) => {
+                    if let Some(snapshot) = exception_snapshot.clone() {
+                        let (code, resume_rip, params) = if msg.starts_with("INT3") {
+                            (0x8000_0003u32, insn_rip + 1, vec![])
+                        } else if msg.starts_with("INT 0x2d") {
+                            (0x8000_0003u32, insn_rip + 2, vec![])
+                        } else if msg.starts_with("UD2") {
+                            (0xC000_001Du32, insn_rip, vec![])
+                        } else { (0, insn_rip, vec![]) };
+                        if code != 0 {
+                            if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, code, 0, resume_rip, snapshot.gpr[4], &params) {
+                                self.cpu = snapshot;
+                                self.stage_exception(action);
+                                executed += 1;
+                                continue;
+                            }
+                        }
+                    }
                     if msg.starts_with("INT3") {
                         let ret = self.vmm.read_u64(self.cpu.gpr[4]).unwrap_or(0);
                         if ret == UPCALL_RETURN_THUNK {
@@ -511,6 +545,14 @@ impl BrowserX64Emulator {
                     return format!("page-fault:{}", addr);
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
+                    if let Some(snapshot) = exception_snapshot {
+                        if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0xC000_0005, 0, insn_rip, snapshot.gpr[4], &[1, addr]) {
+                            self.cpu = snapshot;
+                            self.stage_exception(action);
+                            executed += 1;
+                            continue;
+                        }
+                    }
                     self.status = RunStatus::Fault;
                     self.fault_message = format!(
                         "access violation at 0x{addr:x} (rax=0x{:x} rcx=0x{:x} rdx=0x{:x} rsp=0x{:x} gs=0x{:x}); history: {}",
@@ -763,6 +805,19 @@ impl BrowserX64Emulator {
             args[4 + i as usize] = self.vmm.read_u64(rsp + 0x28 + i * 8).unwrap_or(0);
         }
         args
+    }
+
+    fn stage_exception(&mut self, action: HleAction) {
+        if let HleAction::Upcall { target, rax, .. } = action {
+            let rsp = self.cpu.gpr[4];
+            let frame = rsp.wrapping_sub(0x30);
+            let _ = self.vmm.write_u64(frame, UPCALL_RETURN_THUNK);
+            self.cpu.gpr[4] = frame;
+            self.cpu.gpr[1] = rax;
+            self.cpu.rip = target;
+            self.pending_upcall = true;
+            self.trace_event(format!("X exception handler=0x{target:x} pointers=0x{rax:x}"));
+        }
     }
 
     fn maybe_jit_compile(&mut self, insn_rip: u64) {

@@ -92,6 +92,14 @@ pub enum UpcallState {
         end: u64,
         resume_rip: u64,
     },
+    Exception {
+        context_va: u64,
+        pointers_va: u64,
+        handlers: Vec<u64>,
+        next_handler: usize,
+        unhandled_filter: u64,
+        in_unhandled: bool,
+    },
 }
 
 /// Next action for the driver after an upcalled guest function returned.
@@ -102,6 +110,10 @@ pub enum UpcallStep {
     /// All guest work for this API is done: re-enter the API stub at `resume_rip` with the stack
     /// frame exactly as the original guest `call` left it.
     Resume(u64),
+    /// Exception handler restored the guest CONTEXT; execution continues without re-entering HLE.
+    ResumeGuest,
+    /// Exception dispatch exhausted all handlers.
+    Fault(String),
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +276,9 @@ pub struct Win32Kernel {
     pub exit_code: Option<u32>,
     pub ticks: u64,
     upcall_stack: Vec<UpcallState>,
+    vectored_handlers: Vec<(u64, u64)>,
+    unhandled_filter: u64,
+    exception_depth: usize,
     modules: HashMap<String, u64>,
     pub instructions: u64,
     pub swapped_page_hook: bool,
@@ -345,6 +360,9 @@ impl Win32Kernel {
             exit_code: None,
             ticks: 0x1000,
             upcall_stack: Vec::new(),
+            vectored_handlers: Vec::new(),
+            unhandled_filter: 0,
+            exception_depth: 0,
             modules: HashMap::new(),
             instructions: 0,
             swapped_page_hook: false,
@@ -1457,6 +1475,7 @@ impl Win32Kernel {
         args: &[u64; 10],
         guest_rsp: u64,
         call_rip: u64,
+        cpu: &mut crate::cpu::CpuState,
     ) -> HleAction {
         *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
         let a0 = args[0];
@@ -1607,7 +1626,36 @@ impl Win32Kernel {
                 0
             }
             "SetErrorMode" => 0,
-            "SetUnhandledExceptionFilter" => 0,
+            "SetUnhandledExceptionFilter" => {
+                let old = self.unhandled_filter;
+                self.unhandled_filter = a0;
+                old
+            }
+            "AddVectoredExceptionHandler" | "RtlAddVectoredExceptionHandler" => {
+                if a1 == 0 { return HleAction::Return(0); }
+                let handle = self.alloc_handle() | 0x1000_0000;
+                if a0 != 0 { self.vectored_handlers.insert(0, (handle, a1)); }
+                else { self.vectored_handlers.push((handle, a1)); }
+                handle
+            }
+            "RemoveVectoredExceptionHandler" | "RtlRemoveVectoredExceptionHandler" => {
+                let before = self.vectored_handlers.len();
+                self.vectored_handlers.retain(|&(h, _)| h != a0);
+                u64::from(self.vectored_handlers.len() != before)
+            }
+            "RaiseException" => {
+                let ret = vmm.read_u64(guest_rsp).unwrap_or(0);
+                let mut params = Vec::new();
+                for i in 0..(a2 as usize).min(15) {
+                    params.push(vmm.read_u64(a3.wrapping_add(i as u64 * 8)).unwrap_or(0));
+                }
+                // A continuable software exception resumes after the API call.
+                match self.begin_exception(vmm, cpu, a0 as u32, a1 as u32, ret,
+                                           guest_rsp.wrapping_add(8), &params) {
+                    Some(action) => action,
+                    None => HleAction::ExitProcess(a0 as u32),
+                }
+            }
 
             // -------------------------------------------------------- atoms
             "GlobalAddAtomA" => self.atom_add(vmm, true, a0, false),
@@ -6048,6 +6096,67 @@ impl Win32Kernel {
         std::mem::take(&mut self.stdout)
     }
 
+    pub fn has_exception_handlers(&self) -> bool {
+        !self.vectored_handlers.is_empty() || self.unhandled_filter != 0
+    }
+
+    /// Builds the real AMD64 EXCEPTION_RECORD/CONTEXT/EXCEPTION_POINTERS ABI in guest memory
+    /// and dispatches the first vectored handler. No host pointer is exposed to the guest.
+    pub fn begin_exception(
+        &mut self, vmm: &mut VirtualMemoryManager, cpu: &crate::cpu::CpuState,
+        code: u32, flags: u32, rip: u64, rsp: u64, params: &[u64],
+    ) -> Option<HleAction> {
+        if self.exception_depth >= 8 || !self.has_exception_handlers() { return None; }
+        let context = self.heap_alloc(vmm, self.process_heap, 1232);
+        let record = self.heap_alloc(vmm, self.process_heap, 152);
+        let pointers = self.heap_alloc(vmm, self.process_heap, 16);
+        if context == 0 || record == 0 || pointers == 0 { return None; }
+        let _ = vmm.write_bytes(context, &[0; 1232]);
+        let _ = vmm.write_u32(context + 0x30, 0x0010_000B); // CONTROL|INTEGER|SEGMENTS
+        let _ = vmm.write_u32(context + 0x34, cpu.mxcsr);
+        let _ = vmm.write_u16(context + 0x38, 0x33); // CS
+        let _ = vmm.write_u16(context + 0x42, 0x2B); // SS
+        let _ = vmm.write_u32(context + 0x44, cpu.rflags as u32);
+        for (i, &r) in cpu.gpr.iter().enumerate() { let _ = vmm.write_u64(context + 0x78 + i as u64 * 8, r); }
+        let _ = vmm.write_u64(context + 0x98, rsp);
+        let _ = vmm.write_u64(context + 0xF8, rip);
+        for i in 0..16 { let _ = vmm.write_u128(context + 0x1A0 + i as u64 * 16, &cpu.ymm[i][..16].try_into().unwrap()); }
+        let _ = vmm.write_u32(record, code);
+        let _ = vmm.write_u32(record + 4, flags);
+        let _ = vmm.write_u64(record + 16, rip);
+        let _ = vmm.write_u32(record + 24, params.len() as u32);
+        for (i, &p) in params.iter().take(15).enumerate() { let _ = vmm.write_u64(record + 32 + i as u64 * 8, p); }
+        let _ = vmm.write_u64(pointers, record);
+        let _ = vmm.write_u64(pointers + 8, context);
+        let handlers = self.vectored_handlers.iter().map(|&(_, f)| f).collect();
+        self.exception_depth += 1;
+        self.upcall_stack.push(UpcallState::Exception {
+            context_va: context, pointers_va: pointers, handlers, next_handler: 0,
+            unhandled_filter: self.unhandled_filter, in_unhandled: false,
+        });
+        self.next_exception_handler(vmm, pointers)
+    }
+
+    fn next_exception_handler(&mut self, vmm: &mut VirtualMemoryManager, pointers: u64) -> Option<HleAction> {
+        let Some(UpcallState::Exception { handlers, next_handler, unhandled_filter, in_unhandled, .. }) = self.upcall_stack.last_mut() else { return None };
+        let target = if let Some(&f) = handlers.get(*next_handler) {
+            *next_handler += 1; f
+        } else if *unhandled_filter != 0 && !*in_unhandled {
+            *in_unhandled = true; *unhandled_filter
+        } else { return None; };
+        // HleAction::Upcall.rax carries the guest EXCEPTION_POINTERS* for exception frames;
+        // the driver stages it in RCX before entering the handler.
+        let _ = vmm;
+        Some(HleAction::Upcall { target, resume_rip: crate::UPCALL_RETURN_THUNK, rax: pointers })
+    }
+
+    pub fn pending_exception_pointers(&self) -> Option<u64> {
+        match self.upcall_stack.last() {
+            Some(UpcallState::Exception { pointers_va, .. }) => Some(*pointers_va),
+            _ => None,
+        }
+    }
+
     pub fn pending_upcall(&self) -> Option<UpcallState> {
         self.upcall_stack.last().cloned()
     }
@@ -6055,7 +6164,38 @@ impl Win32Kernel {
     /// Called when the guest returned into the upcall sentinel. Either call the next guest
     /// constructor or resume the interrupted HLE stub; `None` only when no upcall is in flight
     /// (i.e. the process entry point itself returned).
-    pub fn finish_upcall(&mut self, vmm: &mut VirtualMemoryManager) -> Option<UpcallStep> {
+    pub fn finish_upcall(&mut self, vmm: &mut VirtualMemoryManager, cpu: &mut crate::cpu::CpuState) -> Option<UpcallStep> {
+        if let Some(UpcallState::Exception { context_va, .. }) = self.upcall_stack.last().cloned() {
+            let disposition = cpu.gpr[0] as i32;
+            if disposition == -1 { // EXCEPTION_CONTINUE_EXECUTION
+                for i in 0..16 { cpu.gpr[i] = vmm.read_u64(context_va + 0x78 + i as u64 * 8).unwrap_or(cpu.gpr[i]); }
+                cpu.rip = vmm.read_u64(context_va + 0xF8).unwrap_or(cpu.rip);
+                cpu.rflags = (cpu.rflags & !0xFFFF_FFFF) | vmm.read_u32(context_va + 0x44).unwrap_or(cpu.rflags as u32) as u64;
+                cpu.mxcsr = vmm.read_u32(context_va + 0x34).unwrap_or(cpu.mxcsr);
+                for i in 0..16 { if let Ok(b) = vmm.read_u128(context_va + 0x1A0 + i as u64 * 16) { cpu.ymm[i][..16].copy_from_slice(&b); } }
+                self.upcall_stack.pop();
+                self.exception_depth = self.exception_depth.saturating_sub(1);
+                return Some(UpcallStep::ResumeGuest);
+            }
+            // EXCEPTION_CONTINUE_SEARCH (0) tries the next handler. Other values are not a
+            // implemented unwind disposition and must fail closed, not silently continue.
+            if disposition != 0 {
+                self.upcall_stack.pop(); self.exception_depth = self.exception_depth.saturating_sub(1);
+                return Some(UpcallStep::Fault(format!("unsupported exception disposition {disposition}")));
+            }
+            let ptr = self.pending_exception_pointers().unwrap_or(0);
+            let record = vmm.read_u64(ptr).unwrap_or(0);
+            if let Some(next) = self.next_exception_handler(vmm, ptr) {
+                // The sentinel Call path reloads RCX from the pending Exception state.
+                if let HleAction::Upcall { target, rax, .. } = next {
+                    cpu.gpr[1] = rax;
+                    return Some(UpcallStep::Call(target));
+                }
+            }
+            let code = vmm.read_u32(record).unwrap_or(0);
+            self.upcall_stack.pop(); self.exception_depth = self.exception_depth.saturating_sub(1);
+            return Some(UpcallStep::Fault(format!("unhandled guest exception 0x{code:08x}")));
+        }
         match self.upcall_stack.last().cloned() {
             Some(UpcallState::Initterm {
                 next_slot,
@@ -6146,18 +6286,18 @@ mod heap_regression_tests {
     fn heap_alloc_uses_byte_size_not_flags_and_does_not_overlap() {
         let mut vmm = VirtualMemoryManager::new(4096);
         let mut k = Win32Kernel::new();
-        let heap = match k.dispatch(&mut vmm, "kernel32.dll", "HeapCreate", 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0, 0) {
+        let heap = match k.dispatch(&mut vmm, "kernel32.dll", "HeapCreate", 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0, 0, &mut crate::cpu::CpuState::new()) {
             HleAction::Return(h) => h,
             _ => panic!("HeapCreate did not return"),
         };
         assert_ne!(heap, 0);
         let args1 = [heap, 8, 0xc00, 0, 0, 0, 0, 0, 0, 0];
-        let p1 = match k.dispatch(&mut vmm, "kernel32.dll", "HeapAlloc", 0, &args1, 0, 0) {
+        let p1 = match k.dispatch(&mut vmm, "kernel32.dll", "HeapAlloc", 0, &args1, 0, 0, &mut crate::cpu::CpuState::new()) {
             HleAction::Return(p) => p,
             _ => panic!("HeapAlloc did not return"),
         };
         let args2 = [heap, 0, 0x100, 0, 0, 0, 0, 0, 0, 0];
-        let p2 = match k.dispatch(&mut vmm, "kernel32.dll", "HeapAlloc", 0, &args2, 0, 0) {
+        let p2 = match k.dispatch(&mut vmm, "kernel32.dll", "HeapAlloc", 0, &args2, 0, 0, &mut crate::cpu::CpuState::new()) {
             HleAction::Return(p) => p,
             _ => panic!("HeapAlloc did not return"),
         };
@@ -6167,4 +6307,41 @@ mod heap_regression_tests {
         vmm.write_u64(p1 + 0x20, 0x1234).unwrap();
         assert_eq!(vmm.read_u64(p1 + 0x20).unwrap(), 0x1234);
     }
+    #[test]
+    fn vectored_exception_abi_and_unhandled_filter_chain() {
+        let mut k = Win32Kernel::new();
+        let mut vmm = VirtualMemoryManager::new(256);
+        vmm.map_region(crate::pe64::PROCESS_HEAP_ADDR, 0x10000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+        k.process_heap = crate::pe64::PROCESS_HEAP_ADDR;
+        let mut cpu = crate::cpu::CpuState::new();
+        cpu.gpr[0] = 0x1122; cpu.gpr[4] = 0x8000; cpu.rip = 0x401000; cpu.rflags = 0x202;
+        let mut args = [0u64; 10]; args[0] = 1; args[1] = 0x5000;
+        let h1 = match k.dispatch(&mut vmm, "kernel32.dll", "AddVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() };
+        args[0] = 0; args[1] = 0x6000;
+        let h2 = match k.dispatch(&mut vmm, "kernel32.dll", "AddVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() };
+        assert_ne!(h1, 0); assert_ne!(h2, 0); assert_ne!(h1, h2);
+        args[0] = 0x7000;
+        assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "SetUnhandledExceptionFilter", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 0);
+        let action = k.begin_exception(&mut vmm, &cpu, 0x8000_0003, 0, 0x401001, cpu.gpr[4], &[]).unwrap();
+        let (target, ptr) = match action { HleAction::Upcall { target, rax, .. } => (target, rax), _ => panic!() };
+        assert_eq!(target, 0x5000); // First=1 inserts at head.
+        let record = vmm.read_u64(ptr).unwrap(); let context = vmm.read_u64(ptr + 8).unwrap();
+        assert_eq!(vmm.read_u32(record).unwrap(), 0x8000_0003);
+        assert_eq!(vmm.read_u64(record + 16).unwrap(), 0x401001);
+        assert_eq!(vmm.read_u64(context + 0x78).unwrap(), 0x1122);
+        assert_eq!(vmm.read_u64(context + 0xF8).unwrap(), 0x401001);
+        cpu.gpr[0] = 0; // CONTINUE_SEARCH
+        assert!(matches!(k.finish_upcall(&mut vmm, &mut cpu), Some(UpcallStep::Call(0x6000))));
+        cpu.gpr[0] = 0;
+        assert!(matches!(k.finish_upcall(&mut vmm, &mut cpu), Some(UpcallStep::Call(0x7000))));
+        vmm.write_u64(context + 0xF8, 0x401002).unwrap();
+        cpu.gpr[0] = u64::MAX; // -1 CONTINUE_EXECUTION
+        assert!(matches!(k.finish_upcall(&mut vmm, &mut cpu), Some(UpcallStep::ResumeGuest)));
+        assert_eq!(cpu.rip, 0x401002);
+        assert!(!k.has_exception_handlers() || k.unhandled_filter == 0x7000);
+        args[0] = h1;
+        assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "RemoveVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 1);
+        assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "RemoveVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 0);
+    }
+
 }

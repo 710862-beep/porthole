@@ -1298,8 +1298,13 @@ impl CpuState {
                 ExecOutcome::Next
             }
 
-            // INT3 (CC)
+            // INT3 (CC) and INT imm8 (CD). Debug-service INT 2D raises a breakpoint
+            // exception; the handler sees RIP after the two-byte instruction.
             0xCC => ExecOutcome::Fault(format!("INT3 breakpoint at 0x{insn_rip:x}")),
+            0xCD => {
+                let vector = code[cursor]; cursor += 1;
+                ExecOutcome::Fault(format!("INT 0x{vector:02x} at 0x{insn_rip:x}"))
+            }
 
             // CALL rel32 (E8)
             0xE8 => {
