@@ -184,3 +184,79 @@ Not started in this initial pass. No 300–500 MIPS claim is supported. A future
 JIT must validate translated blocks against the interpreter, invalidate on code-page writes,
 preserve precise guest fault state, and benchmark the same Chocolate Doom workload before
 any speedup is reported.
+
+---
+
+## Phase 2 progress update (2026-10-30, branch `arena/633a2716-porthole`)
+
+This section records the closed-loop work after the initial Phase 1 report. It is a living
+record: entries marked **verified** have downloaded CI evidence; entries marked **pending
+rerun** are implemented but not yet proven by a successful guest execution.
+
+### Verified exception-dispatch and DXGI output-parent retests
+
+- Torture run `41108877072` (commit `68cdabb`): native core **SUCCESS** (`5 passed; 0 failed`
+  unit tests plus `3 passed; 0 failed` Wine64 startup integration tests). The earlier
+  `vectored_exception_abi_and_unhandled_filter_chain` panic was a test-harness bug (empty heap
+  table); fixed by initializing guest heaps in the regression test.
+- Wine `d3d12_test.exe d3d12` progressed past the previous `IDXGISwapChain3::GetContainingOutput`
+  failure at `d3d12.c:912`. New exact failure in the same run:
+  - assertion `d3d12.c:680`, expression `hr == ((HRESULT)0x00000000)`, message
+    `Got unexpected hr 0x80004001.`
+  - causal audit entry: `ID3D12Resource::GetDevice`, args
+    `this=0x7ff400000d90, riid=0x42b390, ppv=0x21ff800`, return `0x80004001 (E_NOTIMPL)`.
+  - guest then faulted with unhandled `0xC0000005` after calling through the null device pointer.
+  - fix committed: `ID3D12DeviceChild::GetDevice` (vtable slot 7) for resources, command lists,
+    allocators, PSOs, root signatures, descriptor heaps and fences; swapchain buffers now inherit
+    the creating device as parent. **Pending rerun.**
+- al-khaser progressed to 98,506 instructions / 14 findings. INT 0x2D, INT 1, hardware/software
+  breakpoint checks now report GOOD through real guest VEH dispatch. Remaining BAD findings
+  include trap flag, PAGE_GUARD memory breakpoints, NtYieldExecution,
+  NtQuerySystemInformation(SystemKernelDebuggerInformation), SharedUserData KdDebuggerEnabled.
+  These are exact upstream check results, not crash-only passes.
+- pafish still exits 0 with 10 findings at `68cdabb`; completion is not PASS.
+
+### Environment-leak fixes committed (pending rerun)
+
+- `GetSystemInfo` and PEB `NumberOfProcessors` now report 4 processors / mask `0xF`.
+- `GetDiskFreeSpaceExA/W` model a 512 GiB volume (256 GiB free), replacing the previous ~3.5 MiB
+  values that triggered the ≤60 GB sandbox heuristic.
+- Virtual monotonic clock: initial uptime 3,600,000 ms; `Sleep(ms)` advances `GetTickCount`,
+  `GetTickCount64`, `QueryPerformanceCounter` and `GetSystemTimeAsFileTime` coherently.
+- `GetSystemMetrics(SM_MOUSEPRESENT)=1`, `GetCursorPos`/`SetCursorPos` backed by a host-driven
+  virtual cursor; browser pointer events feed `inject_mouse_move`. Headless pafish runs use a
+  deterministic slow pointer-drift profile through the real API (documented in the report).
+
+### Host-integrated modal dialogs (pending rerun)
+
+`MessageBoxA/W/ExA/ExW` no longer stub-return. They emit `HleAction::Modal`, the core yields
+`run_slice() == "modal"`, and the host answers via `modal_respond(result)`. The browser launcher
+renders a non-blocking DOM modal (OK/Cancel/Yes/No according to MB_* type) and resumes the guest
+with the selected Win32 ID* value. Headless Wine/detection runners record the request and apply an
+explicit `headless-auto-IDOK` policy. The final API audit records the actual returned button id.
+Rust regression `messagebox_yields_host_modal_and_sleep_advances_tick_clock` covers the handoff
+and Sleep/tick coherence. DialogBox/TaskDialog and comdlg32 file dialogs remain open.
+
+### Hybrid AOT/JIT execution bridge (pending measured benchmark)
+
+- Core exports `set_jit_enabled`, `jit_enter_block`, `jit_commit_block`, `jit_abort_block`,
+  `jit_import_cached`, `jit_active_wasm`, pending-artifact drains and `jitEnabled` telemetry.
+- `js/x64-jit-host.js` compiles/imports pure-GPR block artifacts, executes them against the core's
+  exported `WebAssembly.Memory`, commits registers atomically, and falls back to precise
+  interpreter replay on trap. OPFS/NVMe artifact cache is restored after PE load; cached bytes are
+  re-validated by live guest-code hash + page epoch before acceptance.
+- Hot-block compilation now retries every 64 page executions instead of once per page.
+- Chocolate Doom runner supports `PORTHOLE_JIT=0/1` and `PORTHOLE_DOOM_MAX_INSTRUCTIONS`; CI has a
+  dedicated 100M-instruction interpreter-vs-JIT A/B lane publishing raw reports.
+- **No 300–500 MIPS result exists yet.** Historical interpreter baseline remains ~5.95–7.99 MIPS
+  on the full timedemo. The A/B lane has not completed successfully because core compile fixes
+  were still landing; the next successful run will provide the first measured JIT numbers.
+
+### Build/acquisition fixes
+
+- Expanded Wine build now generates `d3d9on12.h`, `dxva2api.h`, `dxvahd.h` with `widl`
+  (`wine64-tools`) and aliases `debugstr_guid`, fixing the remote MinGW d3d11 build failure.
+- VKD3D-Proton acquisition verifies recursive gitlink pins; Meson cross file injects the resolved
+  `widl` path. Full VKD3D/CTS builds and lanes remain pending.
+- Evidence downloader now merges all per-job transfer manifests instead of keeping only the last,
+  so candidate Wasm and diagnostics from the same job are both recovered.
