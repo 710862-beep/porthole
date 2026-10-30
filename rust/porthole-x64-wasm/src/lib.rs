@@ -872,6 +872,48 @@ impl BrowserX64Emulator {
         self.kernel.sdl.last_frame_h
     }
 
+    /// Measurement tap: the guest's native-resolution SDL frame (tight RGBA8) as written into
+    /// its streaming texture, before any host scaling. Exists so the Gate 2 Wine reference can
+    /// compare byte-for-byte against the same binary's own screenshots (320x200 for Doom).
+    /// Not a presented frame; see presented_frames()/guest_frame_rgba() for that claim.
+    pub fn guest_native_frame_rgba(&self) -> Vec<u8> {
+        self.kernel.sdl.native_frame_rgba.clone()
+    }
+
+    pub fn guest_native_frame_width(&self) -> u32 {
+        self.kernel.sdl.native_frame_w
+    }
+
+    pub fn guest_native_frame_height(&self) -> u32 {
+        self.kernel.sdl.native_frame_h
+    }
+
+    pub fn guest_native_frames(&self) -> u64 {
+        self.kernel.sdl.native_frames
+    }
+
+    /// FNV-1a/64 over `w|h|RGBA8` of the native-frame tap (same algorithm as frame_checksum).
+    pub fn native_frame_checksum(&self) -> String {
+        if self.kernel.sdl.native_frames == 0 || self.kernel.sdl.native_frame_rgba.is_empty() {
+            return String::new();
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for b in self.kernel.sdl.native_frame_w.to_le_bytes() {
+            mix(b);
+        }
+        for b in self.kernel.sdl.native_frame_h.to_le_bytes() {
+            mix(b);
+        }
+        for &b in &self.kernel.sdl.native_frame_rgba {
+            mix(b);
+        }
+        format!("fnv1a64:{h:016x}")
+    }
+
     /// Returns the last presented swapchain frame as tightly packed RGBA8 (width/height are
     /// retrievable through the accessors below).
     pub fn take_frame(&mut self) -> Option<Vec<u8>> {

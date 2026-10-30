@@ -122,14 +122,18 @@ if (sha256(exe.data) !== CHOC_EXE_SHA256) {
 fs.writeFileSync(path.join(OUTDIR, 'chocolate-doom.exe'), exe.data);
 pins.chocolateDoomExe = { file: 'chocolate-doom.exe', bytes: exe.data.length, sha256: sha256(exe.data), zipEntry: exe.name };
 console.log(`[tier-b] chocolate-doom.exe bytes=${exe.data.length} sha256=${pins.chocolateDoomExe.sha256}`);
-for (const dll of ['SDL2.dll', 'SDL2_mixer.dll', 'SDL2_net.dll']) {
+// Extract every DLL shipped in the zip: the emulator HLE-binds these imports and never loads
+// the DLLs, but the Gate 2 Wine reference run executes the same exe natively and needs the
+// real DLLs (and their own dependencies) beside it. All hashes recorded in the pin file.
+for (const name of [...chocEntries.keys()].filter((k) => k.toLowerCase().endsWith('.dll'))) {
+  const base = name.split(/[\\/]/).pop();
   try {
-    const d = unzipFile(chocZip, chocEntries, dll);
-    fs.writeFileSync(path.join(OUTDIR, dll), d.data);
-    pins[dll] = { file: dll, bytes: d.data.length, sha256: sha256(d.data) };
-    console.log(`[tier-b] ${dll} bytes=${d.data.length} sha256=${pins[dll].sha256} (recorded; guest imports are HLE-bound, DLL not loaded)`);
+    const d = unzipFile(chocZip, chocEntries, base);
+    fs.writeFileSync(path.join(OUTDIR, base), d.data);
+    pins[base] = { file: base, bytes: d.data.length, sha256: sha256(d.data) };
+    console.log(`[tier-b] ${base} bytes=${d.data.length} sha256=${pins[base].sha256} (recorded; emulator HLE-binds imports, Wine reference loads the real DLL)`);
   } catch (e) {
-    console.log(`[tier-b] ${dll} not in zip: ${e.message}`);
+    console.log(`[tier-b] ${base} extract failed: ${e.message}`);
   }
 }
 

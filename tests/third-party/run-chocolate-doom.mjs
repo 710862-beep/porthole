@@ -21,6 +21,14 @@
  *   PORTHOLE_DOOM_ARGS      guest argv tail, default "-iwad C:\Game\DOOM2.WAD -timedemo demo1 -nosound"
  *   PORTHOLE_DOOM_RESIDENT  VMM resident-page budget, default 65536 pages (256 MiB)
  *   PORTHOLE_DOOM_TIMEOUT_S wall-clock budget, default 1200 (measured full run: ~450 s)
+ *
+ * --title-probe mode (Gate 2 Wine reference): run WITHOUT -timedemo until the guest has
+ * presented PORTHOLE_TITLE_PRESENTS frames (default 30 — the static Freedoom TITLEPIC is up),
+ * then dump the guest's NATIVE-resolution frame (measurement tap on the 320x200 streaming
+ * texture, before host scaling) as PPM + FNV-1a64. The same binary under real Wine produces
+ * its own 320x200 screenshot (PCX) of the same title screen; scripts/compare-title-frame.mjs
+ * compares the two byte-for-byte. Deterministic because TITLEPIC + PLAYPAL come from the same
+ * pinned IWAD and the title page is static for seconds on both systems.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +39,10 @@ import { pathToFileURL } from 'node:url';
 const wasmDir = process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm';
 const exeRel = 'tests/assets/third-party/chocolate-doom.exe';
 const wadRel = 'tests/assets/third-party/freedoom2.wad';
-const guestArgs = process.env.PORTHOLE_DOOM_ARGS ?? '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound';
+const titleProbe = process.argv.includes('--title-probe');
+const titlePresents = Math.max(1, Number(process.env.PORTHOLE_TITLE_PRESENTS || 30) || 30);
+const guestArgs = process.env.PORTHOLE_DOOM_ARGS
+  ?? (titleProbe ? '-iwad C:\\Game\\DOOM2.WAD -nosound' : '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound');
 const residentPages = Math.max(64, Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536) || 65536);
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
@@ -275,6 +286,10 @@ async function main() {
       }
     }
     sampleFrames();
+    if (titleProbe && Number(emu.presented_frames?.() || 0) >= titlePresents) {
+      terminal = 'title-probe-target-reached';
+      break;
+    }
     if (status === 'next') continue;
     if (status.startsWith('page-fault:')) {
       pageFaults += 1;
@@ -324,6 +339,57 @@ async function main() {
     finalFrame: frameSamples.final,
     checksumCrossCheck,
   };
+
+  if (titleProbe) {
+    // Gate 2 Wine-reference tap: dump the guest's native-resolution title frame (see header).
+    const nRGBA = emu.guest_native_frame_rgba?.();
+    const nw = Number(emu.guest_native_frame_width?.() || 0);
+    const nh = Number(emu.guest_native_frame_height?.() || 0);
+    const nFrames = Number(emu.guest_native_frames?.() || 0);
+    const emuNative = emu.native_frame_checksum?.() || '';
+    let nativeInfo = null;
+    if (nRGBA && nRGBA.length && nw && nh) {
+      const bytes = new Uint8Array(nRGBA);
+      const file = 'artifacts/chocolate-doom-title-native.ppm';
+      writePPM(abs(file), nw, nh, bytes);
+      const set = new Set();
+      for (let i = 0; i + 2 < bytes.length; i += 4) {
+        set.add((bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2]);
+      }
+      nativeInfo = {
+        checksumJs: fnv1a64Frame(nw, nh, bytes),
+        checksumEmu: emuNative,
+        crossCheck: fnv1a64Frame(nw, nh, bytes) === emuNative,
+        w: nw,
+        h: nh,
+        file,
+        nativeFrames: nFrames,
+        distinctColours: set.size,
+      };
+    }
+    report.run.nativeFrame = nativeInfo;
+    // TITLEPIC is a full-colour 320x200 patch: demand exact native dims, checksum agreement
+    // between the JS replica and the emulator, and a non-trivial colour count (a cleared or
+    // black tap has 1). Reaching the present target proves the guest booted to the title loop.
+    const okNative = !!nativeInfo && nativeInfo.crossCheck && nw === 320 && nh === 200
+      && nativeInfo.distinctColours > 16 && terminal === 'title-probe-target-reached';
+    report.status = okNative ? 'PASS' : 'FAIL';
+    report.reason = okNative ? '' : `title probe: terminal=${terminal} native=${JSON.stringify(nativeInfo)}`;
+    fs.mkdirSync(abs('artifacts'), { recursive: true });
+    fs.writeFileSync(abs('artifacts/chocolate-doom-title-probe.json'), `${JSON.stringify({
+      mode: 'title-probe',
+      binarySha256: report.binarySha256,
+      iwadSha256: report.iwadSha256,
+      wasmSha256: report.wasmSha256,
+      nativeFrame: nativeInfo,
+      presentedFrames: report.run.presentedFrames,
+      instructions,
+      terminal,
+    }, null, 2)}\n`);
+    console.log(`TITLE_PROBE status=${report.status} checksum=${nativeInfo?.checksumJs || 'none'} size=${nw}x${nh} colours=${nativeInfo?.distinctColours ?? 0} presented=${report.run.presentedFrames} native_frames=${nFrames} instructions=${instructions} terminal=${terminal}`);
+    writeReport(report);
+    process.exit(okNative ? 0 : 1);
+  }
 
   // EXECUTION: upstream reports timedemo completion through I_Error -> exit(-1). Accept that
   // ONLY together with the guest-printed timing line; exit:0 is accepted unconditionally.

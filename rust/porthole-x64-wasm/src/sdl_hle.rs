@@ -86,6 +86,14 @@ pub struct SdlState {
     pub last_frame_w: u32,
     pub last_frame_h: u32,
     pub frame_dirty: bool,
+    /// Measurement tap (Gate 2 Wine reference): the guest's native-resolution frame, copied
+    /// from the streaming texture at SDL_UnlockTexture — before any host-side scaling — so it
+    /// can be compared byte-for-byte with the same binary's own screenshot output under Wine.
+    /// This is an observation channel only; the presented-frame claim remains the backbuffer.
+    pub native_frame_rgba: Vec<u8>,
+    pub native_frame_w: u32,
+    pub native_frame_h: u32,
+    pub native_frames: u64,
     empty_str: u64,
     renderer_name: u64,
 }
@@ -104,6 +112,10 @@ impl SdlState {
             last_frame_w: 0,
             last_frame_h: 0,
             frame_dirty: false,
+            native_frame_rgba: Vec::new(),
+            native_frame_w: 0,
+            native_frame_h: 0,
+            native_frames: 0,
             empty_str: 0,
             renderer_name: 0,
         }
@@ -296,9 +308,10 @@ impl Win32Kernel {
         surf
     }
 
-    /// Capture a guest pixel buffer into the presented-frame slot as tight RGBA8.
-    /// Every byte comes from guest memory (texture/surface pixels the guest wrote).
-    fn sdl_capture_pixels(
+    /// Convert a guest pixel buffer to tight RGBA8. Every byte comes from guest memory
+    /// (texture/surface pixels the guest wrote).
+    #[allow(clippy::too_many_arguments)]
+    fn sdl_pixels_to_rgba(
         &mut self,
         vmm: &mut VirtualMemoryManager,
         pixels: u64,
@@ -308,13 +321,13 @@ impl Win32Kernel {
         bpp: u32,
         masks: (u32, u32, u32, u32),
         palette: u64,
-    ) {
+    ) -> Option<Vec<u8>> {
         if w <= 0 || h <= 0 || pitch <= 0 || pixels == 0 {
-            return;
+            return None;
         }
         let mut raw = vec![0u8; (pitch as usize) * (h as usize)];
         if vmm.read_bytes(pixels, &mut raw).is_err() {
-            return;
+            return None;
         }
         let mut palette_cols = [[0u8; 4]; 256];
         if bpp == 1 && palette != 0 {
@@ -353,11 +366,55 @@ impl Win32Kernel {
                 out[dst..dst + 4].copy_from_slice(&px);
             }
         }
-        self.sdl.last_frame_rgba = out;
-        self.sdl.last_frame_w = w as u32;
-        self.sdl.last_frame_h = h as u32;
-        self.sdl.frame_dirty = true;
-        self.sdl.presented_frames += 1;
+        Some(out)
+    }
+
+    /// Capture a guest pixel buffer into the presented-frame slot (Gate 2 evidence).
+    #[allow(clippy::too_many_arguments)]
+    fn sdl_capture_pixels(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        pixels: u64,
+        w: i32,
+        h: i32,
+        pitch: i32,
+        bpp: u32,
+        masks: (u32, u32, u32, u32),
+        palette: u64,
+    ) {
+        if let Some(out) = self.sdl_pixels_to_rgba(vmm, pixels, w, h, pitch, bpp, masks, palette)
+        {
+            self.sdl.last_frame_rgba = out;
+            self.sdl.last_frame_w = w as u32;
+            self.sdl.last_frame_h = h as u32;
+            self.sdl.frame_dirty = true;
+            self.sdl.presented_frames += 1;
+        }
+    }
+
+    /// Snapshot a texture into the native-resolution measurement tap (see SdlState).
+    fn sdl_tap_native(&mut self, vmm: &mut VirtualMemoryManager, tex: u64) {
+        if let Some(t) = self.sdl.textures.get(&tex).cloned() {
+            // "Native" = the small streaming texture a software renderer fills per frame,
+            // not an upscaled target texture. 640x480 bounds Doom's 320x200 with headroom.
+            if t.w > 0 && t.w <= 640 && t.h > 0 && t.h <= 480 {
+                if let Some(out) = self.sdl_pixels_to_rgba(
+                    vmm,
+                    t.pixels,
+                    t.w,
+                    t.h,
+                    t.pitch,
+                    bpp_for_format(t.format),
+                    masks_for_format(t.format),
+                    0,
+                ) {
+                    self.sdl.native_frame_rgba = out;
+                    self.sdl.native_frame_w = t.w as u32;
+                    self.sdl.native_frame_h = t.h as u32;
+                    self.sdl.native_frames += 1;
+                }
+            }
+        }
     }
 
     /// Surface info with pixels/pitch refreshed from the guest SDL_Surface struct. Real SDL
@@ -1031,7 +1088,12 @@ impl Win32Kernel {
                     None => (-1i64) as u64,
                 }
             }
-            "SDL_UnlockTexture" => 0,
+            "SDL_UnlockTexture" => {
+                // The guest has finished writing this texture's pixels for the frame:
+                // snapshot the native-resolution measurement tap.
+                self.sdl_tap_native(vmm, a0);
+                0
+            }
             "SDL_UpdateTexture" => {
                 // (texture, rect*, pixels, pitch)
                 if let Some(t) = self.sdl.textures.get(&a0).cloned() {
@@ -1058,6 +1120,7 @@ impl Win32Kernel {
                             let _ = vmm.write_bytes(dst, &buf);
                         }
                     }
+                    self.sdl_tap_native(vmm, a0);
                     0
                 } else {
                     (-1i64) as u64
