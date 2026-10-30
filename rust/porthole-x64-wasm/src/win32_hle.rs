@@ -1587,6 +1587,24 @@ impl Win32Kernel {
                         .d3d12_serialize_root_signature(vmm, a0, a1 as u32, a2, a3) as u64,
                 )
             }
+            ("d3d10_1.dll", "D3D10CreateDevice1") => {
+                // No D3D10 device is implemented; fail with a null interface rather than
+                // returning S_OK and letting the caller dereference an uninitialized device.
+                if a5 != 0 { let _ = vmm.write_u64(a5, 0); }
+                return HleAction::Return(0x8000_4001); // E_NOTIMPL
+            }
+            ("vulkan-1.dll", "vkCreateInstance") => {
+                if a2 != 0 { let _ = vmm.write_u64(a2, 0); }
+                return HleAction::Return((-9i32) as u32 as u64); // VK_ERROR_INCOMPATIBLE_DRIVER
+            }
+            ("vulkan-1.dll", "vkGetInstanceProcAddr") => return HleAction::Return(0),
+            ("vulkan-1.dll", "vkDestroyInstance") => return HleAction::Return(0),
+            ("vulkan-1.dll", "vkEnumerateInstanceExtensionProperties")
+            | ("vulkan-1.dll", "vkEnumerateInstanceLayerProperties") => {
+                let count_ptr = if symbol == "vkEnumerateInstanceExtensionProperties" { a1 } else { a0 };
+                if count_ptr != 0 { let _ = vmm.write_u32(count_ptr, 0); }
+                return HleAction::Return(0);
+            }
             ("d3d12.dll", "D3D12EnableExperimentalFeatures") => {
                 // No experimental feature UUIDs are implemented. An empty request is a no-op;
                 // any requested feature must fail rather than claim unsupported support.
@@ -4095,6 +4113,19 @@ impl Win32Kernel {
                     }
                 }
                 a2
+            }
+            "printf" => {
+                // Win64 varargs are captured by the HLE boundary; stage them as a va_list so
+                // the existing printf formatter can produce real guest stdout (Wine summaries).
+                let va = self.heap_alloc(vmm, self.process_heap, 80);
+                for i in 0..9 { let _ = vmm.write_u64(va + i as u64 * 8, args[i + 1]); }
+                self.vfprintf(vmm, a0, va)
+            }
+            "vprintf" => self.vfprintf(vmm, a0, a1),
+            "wprintf" => {
+                let va = self.heap_alloc(vmm, self.process_heap, 80);
+                for i in 0..9 { let _ = vmm.write_u64(va + i as u64 * 8, args[i + 1]); }
+                self.vfwprintf(vmm, a0, va)
             }
             "puts" => {
                 let s = self.read_ansi(vmm, a0);
