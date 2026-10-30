@@ -725,9 +725,9 @@ impl VirtualMemoryManager {
         while cursor < data.len() {
             let cur_va = addr.wrapping_add(cursor as u64);
             let page_base = Self::align_down(cur_va);
-            if self.swapped_out_pages.contains(&page_base) {
-                return Err(MemoryTrap::PageFault(page_base));
-            }
+            // Host writes are authoritative (HLE file reads / mappings). Fault the page
+            // back in instead of dropping the write; the new bytes supersede stale swap data.
+            self.swapped_out_pages.remove(&page_base);
             let off = (cur_va & PAGE_MASK) as usize;
             let chunk = (PAGE_SIZE - off).min(data.len() - cursor);
             let page = self.ensure_page_mut(page_base, true, false, None)?;

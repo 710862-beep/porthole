@@ -2625,7 +2625,7 @@ impl Win32Kernel {
                             (f.data[start.min(end)..end].to_vec(), end)
                         };
                         if a1 != 0 && !chunk.is_empty() {
-                            let _ = vmm.write_bytes(a1, &chunk);
+                            let _ = vmm.host_write_bytes(a1, &chunk);
                         }
                         if a3 != 0 {
                             let _ = vmm.write_u32(a3, chunk.len() as u32);
@@ -3952,7 +3952,7 @@ impl Win32Kernel {
                 };
                 let take = total.min(data.len());
                 if take > 0 && a0 != 0 {
-                    let _ = vmm.write_bytes(a0, &data[..take]);
+                    let _ = vmm.host_write_bytes(a0, &data[..take]);
                 }
                 self.stream_consume(a3, take);
                 if let Some(s) = self.streams.get_mut(&a3) {
