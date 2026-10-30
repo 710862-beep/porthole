@@ -679,6 +679,11 @@ impl Win32Kernel {
         let (bytes, _) = wide_to_mb(ANSI_CODEPAGE, &units);
         let len = bytes.len() as u64;
         if len + 1 > count {
+            // Truncation still writes `count - 1` characters plus the terminator and reports
+            // failure (atom.c:205 expects "fooba\0" in a 6-byte buffer).
+            let mut out = bytes[..bytes.len().min(count.saturating_sub(1) as usize)].to_vec();
+            out.push(0);
+            let _ = vmm.write_bytes(buffer, &out);
             self.set_last_error(ERROR_MORE_DATA);
             return 0;
         }
@@ -763,17 +768,22 @@ impl Win32Kernel {
         };
         let units: Vec<u16> = name.encode_utf16().collect();
         let len = units.len() as u64;
-        if len + 1 > count {
-            self.set_last_error(ERROR_MORE_DATA);
-            return 0;
-        }
-        let mut buf = Vec::with_capacity((units.len() + 1) * 2);
-        for u in &units {
+        // The wide variant copies as many characters as fit *without* requiring room for the
+        // terminator, and only reports ERROR_MORE_DATA when it actually truncated
+        // (atom.c:212-214, 273).
+        let n = len.min(count) as usize;
+        let mut buf = Vec::with_capacity((n + 1) * 2);
+        for u in &units[..n] {
             buf.extend_from_slice(&u.to_le_bytes());
         }
-        buf.extend_from_slice(&[0, 0]);
+        if (n as u64) < count {
+            buf.extend_from_slice(&[0, 0]);
+        }
         let _ = vmm.write_bytes(buffer, &buf);
-        len
+        if (n as u64) < len {
+            self.set_last_error(ERROR_MORE_DATA);
+        }
+        n as u64
     }
 
     fn drive_type(&self, path: &str) -> u32 {
