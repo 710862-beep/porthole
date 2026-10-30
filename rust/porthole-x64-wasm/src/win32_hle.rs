@@ -1326,7 +1326,11 @@ impl Win32Kernel {
                 }
                 let src_ansi = self.read_ansi(vmm, a0);
                 let src_wide: Vec<u16> = mb_to_wide(ANSI_CODEPAGE, src_ansi.as_bytes());
-                let (full, total) = self.expand_env_into(&src_wide, src_wide.len() + 1, &[]);
+                // Two passes, exactly like kernelbase: measure with a zero-length destination,
+                // then materialise the full string. A single pass bounded by the *source* length
+                // truncates any expansion that is longer than the format string.
+                let (_, total) = self.expand_env_into(&src_wide, 0, &[]);
+                let (full, _) = self.expand_env_into(&src_wide, total, &[]);
                 let (bytes, _) = wide_to_mb(ANSI_CODEPAGE, &full[..total.min(full.len())]);
                 let needed_a = bytes.len(); // includes the terminator
                 let count = a2 as u32 as usize;
