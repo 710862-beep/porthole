@@ -358,7 +358,7 @@ impl Win32Kernel {
             sdl: crate::sdl_hle::SdlState::new(),
             stdout: Vec::new(),
             exit_code: None,
-            ticks: 0x1000,
+            ticks: 3_600_000, // plausible uptime (>12 min); Sleep advances it
             upcall_stack: Vec::new(),
             vectored_handlers: Vec::new(),
             unhandled_filter: 0,
@@ -2292,17 +2292,13 @@ impl Win32Kernel {
                 }
                 1
             }
-            "GetDiskFreeSpaceExA" => {
-                // PULARGE_INTEGER free, total, total_free
-                if a1 != 0 {
-                    let _ = vmm.write_u64(a1, 700 * 8 * 512);
-                }
-                if a2 != 0 {
-                    let _ = vmm.write_u64(a2, 1000 * 8 * 512);
-                }
-                if a3 != 0 {
-                    let _ = vmm.write_u64(a3, 1000 * 8 * 512);
-                }
+            "GetDiskFreeSpaceExA" | "GetDiskFreeSpaceExW" => {
+                // PULARGE_INTEGER free_to_caller, total, total_free. Model a 512 GiB volume.
+                let total: u64 = 512 * 1024 * 1024 * 1024;
+                let free: u64 = 256 * 1024 * 1024 * 1024;
+                if a1 != 0 { let _ = vmm.write_u64(a1, free); }
+                if a2 != 0 { let _ = vmm.write_u64(a2, total); }
+                if a3 != 0 { let _ = vmm.write_u64(a3, free); }
                 1
             }
             "GetVolumeNameForVolumeMountPointA" | "GetVolumeNameForVolumeMountPointW" => {
@@ -2346,11 +2342,14 @@ impl Win32Kernel {
             "GetVersion" => 0x0A00_0000u64, // NT 10.0, high bit clear
 
             // --------------------------------------------------------- time
-            "GetTickCount" | "GetTickCount64" => {
-                self.ticks = self.ticks.wrapping_add(1);
-                self.ticks
+            "GetTickCount" => self.ticks & 0xFFFF_FFFF,
+            "GetTickCount64" => self.ticks,
+            "Sleep" | "SleepEx" => {
+                // Advance the virtual monotonic clock by the requested interval so
+                // Sleep/GetTickCount coherence checks observe real elapsed semantics.
+                if a0 != u64::MAX { self.ticks = self.ticks.wrapping_add(a0); }
+                0
             }
-            "Sleep" | "SleepEx" => 0,
 
             // -------------------------------------------------------- memory
             "GetProcessHeap" => self.process_heap,
@@ -2930,8 +2929,8 @@ impl Win32Kernel {
                     info[4..8].copy_from_slice(&4096u32.to_le_bytes());
                     info[8..16].copy_from_slice(&0x1_0000u64.to_le_bytes());
                     info[16..24].copy_from_slice(&0x0000_7FFF_FFFE_FFFFu64.to_le_bytes());
-                    info[24..32].copy_from_slice(&1u64.to_le_bytes()); // active processor mask
-                    info[32..36].copy_from_slice(&1u32.to_le_bytes()); // number of processors
+                    info[24..32].copy_from_slice(&0xFu64.to_le_bytes()); // active processor mask
+                    info[32..36].copy_from_slice(&4u32.to_le_bytes()); // number of processors
                     info[36..40].copy_from_slice(&8664u32.to_le_bytes());
                     info[40..44].copy_from_slice(&0x1_0000u32.to_le_bytes()); // alloc granularity
                     info[44..46].copy_from_slice(&6u16.to_le_bytes());
@@ -3036,10 +3035,8 @@ impl Win32Kernel {
                 1
             }
             "QueryPerformanceCounter" => {
-                self.qpc_ticks = self.qpc_ticks.wrapping_add(10_000);
-                if a0 != 0 {
-                    let _ = vmm.write_u64(a0, self.qpc_ticks);
-                }
+                self.qpc_ticks = self.ticks.wrapping_mul(10_000);
+                if a0 != 0 { let _ = vmm.write_u64(a0, self.qpc_ticks); }
                 1
             }
             "GetProcessTimes" => {
@@ -3051,9 +3048,7 @@ impl Win32Kernel {
                 1
             }
             "GetSystemTimeAsFileTime" => {
-                if a0 != 0 {
-                    let _ = vmm.write_u64(a0, FIXED_FILETIME);
-                }
+                if a0 != 0 { let _ = vmm.write_u64(a0, FIXED_FILETIME.wrapping_add(self.ticks.wrapping_mul(10_000))); }
                 0
             }
             "FileTimeToSystemTime" => {

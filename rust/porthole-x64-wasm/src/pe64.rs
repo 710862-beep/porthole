@@ -300,6 +300,7 @@ where
     let _ = vmm.write_u64(PEB_ADDR + 0x20, PROC_PARAMS_ADDR); // ProcessParameters
     vmm.map_region(PROCESS_HEAP_ADDR, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
     let _ = vmm.write_u64(PEB_ADDR + 0x30, PROCESS_HEAP_ADDR); // ProcessHeap
+    let _ = vmm.write_u32(PEB_ADDR + 0xB8, 4); // NumberOfProcessors (x64)
     let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x70, 2); // HEAP_GROWABLE, no debug flags
     let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x74, 0); // ForceFlags
 
