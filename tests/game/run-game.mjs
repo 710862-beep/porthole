@@ -205,13 +205,14 @@ async function runOne(binding, entry, options) {
     .split(' ').filter(Boolean);
   item.stage = parseStage(item.console);
 
-  if (item.status === 'NOT_RUN' || item.status === 'BACKEND_ERROR') return item;
+  if (item.status === 'BACKEND_ERROR') return item;
 
   if (done === 'exit') {
     const marker = entry.expect?.marker;
     const markerSeen = !marker || item.console.includes(marker);
     if (item.exitCode === entry.expect?.exitCode && markerSeen) {
       item.status = 'PASS';
+      item.error = null;
     } else if (item.stage.failedStage) {
       // The guest reached a named stage, learned the API is unsupported, and exited deliberately.
       item.status = 'STAGE_BLOCKED';
@@ -223,6 +224,8 @@ async function runOne(binding, entry, options) {
       item.status = 'FAIL';
       item.error = `completion marker "${marker}" missing from guest output`;
     }
+  } else if (done === 'fault') {
+    item.status = item.status === 'GUEST_FAULT' ? 'GUEST_FAULT' : 'FAIL';
   }
   return item;
 }
@@ -251,7 +254,11 @@ function printBlock(item) {
   if (item.unimplementedApis.length) say(`    unimplemented win32: ${item.unimplementedApis.join(' ')}`);
   if (item.unimplementedMethods.length) say(`    unimplemented com:   ${item.unimplementedMethods.join(' ')}`);
   if (item.stage?.lastStage) say(`    last stage: ${item.stage.lastStage.stage} ${item.stage.lastStage.api}`);
-  const lines = item.console.split('\n').filter((l) => /^(STAGE|DOOM_STARTUP|GAME_STARTUP|HELLO_WORLD|  )/.test(l));
+  const all = item.console.split('\n').filter(Boolean);
+  // Short consoles are printed whole; long ones are filtered down to the fixture's own markers.
+  const lines = all.length <= 40
+    ? all
+    : all.filter((l) => /^(STAGE|DOOM_STARTUP|GAME_STARTUP|HELLO_WORLD|  )/.test(l));
   if (lines.length) say(lines.slice(-18).map((l) => `    | ${l}`).join('\n'));
 }
 
