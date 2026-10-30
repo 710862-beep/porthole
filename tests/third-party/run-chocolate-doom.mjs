@@ -48,6 +48,7 @@ const residentPages = Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536);
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
 const jitEnabled = process.env.PORTHOLE_JIT !== '0';
+const jitValidate = process.env.PORTHOLE_JIT_VALIDATE !== '0';
 const maxInstructions = Math.max(0, Number(process.env.PORTHOLE_DOOM_MAX_INSTRUCTIONS || 0) || 0);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
@@ -256,7 +257,8 @@ async function main() {
 
   const emu = new mod.BrowserX64Emulator(residentPages);
   const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory });
-  report.jit = { enabled: jitEnabled, maxInstructions: maxInstructions || null };
+  if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
+  report.jit = { enabled: jitEnabled, validate: jitValidate, maxInstructions: maxInstructions || null };
   for (const dir of [
     'C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE',
     'C:\\Users\\PORTHOLE\\Temp', 'C:\\Users\\PORTHOLE\\AppData', 'C:\\Users\\PORTHOLE\\AppData\\Roaming',
