@@ -3548,6 +3548,13 @@ impl Win32Kernel {
                 }
                 self.module_handle(&name)
             }
+            "CoCreateInstance" | "CoCreateInstanceEx" => {
+                // No WMI/COM class factory is implemented. Return a real failure HRESULT and
+                // null the output pointer instead of S_OK with an uninitialized interface.
+                if a3 != 0 { let _ = vmm.write_u64(a3, 0); }
+                self.set_last_error(120);
+                0x8004_0154 // REGDB_E_CLASSNOTREG
+            }
             "OutputDebugStringA" => {
                 // The audit layer decodes the guest pointer before returning. Do not print a
                 // second copy into the test stdout: that would corrupt upstream summaries.
@@ -4964,6 +4971,12 @@ impl Win32Kernel {
         name: &str,
         ordinal: u16,
     ) -> u64 {
+        // Porthole is not Wine: do not fabricate Wine-specific export pointers that
+        // environment detectors use as a fingerprint.
+        if name.starts_with("wine_") {
+            self.set_last_error(127); // ERROR_PROC_NOT_FOUND
+            return 0;
+        }
         let dll = self
             .modules
             .iter()
