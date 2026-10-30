@@ -6540,7 +6540,7 @@ impl Win32Kernel {
                 }
                 self.upcall_stack.pop();
                 cpu.gpr[4] = entry_rsp;
-                let _ = vmm.write_u64(entry_rsp, crate::pe64::UPCALL_RETURN_THUNK);
+                let _ = vmm.write_u64(entry_rsp, crate::UPCALL_RETURN_THUNK);
                 cpu.rip = resume_rip;
                 return Some(UpcallStep::ResumeGuest);
             }
@@ -6610,7 +6610,10 @@ impl Win32Kernel {
                 Ok(v) => v,
                 Err(_) => return None,
             };
-            if fn_ptr != 0 && Self::is_executable(vmm, fn_ptr) {
+            // CRT constructor tables must never call into the HLE thunk region (including the
+            // upcall sentinel): those are API stubs, not guest constructors.
+            let in_hle = fn_ptr >= THUNK_BASE && fn_ptr < THUNK_BASE + crate::pe64::THUNK_REGION_SIZE;
+            if fn_ptr != 0 && !in_hle && Self::is_executable(vmm, fn_ptr) {
                 return Some((p, fn_ptr));
             }
             p += 8;
