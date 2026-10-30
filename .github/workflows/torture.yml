@@ -189,7 +189,14 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
       - run: node scripts/fetch-wine-source.mjs
       - name: Build expanded upstream PE32+ matrix
-        run: node scripts/build-wine64-tests.mjs --toolchain mingw
+        id: expanded-build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/torture
+          node scripts/build-wine64-tests.mjs --toolchain mingw 2>&1 | tee artifacts/torture/expanded-wine-build.log
+      - name: Require expanded build
+        run: test "${{ steps.expanded-build.outcome }}" = success
       - name: Execute graphics and dialog subtests
         id: run
         continue-on-error: true
