@@ -210,8 +210,10 @@ jobs:
       - name: Install Wine + Xvfb + xdotool
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq wine64 xvfb xdotool > /tmp/apt-wine.log 2>&1 || (tail -30 /tmp/apt-wine.log; exit 1)
-          wine64 --version
+          sudo apt-get install -y -qq wine wine64 xvfb xdotool > /tmp/apt-wine.log 2>&1 || (tail -30 /tmp/apt-wine.log; exit 1)
+          ls -l /usr/bin/wine* 2>/dev/null || true
+          ls /usr/lib/wine/ 2>/dev/null || true
+          command -v wine64 || command -v wine || test -x /usr/lib/wine/wine64
       - name: Run Gate 2 Wine reference cross-check
         run: bash scripts/run-wine-reference.sh
       - name: Publish the Wine reference report through the Checks API

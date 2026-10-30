@@ -44,22 +44,29 @@ export WINEDEBUG=-all
 export WINEDLLOVERRIDES="mscoree,mshtml="
 export DISPLAY=:99
 
+WINE="$(command -v wine64 || command -v wine || true)"
+[ -z "$WINE" ] && [ -x /usr/lib/wine/wine64 ] && WINE=/usr/lib/wine/wine64
+WINESERVER="$(command -v wineserver || true)"
+[ -z "$WINESERVER" ] && [ -x /usr/lib/wine/wineserver ] && WINESERVER=/usr/lib/wine/wineserver
+[ -z "$WINESERVER" ] && WINESERVER=true
 log "== wine version =="
-wine64 --version 2>&1 | tee -a "$REPORT" || { log "wine64 unavailable"; exit 1; }
+log "wine_binary=${WINE:-none} wineserver=$WINESERVER"
+[ -n "$WINE" ] || { log "wine unavailable"; exit 1; }
+"$WINE" --version 2>&1 | tee -a "$REPORT" || { log "wine failed to run"; exit 1; }
 
 Xvfb :99 -screen 0 1280x1024x24 > /tmp/xvfb.log 2>&1 &
 XVFB_PID=$!
 sleep 2
 
 log "== wineboot =="
-timeout 300 wine64 wineboot -i > artifacts/wine-boot.log 2>&1 || true
+timeout 300 "$WINE" wineboot -i > artifacts/wine-boot.log 2>&1 || true
 
 EXPECTED_GAMETICS=2664
 WINE_GAMETICS=0
 log "== (1) timedemo under real Wine =="
 (
   cd "$WORK"
-  timeout 900 wine64 chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -timedemo demo1 -nosound \
+  timeout 900 "$WINE" chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -timedemo demo1 -nosound \
     > ../artifacts/wine-timedemo.log 2>&1
   echo "wine exit=$?" >> ../artifacts/wine-timedemo.log
 )
@@ -71,7 +78,7 @@ log "wine_gametics=$WINE_GAMETICS expected=$EXPECTED_GAMETICS"
 log "== (2) title screen screenshot under real Wine =="
 (
   cd "$WORK"
-  wine64 chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -nosound \
+  "$WINE" chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -nosound \
     > ../artifacts/wine-title.log 2>&1 &
   echo $! > wine.pid
 )
@@ -95,7 +102,7 @@ for i in 1 2 3 4 5; do
   sleep 1
 done
 sleep 2
-wineserver -k 2>/dev/null || true
+"$WINESERVER" -k 2>/dev/null || true
 pkill -f chocolate-doom.exe 2>/dev/null || true
 sleep 1
 
