@@ -5,7 +5,7 @@ RENDERING, and GAMEPLAY. A synthetic guest, a host-authored pixel, or a successf
 not a real-game render or gameplay result. Historical fixture results below are explicitly not
 qualifying evidence for the current milestone.
 
-## GATE 1 — independent binary, Tier A (attempted; execution blocked before guest entry)
+## GATE 1 — independent binary, Tier A: **PASS** (EXECUTION; Node/Wasm on CI, not Chrome/Chromebook)
 
 ### Pinned third-party executable
 
@@ -57,33 +57,72 @@ KERNEL32.dll: SetThreadAffinityMask, CreateEventW, SetEvent, ResetEvent, CreateS
               GetLogicalDriveStringsW, DeviceIoControl, GetFileSize, SetFilePointer
 ```
 
-### Execution attempt and actual failure log
+### Measured execution (CI run 41031294277, commit `edbd6a7`)
 
-The first required run is gated before guest entry in this checkout. The acquisition and PE
-inspection succeeded, but the local wasm-bindgen output is absent and this environment has no
-`cargo` executable to rebuild it. `node tests/third-party/run-7za.mjs` produced:
+`node tests/third-party/run-7za.mjs` inside the Wasm core (Node v22.23.4, linux
+7.0.0-1017-azure x64, AMD EPYC 7763, 16,760,344,576 bytes RAM — CI runner, **not** Chrome and
+**not** the target Chromebook; Gate 4 device evidence is still owed). The unmodified binary above
+ran a real archive round-trip and the fail-closed runner verified byte identity:
+
+| Phase | Command (guest argv) | Terminal state | Guest instructions | Wall time | Throughput |
+| --- | --- | --- | --- | --- | --- |
+| Create | `7za a -t7z -y -bd -mmt1 -mx=1 C:\Game\roundtrip.7z C:\Game\roundtrip-input.bin` | `exit:0` | 26,606,358 | 4,224 ms | 6.30 MIPS |
+| Extract | `7za e -y -bd -mmt1 -oC:\Game\extract C:\Game\roundtrip.7z` | `exit:0` | 7,377,308 | 1,056 ms | 6.99 MIPS |
+
+Workload, recorded in the report: deterministic 262,144-byte input
+(`((i*131+(i>>8)*17)^(i>>3))&0xff`), single-threaded (`-mmt1`, because guest thread bodies are not
+yet scheduled — named limitation, not hidden), fastest compression (`-mx=1`), resident-page cap
+65,536 pages with a host evicted-page store (Gate 3 will re-run with a deliberately small cache).
+Guest console, create phase (guest-authored output, verbatim excerpt):
 
 ```text
-[7za] NOT_RUN: Wasm artifacts missing: /home/user/porthole/vendor/porthole-x64-wasm/porthole_x64_wasm.js,
-/home/user/porthole/vendor/porthole-x64-wasm/porthole_x64_wasm_bg.wasm
+7-Zip (a) 21.07 (x64) : Copyright (c) 1999-2021 Igor Pavlov : 2021-12-26
+Scanning the drive:
+1 file, 262144 bytes (256 KiB)
+Creating archive: C:\Game\roundtrip.7z
+Add new data to archive: 1 file, 262144 bytes (256 KiB)
+Files read from disk: 1
+Archive size: 17021 bytes (17 KiB)
+Everything is Ok
 ```
 
-The build attempt independently returned `/bin/bash: cargo: command not found` (exit 127). This is
-**not** a guest crash, not an API blocker, and not a pass: zero guest instructions ran. I will not
-invent a first missing API or report exit 0. The fail-closed runner
-`tests/third-party/run-7za.mjs` is ready to issue `7za a` + `7za e` against a deterministic 1 MiB
-input and compare bytes once the Wasm artifacts are available; its current report is
-`artifacts/7za-tier-a-report.json` (`NOT_RUN`). No archive round-trip has yet been measured. The
-`tier-a-independent-7zip` CI job is wired to consume the Wasm build artifact, publish the guest log,
-and retain the JSON/text reports; it has not been executed from this sandbox session.
+Extract also ended with `Everything is Ok`; extracted bytes compare identical to the input by
+SHA-256 (runner fails closed otherwise). One imported-but-unused symbol remained unimplemented and
+was tolerated by the guest: `SetDefaultDllDirectories` (called once, result ignored by 7za).
+This is an **EXECUTION** claim only — no rendering or gameplay is implied.
+
+### Failure history that led here (all measured, in order)
+
+1. CI `41026934026`: fault at **29 instructions** — `access violation at 0x7ff000001000`,
+   `unimplemented=__set_app_type`. Root cause: msvcrt **data** imports (`_fmode`, `_commode`,
+   `_iob`, `__initenv`) were bound to code-thunk VAs, so CRT startup wrote `_fmode` through
+   `0x7ff000001350`. Fixed by giving data imports real writable guest cells
+   (`Win32Kernel::init_data_imports`) and binding them by cell VA in the loader.
+2. CI `41030096921`: fault at **96,173 instructions**, `ret=0x0` out of `_initterm` after running
+   7-Zip's C++ static constructors. Root cause: HLE upcalls staged the return sentinel at `rsp-8`,
+   putting a constructor's legitimate 32-byte Win64 register-home space exactly over `_initterm`'s
+   own return-address slot. Fixed by staging upcalls with a real frame at `rsp-0x30` (sentinel +
+   home space + ABI alignment) and restoring the bias on resume.
+3. CI `41031294277`: **PASS** as measured above. Supporting fixes in the same batch: CRC32/MOVBE
+   decode (7-Zip's hardware-CRC path), freelist heap with real `realloc`/`HeapSize`, FindFirst/Next,
+   file mappings, OLEAUT32 BSTR/VARIANT ordinals, semaphore counts, `_iob` stdio, and the swapped
+   `GetTempPath`/`GetCurrentDirectory` argument order (length-first) that also caused most Wine
+   `directory` failures.
 
 ### Gate order
 
-Gate 1 Tier A is still open and must be completed first. **Gate 2 has not been started**: no
-Chocolate Doom executable or Freedoom IWAD was acquired or run. D3D12 work is explicitly deferred.
-When the renderer gate is reached, Chocolate Doom's SDL2/OpenGL/WGL path is the target; DXBC is not
-DXIL, and SM6 shader support will require `dxil-spirv` or an equivalent translator as a separate,
-later work item.
+Gate 1 **Tier A is closed** by the measurement above. Next in order: Gate 1 Tier B / Gate 2 via the
+official x64 Windows Chocolate Doom build + Freedoom IWAD (not yet acquired). D3D12 work remains
+explicitly deferred; Chocolate Doom's SDL2/OpenGL/WGL path is the renderer target. DXBC is not DXIL;
+SM6 shader support will require `dxil-spirv` or an equivalent translator as a separate, later work
+item.
+
+Wine conformance movement from the shared HLE fixes (same CI run, native `xtrace` of the same Rust
+core; full Gate 5 closure is still scheduled last): `directory` 23 → 28 → **2 failures** (remaining:
+PEB `CurrentDirectory.Handle` written at the wrong `RTL_USER_PROCESS_PARAMETERS` offset — root cause
+identified in `pe64.rs`/`write_curdir`, fix landed in the follow-up commit and awaiting its CI
+measurement), `environ` 35 → **38 failures** (itemization still blocked on harness output capture;
+`SetEnvironmentStringsW` confirmed unimplemented).
 
 ## Historical CI measurements (not current milestone acceptance)
 

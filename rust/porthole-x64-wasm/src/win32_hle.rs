@@ -4268,10 +4268,11 @@ impl Win32Kernel {
         }
         buf.extend_from_slice(&[0, 0]);
         let _ = vmm.host_write_bytes(crate::pe64::CURDIR_BUF_ADDR, &buf);
-        let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x28, (units.len() * 2) as u16);
-        let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x2A, 520);
-        let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x30, crate::pe64::CURDIR_BUF_ADDR);
-        let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x38, self.cwd_handle);
+        // Real RTL_USER_PROCESS_PARAMETERS CURDIR offsets (see pe64.rs).
+        let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x38, (units.len() * 2) as u16);
+        let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x3A, 520);
+        let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x40, crate::pe64::CURDIR_BUF_ADDR);
+        let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x48, self.cwd_handle);
         let _ = (PEB_ADDR, MAIN_TEB_ADDR, MAIN_STACK_BOTTOM, MAIN_STACK_TOP, THREAD_EXIT_THUNK_ADDR);
     }
 
