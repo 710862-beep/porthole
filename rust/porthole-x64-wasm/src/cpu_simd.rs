@@ -712,6 +712,46 @@ impl CpuState {
                 self.set_xmm_preserve_upper(reg, &out);
                 Ok(Some(ExecOutcome::Next))
             }
+            0x63 | 0x67 | 0x6B if pp == 1 => {
+                // PACKSSWB (0F 63) / PACKUSWB (0F 67): pack 8x i16 from dest then 8x i16 from src
+                // into 16 bytes with saturation. PACKSSDW (0F 6B): pack 4x i32 -> 4x i16 each.
+                // (Hit by Chocolate Doom's MD5 WAD-checksum code at W_Init.)
+                let (modrm, reg, rm, ea) = self.decode_modrm_ea(pfx, code, cursor, insn_rip)?;
+                let a = self.get_xmm(reg);
+                let b = self.read_xmm_rm(vmm, modrm, ea, rm)?;
+                let mut out = [0u8; 16];
+                let get16 = |src: &[u8; 16], i: usize| -> i16 {
+                    i16::from_le_bytes(src[i * 2..i * 2 + 2].try_into().unwrap())
+                };
+                let get32 = |src: &[u8; 16], i: usize| -> i32 {
+                    i32::from_le_bytes(src[i * 4..i * 4 + 4].try_into().unwrap())
+                };
+                match op2 {
+                    0x63 => {
+                        for i in 0..8 {
+                            out[i] = get16(&a, i).clamp(-128, 127) as i8 as u8;
+                            out[8 + i] = get16(&b, i).clamp(-128, 127) as i8 as u8;
+                        }
+                    }
+                    0x67 => {
+                        for i in 0..8 {
+                            out[i] = get16(&a, i).clamp(0, 255) as u8;
+                            out[8 + i] = get16(&b, i).clamp(0, 255) as u8;
+                        }
+                    }
+                    _ => {
+                        // 0x6B PACKSSDW
+                        for i in 0..4 {
+                            let va = get32(&a, i).clamp(-32768, 32767) as i16;
+                            let vb = get32(&b, i).clamp(-32768, 32767) as i16;
+                            out[i * 2..i * 2 + 2].copy_from_slice(&va.to_le_bytes());
+                            out[8 + i * 2..10 + i * 2].copy_from_slice(&vb.to_le_bytes());
+                        }
+                    }
+                }
+                self.set_xmm_preserve_upper(reg, &out);
+                Ok(Some(ExecOutcome::Next))
+            }
             0x64 | 0x65 | 0x66 | 0x74 | 0x75 | 0x76 if pp == 1 => {
                 let (modrm, reg, rm, ea) = self.decode_modrm_ea(pfx, code, cursor, insn_rip)?;
                 let a = self.get_xmm(reg);
