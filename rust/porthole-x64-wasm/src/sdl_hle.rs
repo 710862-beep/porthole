@@ -1108,23 +1108,6 @@ impl Win32Kernel {
                         };
                         let srect = read_rect(a2, (src.w, src.h));
                         let drect = read_rect(a3, (dst.w, dst.h));
-                        // SDLD (temporary): texture chain formats + source variation.
-                        {
-                            let n = (src.pitch.max(0) as usize).min(4096);
-                            let mut row = vec![0u8; n];
-                            let mut h: u64 = 0xcbf29ce484222325;
-                            if vmm.read_bytes(src.pixels, &mut row).is_ok() {
-                                for &b in &row {
-                                    h ^= b as u64;
-                                    h = h.wrapping_mul(0x100000001b3);
-                                }
-                            }
-                            self.note(format!(
-                                "SDLD copy tex={:#x} fmt={:#010x} bpp={} {}x{} pitch={} srect={srect:?} -> dst {:#x} fmt={:#010x} {}x{} drect={drect:?} srcrow0fnv={h:016x}",
-                                a1, src.format, src.bpp, src.w, src.h, src.pitch,
-                                dst.pixels, dst.format, dst.w, dst.h
-                            ));
-                        }
                         self.sdl_render_blit(vmm, &src, srect, &dst, drect);
                     }
                 }
@@ -1140,22 +1123,6 @@ impl Win32Kernel {
                 if let Some(r) = self.sdl.renderers.get(&a0).cloned() {
                     if let Some(w) = self.sdl.windows.get(&r.window).cloned() {
                         if w.backbuffer != 0 {
-                            // SDLD (temporary): does the composed backbuffer vary?
-                            {
-                                let n = (w.bb_pitch.max(0) as usize).min(4096);
-                                let mut row = vec![0u8; n];
-                                let mut h: u64 = 0xcbf29ce484222325;
-                                if vmm.read_bytes(w.backbuffer, &mut row).is_ok() {
-                                    for &b in &row {
-                                        h ^= b as u64;
-                                        h = h.wrapping_mul(0x100000001b3);
-                                    }
-                                }
-                                self.note(format!(
-                                    "SDLD present #{} bb={:#x} {}x{} pitch={} bbrow0fnv={h:016x}",
-                                    self.sdl.presented_frames + 1, w.backbuffer, w.w, w.h, w.bb_pitch
-                                ));
-                            }
                             self.sdl_capture_pixels(
                                 vmm,
                                 w.backbuffer,
@@ -1268,23 +1235,7 @@ impl Win32Kernel {
                     (Some(s), Some(d)) => (s, d),
                     _ => return (-1i64) as u64,
                 };
-                // SDLD (temporary frame-path diagnostic): does the guest screen itself vary?
-                {
-                    let n = (src.pitch.max(0) as usize).min(4096);
-                    let mut row = vec![0u8; n];
-                    let mut h: u64 = 0xcbf29ce484222325;
-                    if vmm.read_bytes(src.pixels, &mut row).is_ok() {
-                        for &b in &row {
-                            h ^= b as u64;
-                            h = h.wrapping_mul(0x100000001b3);
-                        }
-                    }
-                    self.note(format!(
-                        "SDLD blit src_fmt={:#010x} bpp={} {}x{} pitch={} pal={:#x} -> dst_fmt={:#010x} bpp={} {}x{} pitch={} srcrow0fnv={h:016x}",
-                        src.format, src.bpp, src.w, src.h, src.pitch, src.palette,
-                        dst.format, dst.bpp, dst.w, dst.h, dst.pitch
-                    ));
-                }
+
                 let (sx, sy, sw, sh) = if a1 != 0 {
                     (
                         vmm.read_u32(a1).unwrap_or(0) as i32,

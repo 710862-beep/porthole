@@ -136,14 +136,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # GATE 1 Tier B / GATE 2 probe. continue-on-error ONLY while the SDL2 HLE path is being
-  # built: the runner itself is fail-closed and its report (published below) carries the real
-  # FAIL + named blockers. Remove continue-on-error when the runner first reports PASS.
+  # GATE 1 Tier B / GATE 2: unmodified Chocolate Doom 3.1.1 (official win64 exe, SHA-256
+  # pinned by scripts/fetch-chocolate-doom.mjs) executing a Freedoom demo1 timedemo in the
+  # Wasm core. FAIL-CLOSED since the first genuine PASS (2,664 gametics, 1,782 distinct
+  # guest-presented framebuffer checksums — see docs/x64-emulator-status.md): a red job here
+  # is a real regression. The runner report (published below) carries the evidence.
   tier-b-chocolate-doom:
     name: GATE 1 Tier B / GATE 2 probe — unmodified Chocolate Doom x64 + Freedoom IWAD
     needs: wasm-build
     runs-on: ubuntu-24.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
