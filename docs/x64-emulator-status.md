@@ -178,7 +178,8 @@ This is an **EXECUTION + RENDERING** claim. It is explicitly **not**:
 * **Rendering vs independently decoded reference**: `scripts/decode-title-reference.mjs`
   derives the title frame straight from the pinned IWAD — TITLEPIC patch decoded with the
   guest's own `V_DrawPatch` semantics, PLAYPAL through the guest's `I_SetPalette` conversion
-  (gamma 0 = identity, `& ~3`) — no emulator code, no guest code. The emulator's
+  (`gammatable[0]` from upstream `tables.c`: `v<128 ? v+1 : v`, then `& ~3`) — no emulator
+  code, no guest code. The emulator's
   guest-produced 320×200 title frame (measurement tap on the streaming texture) must be
   **pixel-identical** to it and equal the known-good hash **`fnv1a64:02d3105200077dee`**
   (320×200, 178 distinct colours). This replaced the original plan of comparing against a

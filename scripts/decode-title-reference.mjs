@@ -7,8 +7,8 @@
  * TITLEPIC patch lump and PLAYPAL, renders the patch with the exact semantics of the guest's
  * own V_DrawPatch (chocolate-doom v_video.c: column posts, source at +3, advance length+4,
  * transparent pixels leave the zero-cleared screen buffer), then applies the palette
- * conversion the guest itself performs in I_SetPalette (gammatable[0] == identity at the
- * default usegamma=0, then & ~3 VGA 6-bit masking, alpha 0xFF).
+ * conversion the guest itself performs in I_SetPalette (gammatable[0] from tables.c —
+ * v<128 ? v+1 : v — then & ~3 VGA 6-bit masking, alpha 0xFF).
  *
  * The result is the 320x200 RGBA frame ANY correct execution of chocolate-doom.exe must show
  * on the title page. It is compared byte-for-byte (FNV-1a64 + exact pixel count) against the
@@ -110,13 +110,18 @@ function decodePPM(buf) {
 const wad = fs.readFileSync(WAD);
 const playpal = readWadLump(wad, 'PLAYPAL');
 if (playpal.length < 768) throw new Error(`PLAYPAL too short: ${playpal.length}`);
-// Guest I_SetPalette at usegamma=0: gammatable[0] is identity; VGA 6-bit DAC masking & ~3.
+// Guest I_SetPalette at usegamma=0 (chocolate-doom i_video.c): channel =
+// gammatable[0][v] & ~3, where gammatable[0] (tables.c, tag chocolate-doom-3.1.1) is
+// NOT identity: it maps v -> v+1 for v < 128 and v -> v for v >= 128, before the VGA
+// 6-bit DAC masking (& ~3). (First decoder revision assumed identity and missed every
+// channel by <= 4 — measured equal=6186/64000 maxDelta=4 — which is how this was found.)
+const gamma0 = (v) => ((v < 128 ? v + 1 : v) & ~3) & 0xff;
 const displayPal = [];
 for (let i = 0; i < 256; i++) {
   displayPal.push([
-    playpal[i * 3] & ~3,
-    playpal[i * 3 + 1] & ~3,
-    playpal[i * 3 + 2] & ~3,
+    gamma0(playpal[i * 3]),
+    gamma0(playpal[i * 3 + 1]),
+    gamma0(playpal[i * 3 + 2]),
     255,
   ]);
 }
