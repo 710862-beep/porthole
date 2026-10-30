@@ -121,9 +121,12 @@ typedef struct _TEB {
 #endif
 `;
 
-export function buildWine64Suite({ outDir = 'tests/assets/wine64' } = {}) {
+export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, toolchain = process.env.PORTHOLE_WINE_TOOLCHAIN || 'zig' } = {}) {
   const wineSha = fetchWine('vendor/wine-source');
-  const zig = findZig();
+  const zig = toolchain === 'zig' ? findZig() : null;
+  const cc = process.env.PORTHOLE_MINGW_CC || 'x86_64-w64-mingw32-gcc';
+  const windres = process.env.PORTHOLE_MINGW_WINDRES || 'x86_64-w64-mingw32-windres';
+  if (!['zig', 'mingw'].includes(toolchain)) throw new Error(`Unknown Wine toolchain: ${toolchain}`);
   fs.mkdirSync(outDir, { recursive: true });
   const incDir = path.join(outDir, '_inc');
   fs.mkdirSync(path.join(incDir, 'wine'), { recursive: true });
@@ -137,6 +140,13 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64' } = {}) {
     fs.copyFileSync(src, dst);
   }
   fs.writeFileSync(path.join(incDir, 'winternl.h'), WINTERNL_OVERLAY);
+  const testHeaderPath = path.join(incDir, 'wine/test.h');
+  let testHeader = fs.readFileSync(testHeaderPath, 'utf8');
+  const observer = fs.readFileSync('tests/torture/wine-observer.h', 'utf8');
+  const marker = '#endif  /* __WINE_WINE_TEST_H */';
+  if (!testHeader.includes(marker)) throw new Error('Wine test.h observer insertion point missing');
+  testHeader = testHeader.replace(marker, observer + '\n' + marker);
+  fs.writeFileSync(testHeaderPath, testHeader);
 
   const specs = [
     {
@@ -176,6 +186,40 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64' } = {}) {
       libs: ['-ld3d12', '-ldxgi', '-luser32', '-lgdi32', '-lkernel32', '-luuid'],
     },
     {
+      name: 'd3d9_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
+      sources: ['d3d9ex.c', 'device.c', 'stateblock.c', 'visual.c'].map(f => `vendor/wine-source/dlls/d3d9/tests/${f}`),
+      subtests: ['d3d9ex', 'device', 'stateblock', 'visual'], cflags: ['-O1', '-DCOBJMACROS='],
+      libs: ['-ld3d9', '-luser32', '-lgdi32', '-lkernel32', '-luuid'],
+    },
+    {
+      name: 'd3d11_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
+      sources: ['vendor/wine-source/dlls/d3d11/tests/d3d11.c'], resources: ['vendor/wine-source/dlls/d3d11/tests/resource.rc'],
+      subtests: ['d3d11'], cflags: ['-O1', '-DCOBJMACROS=', '-DWIDL_C_INLINE_WRAPPERS'],
+      libs: ['-ld3d11', '-ldxgi', '-ld3dcompiler', '-luser32', '-lgdi32', '-lkernel32', '-luuid'],
+    },
+    {
+      name: 'dxgi_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
+      sources: ['vendor/wine-source/dlls/dxgi/tests/dxgi.c'], subtests: ['dxgi'], cflags: ['-O1', '-DCOBJMACROS=', '-DWIDL_C_INLINE_WRAPPERS'],
+      libs: ['-ld3d10_1', '-ldxgi', '-luser32', '-lgdi32', '-lkernel32', '-luuid'],
+    },
+    {
+      name: 'vulkan_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
+      sources: ['vendor/wine-source/dlls/vulkan-1/tests/vulkan.c'], subtests: ['vulkan'], cflags: ['-O1'],
+      libs: ['-lvulkan-1', '-luser32', '-lkernel32'],
+    },
+    {
+      name: 'comdlg32_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
+      sources: ['filedlg.c', 'finddlg.c', 'fontdlg.c', 'itemdlg.c', 'printdlg.c'].map(f => `vendor/wine-source/dlls/comdlg32/tests/${f}`),
+      resources: ['vendor/wine-source/dlls/comdlg32/tests/rsrc.rc'], subtests: ['filedlg', 'finddlg', 'fontdlg', 'itemdlg', 'printdlg'], cflags: ['-O1', '-DCOBJMACROS='],
+      libs: ['-luuid', '-lshell32', '-lole32', '-lcomdlg32', '-lwinspool', '-luser32', '-lgdi32', '-lkernel32'],
+    },
+    {
+      name: 'user32_dialog_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
+      sources: ['msg.c', 'dialog.c', 'resource.c'].map(f => `vendor/wine-source/dlls/user32/tests/${f}`),
+      resources: ['vendor/wine-source/dlls/user32/tests/resource.rc'], subtests: ['msg', 'dialog', 'resource'], cflags: ['-O1'],
+      libs: ['-luser32', '-lgdi32', '-ladvapi32', '-limm32', '-lkernel32', '-luuid'],
+    },
+    {
       name: 'porthole_x64_plan_test.exe',
       origin: 'porthole-wine-harness-x64',
       license: 'LGPL-2.1-or-later',
@@ -187,37 +231,36 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64' } = {}) {
   ];
 
   const built = [];
-  for (const spec of specs) {
+  const selectedSpecs = only ? specs.filter(s => only.some(n => s.name.includes(n))) : specs;
+  if (!selectedSpecs.length) throw new Error(`No Wine specs match ${only}`);
+  for (const spec of selectedSpecs) {
     const testlistPath = path.join(outDir, `_${spec.name.replace(/\.exe$/, '')}_testlist.c`);
     fs.writeFileSync(testlistPath, makeTestlistSource(spec.subtests));
     const exePath = path.join(outDir, spec.name);
+    const objects = [];
+    for (const rc of spec.resources || []) {
+      const obj = path.join(outDir, `${path.basename(rc, '.rc')}.res`);
+      const rr = toolchain === 'zig'
+        ? spawnSync(zig, ['rc', '/:auto-includes', 'gnu', '/i', 'vendor/wine-source/include', '/i', path.dirname(rc), '/fo', obj, rc], { encoding: 'utf8', timeout: 180000 })
+        : spawnSync(windres, ['-I', 'vendor/wine-source/include', '-I', path.dirname(rc), '-i', rc, '-o', obj, '-O', 'coff'], { encoding: 'utf8', timeout: 180000 });
+      if (rr.status !== 0) throw new Error(`Resource compile failed ${rc}:\n${rr.stderr || rr.stdout || rr.error}`);
+      objects.push(obj);
+    }
+    const prefix = toolchain === 'mingw' ? [
+      '-D__USE_MINGW_ANSI_STDIO=0', '-D_WIN32_WINNT=0x0a00',
+    ] : ['cc', '-target', 'x86_64-windows-gnu'];
     const args = [
-      'cc',
-      '-target',
-      'x86_64-windows-gnu',
-      '-DPeb=ProcessEnvironmentBlock',
-      '-DDECLSPEC_EXPORT=',
+      ...prefix,
+      '-DPeb=ProcessEnvironmentBlock', '-DDECLSPEC_EXPORT=',
       '-DENABLE_VIRTUAL_TERMINAL_PROCESSING=4',
-      '-Ddebugstr_a=wine_dbgstr_a',
-      '-Ddebugstr_w=wine_dbgstr_w',
-      '-Ddebugstr_an=wine_dbgstr_an',
-      '-Ddebugstr_wn=wine_dbgstr_wn',
-      '-include',
-      'windows.h',
-      `-I${incDir}`,
-      '-Wno-format',
-      '-Wno-int-conversion',
-      '-Wno-incompatible-pointer-types',
-      '-Wno-macro-redefined',
-      ...spec.cflags,
-      ...spec.sources,
-      testlistPath,
-      ...spec.libs,
-      '-Wl,--subsystem,console',
-      '-o',
-      exePath,
+      '-Ddebugstr_a=wine_dbgstr_a', '-Ddebugstr_w=wine_dbgstr_w',
+      '-Ddebugstr_an=wine_dbgstr_an', '-Ddebugstr_wn=wine_dbgstr_wn',
+      '-include', 'windows.h', `-I${incDir}`, ...(toolchain === 'mingw' ? ['-Ivendor/wine-source/include'] : []),
+      '-Wno-format', '-Wno-int-conversion', '-Wno-incompatible-pointer-types', '-Wno-macro-redefined',
+      ...spec.cflags, ...spec.sources, testlistPath, ...spec.libs, ...objects,
+      '-Wl,--subsystem,console', '-o', exePath,
     ];
-    const run = spawnSync(zig, args, { encoding: 'utf8', timeout: 180000 });
+    const run = spawnSync(toolchain === 'zig' ? zig : cc, args, { encoding: 'utf8', timeout: 900000, maxBuffer: 32 * 1024 * 1024 });
     if (run.status !== 0) {
       throw new Error(`Failed compiling ${spec.name}:\n${run.stderr || run.stdout}`);
     }
@@ -238,6 +281,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64' } = {}) {
       bytes: bytes.length,
       sha256: sha256(bytes),
       origin: spec.origin,
+      harness: 'porthole-assertion-observer-v1',
       wineCommit: wineSha,
       license: spec.license,
       sources: spec.sources.map((s) => ({ path: s, sha256: sha256(fs.readFileSync(s)) })),
@@ -253,17 +297,24 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64' } = {}) {
     }
   }
 
+  const manifestPath = path.join(outDir, 'MANIFEST.json');
+  const previous = only && fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')).binaries || [] : [];
+  const merged = [...previous.filter(b => !built.some(n => n.name === b.name)), ...built];
   const manifest = {
     version: 1,
     kind: 'wine64-pe32plus-conformance',
-    compiler: 'zig 0.13.0 (x86_64-windows-gnu)',
+    compiler: toolchain === 'zig' ? 'zig 0.13.0 (x86_64-windows-gnu)' : `${cc} (MinGW-w64)`,
+    harness: { kind: 'porthole-assertion-observer-v1', sha256: sha256(fs.readFileSync('tests/torture/wine-observer.h')), note: 'Generated Wine test.h observer; upstream test .c/.rc sources are unmodified.' },
     wineCommit: wineSha,
-    binaries: built,
+    binaries: merged,
   };
   fs.writeFileSync(path.join(outDir, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  buildWine64Suite();
+  const argv = process.argv.slice(2);
+  const at = argv.indexOf('--only');
+  const tc = argv.indexOf('--toolchain');
+  buildWine64Suite({ only: at >= 0 ? argv[at + 1].split(',') : null, toolchain: tc >= 0 ? argv[tc + 1] : undefined });
 }

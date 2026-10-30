@@ -55,6 +55,12 @@ pub struct BrowserX64Emulator {
     hle_trace_only: bool,
     /// Optional substring filters: a trace line is kept only if it contains one of them.
     trace_filter: Vec<String>,
+    /// Phase-1 conformance audit: bounded, drainable JSONL events. Disabled by default so
+    /// production/benchmark execution does not pay for argument/memory snapshots.
+    audit: Vec<String>,
+    audit_max: usize,
+    audit_seq: u64,
+    audit_dropped: u64,
 }
 
 #[wasm_bindgen]
@@ -77,6 +83,10 @@ impl BrowserX64Emulator {
             trace_enabled: false,
             hle_trace_only: false,
             trace_filter: Vec::new(),
+            audit: Vec::new(),
+            audit_max: 0,
+            audit_seq: 0,
+            audit_dropped: 0,
         }
     }
 
@@ -103,6 +113,10 @@ impl BrowserX64Emulator {
     /// Records the guest-visible path of the loaded image for `GetModuleFileNameW(NULL, ...)`.
     pub fn set_exe_path(&mut self, path: &str) {
         self.kernel.set_exe_path(path);
+    }
+
+    pub fn set_environment_variable(&mut self, name: &str, value: &str) -> bool {
+        self.kernel.provision_env(name, value)
     }
 
     /// Maps a PE32+ (`0x8664`) image, resolves imports against the HLE thunk space, initializes
@@ -280,6 +294,7 @@ impl BrowserX64Emulator {
             {
                 if let Some((kind, slot)) = self.kernel.d3d12.lookup_method(insn_rip) {
                     let args = self.capture_args();
+                    let audit_before = self.audit_snapshots(&args);
                     let rsp = self.cpu.gpr[4];
                     let result = {
                         let client_sizes = self.kernel.window_sizes();
@@ -299,6 +314,8 @@ impl BrowserX64Emulator {
                         )
                     };
                     self.drain_d3d12_notes();
+                    let api = format!("{}::{}", d3d12_hle::interface_name(kind), d3d12_hle::method_name(kind, slot));
+                    self.record_api_audit(&api, &args, result, insn_rip, &audit_before, result != d3d12_hle::E_NOTIMPL as u64);
                     self.cpu.gpr[0] = result;
                     let ret = self.vmm.read_u64(rsp).unwrap_or(0);
                     self.cpu.gpr[4] = rsp.wrapping_add(8);
@@ -377,6 +394,7 @@ impl BrowserX64Emulator {
                         // up as an explicit ret_slot=0x... value rather than an unexplained jump.
                         let ret_slot_addr = rsp;
                         let ret_slot_val = self.vmm.read_u64(ret_slot_addr).unwrap_or(0);
+                        let audit_before = self.audit_snapshots(&args);
                         let action = self.kernel.dispatch(
                             &mut self.vmm,
                             &dll,
@@ -395,6 +413,9 @@ impl BrowserX64Emulator {
                         self.drain_d3d12_notes();
                         match action {
                             HleAction::Return(rax) => {
+                                let api = format!("{dll}!{symbol}");
+                                let implemented = !self.kernel.is_unimplemented(symbol);
+                                self.record_api_audit(&api, &args, rax, insn_rip, &audit_before, implemented);
                                 self.cpu.gpr[0] = rax;
                                 let ret = self.vmm.read_u64(rsp).unwrap_or(0);
                                 self.cpu.gpr[4] = rsp.wrapping_add(8);
@@ -519,6 +540,25 @@ impl BrowserX64Emulator {
 
     /// Records up to `max_entries` execution events (instructions, HLE dispatches, upcall
     /// transitions, page faults and stores inside the optional write watch).
+    /// Enables the torture runner's structured API audit. This is diagnostics, not an
+    /// execution mode: it never changes an HLE result or substitutes a test assertion.
+    pub fn enable_api_audit(&mut self, max_entries: u32) {
+        self.audit_max = (max_entries as usize).min(200_000);
+        self.audit.clear();
+        self.audit_dropped = 0;
+    }
+
+    /// Drains JSONL. `dropped` makes ring overflow visible instead of silently losing calls.
+    pub fn take_api_audit(&mut self) -> String {
+        let mut out = std::mem::take(&mut self.audit).join("\n");
+        if self.audit_dropped != 0 {
+            if !out.is_empty() { out.push('\n'); }
+            out.push_str(&format!("{{\"kind\":\"audit-overflow\",\"dropped\":{}}}", self.audit_dropped));
+            self.audit_dropped = 0;
+        }
+        out
+    }
+
     pub fn enable_trace(&mut self, max_entries: u32) {
         self.trace.clear();
         self.trace_max = max_entries as usize;
@@ -653,6 +693,59 @@ impl BrowserX64Emulator {
             self.cpu.render_rip_history()
         ));
         out
+    }
+
+    fn audit_json_escape(text: &str) -> String {
+        let mut out = String::new();
+        for ch in text.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Reads only committed, resident-or-swapped guest pages; never allocates a page merely
+    /// because an integer argument happens to look like a pointer.
+    fn audit_snapshots(&mut self, args: &[u64; 10]) -> Vec<String> {
+        args.iter().take(6).map(|&addr| {
+            if addr < 0x10000 { return "null".to_string(); }
+            let mut bytes = [0u8; 64];
+            let len = (4096 - (addr & 0xfff)) as usize;
+            match self.vmm.read_bytes(addr, &mut bytes[..len]) {
+                Ok(()) => format!("\"{}\"", bytes[..len].iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                Err(_) => "null".to_string(),
+            }
+        }).collect()
+    }
+
+    fn record_api_audit(&mut self, api: &str, args: &[u64; 10], result: u64, rip: u64, before: &[String], implemented: bool) {
+        if self.audit_max == 0 { return; }
+        if self.audit.len() >= self.audit_max {
+            self.audit_dropped += 1;
+            return;
+        }
+        self.audit_seq += 1;
+        let after = self.audit_snapshots(args);
+        let caller = self.vmm.read_u64(self.cpu.gpr[4]).unwrap_or(0);
+        let debug = if api.ends_with("!OutputDebugStringA") {
+            self.vmm.read_c_string(args[0], 16384).ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .map(|s| format!(",\"debugString\":\"{}\"", Self::audit_json_escape(&s)))
+                .unwrap_or_default()
+        } else { String::new() };
+        self.audit.push(format!(
+            "{{\"kind\":\"api\",\"seq\":{},\"instruction\":{},\"api\":\"{}\",\"rip\":\"0x{:x}\",\"caller\":\"0x{:x}\",\"args\":[{}],\"return\":\"0x{:x}\",\"lastError\":{},\"implemented\":{},\"before\":[{}],\"after\":[{}]{} }}",
+            self.audit_seq, self.cpu.instructions_executed, Self::audit_json_escape(api), rip, caller,
+            args.iter().map(|a| format!("\"0x{a:x}\"")).collect::<Vec<_>>().join(","),
+            result, self.kernel.last_error, implemented, before.join(","), after.join(","), debug
+        ));
     }
 
     fn capture_args(&mut self) -> [u64; 10] {

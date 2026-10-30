@@ -468,6 +468,16 @@ impl Win32Kernel {
             .join(" ")
     }
 
+    pub fn is_unimplemented(&self, symbol: &str) -> bool {
+        self.hle_unimplemented.iter().any(|s| s == symbol)
+    }
+
+    /// Host provisioning for conformance runners (WINETEST_*/VKD3D_TEST_*). This uses the
+    /// same environment table as SetEnvironmentVariable; it is not a detection-evasion hook.
+    pub fn provision_env(&mut self, name: &str, value: &str) -> bool {
+        self.env_set(name, Some(value))
+    }
+
     pub fn unimplemented_symbols(&self) -> String {
         self.hle_unimplemented.join(" ")
     }
@@ -3493,6 +3503,12 @@ impl Win32Kernel {
                 }
                 self.module_handle(&name)
             }
+            "OutputDebugStringA" => {
+                // The audit layer decodes the guest pointer before returning. Do not print a
+                // second copy into the test stdout: that would corrupt upstream summaries.
+                0
+            }
+            "OutputDebugStringW" => 0,
             "FreeLibrary" => 1,
             "GetProcAddress" => {
                 let hmod = a0;

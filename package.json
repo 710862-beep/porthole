@@ -23,7 +23,14 @@
     "test:wine64:build": "node tests/wine64/run-wine64.mjs --build --report artifacts/wine64-report.json",
     "serve:x64": "python3 -m http.server 8080 --bind 0.0.0.0",
     "trace:x64": "cargo run --release --manifest-path rust/porthole-x64-wasm/Cargo.toml --bin xtrace --",
-    "test:x64:startup": "cargo test --release --manifest-path rust/porthole-x64-wasm/Cargo.toml --test wine64_startup -- --nocapture"
+    "test:x64:startup": "cargo test --release --manifest-path rust/porthole-x64-wasm/Cargo.toml --test wine64_startup -- --nocapture",
+    "fetch:torture": "node scripts/fetch-torture-sources.mjs",
+    "build:detection": "node scripts/build-detection-tests.mjs",
+    "test:detection": "node tests/torture/run-detection.mjs",
+    "build:vkd3d": "node scripts/build-vkd3d-tests.mjs",
+    "test:vkd3d": "node tests/torture/run-vkd3d.mjs",
+    "build:cts": "node scripts/build-vk-cts.mjs",
+    "test:cts": "node tests/torture/run-cts.mjs"
   },
   "devDependencies": {
     "jsdom": "^24.1.3",

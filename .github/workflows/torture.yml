@@ -1,0 +1,251 @@
+name: Porthole torture conformance
+
+on:
+  push:
+    branches: [arena/633a2716-porthole]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Also build/run VKD3D-Proton and Vulkan CTS lanes'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '30 3 * * 1'
+
+permissions:
+  contents: write
+  checks: write
+  actions: read
+
+concurrency:
+  group: torture-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Native core tests
+        working-directory: rust/porthole-x64-wasm
+        run: cargo test --all-targets
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-bindgen
+          key: torture-bindgen-0.2.92-${{ hashFiles('rust/porthole-x64-wasm/Cargo.toml') }}
+      - name: Install matching bindgen
+        run: |
+          if ! command -v wasm-bindgen || ! wasm-bindgen --version | grep -Fx 'wasm-bindgen 0.2.92'; then
+            cargo install wasm-bindgen-cli --version 0.2.92 --locked
+          fi
+      - name: Build Wasm candidate
+        working-directory: rust/porthole-x64-wasm
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: Bind candidate
+        run: |
+          wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
+          sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: torture-core
+          path: artifacts/porthole-x64-wasm/
+          if-no-files-found: error
+          retention-days: 14
+
+  wine-d3d12:
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {name: torture-core, path: vendor/porthole-x64-wasm}
+      - name: Install Zig 0.13
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+      - run: node scripts/fetch-wine-source.mjs
+      - run: node scripts/build-wine64-tests.mjs --only d3d12
+      - name: Execute upstream Wine d3d12 assertions
+        id: run
+        continue-on-error: true
+        run: node tests/wine64/run-wine64.mjs --only d3d12 --report artifacts/torture/wine-d3d12-report.json --audit-dir artifacts/torture/wine64 --timeout-ms 180000
+      - name: Preserve raw evidence
+        if: always()
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p artifacts/torture
+          cp tests/assets/wine64/MANIFEST.json artifacts/torture/wine-manifest.json || true
+          python3 scripts/publish-torture-blobs.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: torture-wine-d3d12
+          path: artifacts/torture/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Fail closed on guest results
+        run: test "${{ steps.run.outcome }}" = success
+
+  al-khaser:
+    needs: core
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: microsoft/setup-msbuild@v2
+      - uses: actions/download-artifact@v4
+        with: {name: torture-core, path: vendor/porthole-x64-wasm}
+      - name: Build unmodified upstream x64 Release
+        shell: pwsh
+        run: node scripts/build-detection-tests.mjs --only al-khaser
+      - name: Execute in Porthole Wasm VMM
+        id: run
+        continue-on-error: true
+        shell: bash
+        run: node tests/torture/run-detection.mjs --suite al-khaser --report artifacts/torture/al-khaser-report.json --raw-dir artifacts/torture/al-khaser
+      - name: Preserve raw evidence
+        if: always()
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p artifacts/torture
+          cp tests/assets/torture/MANIFEST.json artifacts/torture/detection-manifest.json || true
+          python scripts/publish-torture-blobs.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: torture-al-khaser
+          path: artifacts/torture/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Fail closed on guest results
+        shell: bash
+        run: test "${{ steps.run.outcome }}" = success
+
+  pafish:
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {name: torture-core, path: vendor/porthole-x64-wasm}
+      - run: |
+          python3 -m pip install --target "$RUNNER_TEMP/porthole-tools" ziglang==0.13.0
+          echo "PORTHOLE_ZIG=$RUNNER_TEMP/porthole-tools/ziglang/zig" >> "$GITHUB_ENV"
+      - run: node scripts/build-detection-tests.mjs --only pafish
+      - name: Execute upstream pafish64
+        id: run
+        continue-on-error: true
+        run: node tests/torture/run-detection.mjs --suite pafish --report artifacts/torture/pafish-report.json --raw-dir artifacts/torture/pafish
+      - name: Preserve raw evidence
+        if: always()
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p artifacts/torture
+          cp tests/assets/torture/MANIFEST.json artifacts/torture/detection-manifest.json || true
+          python3 scripts/publish-torture-blobs.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: torture-pafish, path: artifacts/torture/, if-no-files-found: warn, retention-days: 14}
+      - run: test "${{ steps.run.outcome }}" = success
+
+  expanded-wine:
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {name: torture-core, path: vendor/porthole-x64-wasm}
+      - name: Install MinGW-w64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+      - run: node scripts/fetch-wine-source.mjs
+      - name: Build expanded upstream PE32+ matrix
+        run: node scripts/build-wine64-tests.mjs --toolchain mingw
+      - name: Execute graphics and dialog subtests
+        id: run
+        continue-on-error: true
+        run: node tests/wine64/run-wine64.mjs --only d3d9_test,d3d11_test,d3d12_test,dxgi_test,vulkan_test,comdlg32_test,user32_dialog_test --report artifacts/torture/expanded-wine-report.json --audit-dir artifacts/torture/expanded-wine --timeout-ms 120000 --max-slices 200
+      - name: Preserve raw evidence
+        if: always()
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p artifacts/torture
+          cp tests/assets/wine64/MANIFEST.json artifacts/torture/wine-manifest.json || true
+          python3 scripts/publish-torture-blobs.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: torture-expanded-wine, path: artifacts/torture/, if-no-files-found: warn, retention-days: 14}
+      - run: test "${{ steps.run.outcome }}" = success
+
+  vkd3d-proton:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {name: torture-core, path: vendor/porthole-x64-wasm}
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 meson ninja-build glslang-tools wine-tools
+      - name: Build pinned upstream internal D3D12 tests
+        run: node scripts/build-vkd3d-tests.mjs
+      - name: Execute root-signature/descriptor/PSO subset in VMM
+        id: run
+        continue-on-error: true
+        run: node tests/torture/run-vkd3d.mjs --report artifacts/torture/vkd3d-report.json
+      - if: always()
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: python3 scripts/publish-torture-blobs.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: torture-vkd3d-proton, path: artifacts/torture/, if-no-files-found: warn, retention-days: 14}
+      - run: test "${{ steps.run.outcome }}" = success
+
+  vulkan-cts:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+    needs: core
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {name: torture-core, path: vendor/porthole-x64-wasm}
+      - run: python -m pip install lxml
+      - name: Build upstream deqp-vk.exe x64
+        run: node scripts/build-vk-cts.mjs
+      - name: Execute info and functional API cases in VMM
+        id: run
+        continue-on-error: true
+        shell: bash
+        run: node tests/torture/run-cts.mjs --report artifacts/torture/cts-report.json
+      - if: always()
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: python scripts/publish-torture-blobs.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: torture-vulkan-cts, path: artifacts/torture/, if-no-files-found: warn, retention-days: 14}
+      - shell: bash
+        run: test "${{ steps.run.outcome }}" = success

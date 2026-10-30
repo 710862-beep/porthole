@@ -25,6 +25,7 @@ function parseArgs(argv) {
     slice: 2_000_000,
     maxSlices: 400,
     timeoutMs: 240_000,
+    auditDir: 'artifacts/torture/wine64',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -36,6 +37,7 @@ function parseArgs(argv) {
     else if (a === '--slice') out.slice = Number(argv[++i]);
     else if (a === '--max-slices') out.maxSlices = Number(argv[++i]);
     else if (a === '--timeout-ms') out.timeoutMs = Number(argv[++i]);
+    else if (a === '--audit-dir') out.auditDir = argv[++i];
     else throw new Error(`Argumento desconhecido: ${a}`);
   }
   return out;
@@ -93,6 +95,11 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   emu.vfs_mkdir('C:\\Users\\PORTHOLE\\Temp');
   emu.vfs_insert(`C:\\WineTests\\${manifestEntry.name}`, new Uint8Array(bytes));
 
+  for (const [k, v] of Object.entries({ WINETEST_DEBUG: '1', WINETEST_COLOR: '0', WINETEST_MUTE_THRESHOLD: '0', WINETEST_REPORT_FLAKY: '1', WINETEST_INTERACTIVE: '0' })) emu.set_environment_variable(k, v);
+  emu.enable_api_audit(100000);
+  emu.enable_trace(4096);
+  emu.set_hle_trace_only(true);
+  const audit = [];
   const loadInfo = JSON.parse(emu.load_pe(new Uint8Array(bytes)));
   item.load = loadInfo;
   // winetest binaries take the subtest name as argv[1]; without it they print usage and exit(1).
@@ -111,7 +118,12 @@ async function runOne(binding, manifestEntry, options, testName = null) {
       break;
     }
     const status = emu.run_slice(options.slice);
+    const chunk = emu.take_api_audit();
+    if (chunk) audit.push(...chunk.split('\n').filter(Boolean).map(l => JSON.parse(l)));
     sliceCount += 1;
+    const drained = emu.drain_evicted_pages();
+    const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
+    for (let off = 0; off + 4104 <= drained.length; off += 4104) pageCache.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 4104));
     if (status === 'next') continue;
     if (status.startsWith('exit:')) {
       item.exitCode = Number(status.slice(5));
@@ -152,6 +164,23 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   item.finalRip = `0x${emu.rip().toString(16)}`;
   item.lastError = emu.last_error();
   item.telemetry = JSON.parse(emu.telemetry_json());
+  item.faultSnapshot = emu.fault_snapshot();
+  item.trace = emu.take_trace();
+  item.apiAudit = audit;
+  item.assertions = audit.filter(e => e.debugString?.startsWith('PORTHOLE_ASSERT ')).map(e => {
+    const assertion = JSON.parse(e.debugString.slice('PORTHOLE_ASSERT '.length));
+    const preceding = audit.filter(x => x.kind === 'api' && x.seq < e.seq && !x.api.endsWith('!OutputDebugStringA')).slice(-12);
+    return { ...assertion, instruction: e.instruction, apiCandidates: preceding,
+      correlation: 'preceding-call-window; not a proof of causality' };
+  });
+  item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
+  if (options.auditDir) {
+    fs.mkdirSync(options.auditDir, { recursive: true });
+    const stem = path.join(options.auditDir, item.name.replace(/[^a-z0-9_.-]/gi, '_'));
+    fs.writeFileSync(`${stem}.console.log`, item.console);
+    fs.writeFileSync(`${stem}.api.jsonl`, audit.map(e => JSON.stringify(e)).join('\n') + '\n');
+    fs.writeFileSync(`${stem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
+  }
 
   const summary = WINE_SUMMARY.exec(item.console);
   if (summary) {
@@ -168,7 +197,10 @@ async function runOne(binding, manifestEntry, options, testName = null) {
     } else if (!summary) {
       item.status = 'FAIL';
       item.error = 'Nenhuma linha de resumo do winetest no stdout do convidado.';
-    } else if (item.failures !== 0 || item.exitCode !== 0) {
+    } else if (item.testsExecuted === 0) {
+      item.status = 'FAIL';
+      item.error = 'Zero Wine assertions executed.';
+    } else if (item.failures !== 0 || item.exitCode !== 0 || item.auditOverflow.length) {
       item.status = 'FAIL';
       item.error = `${item.failures} falhas, exit ${item.exitCode}`;
     } else {
@@ -213,7 +245,7 @@ async function main() {
   report.wasmSha256 = binding.wasmSha256;
 
   const selected = options.only
-    ? manifest.binaries.filter((b) => b.name.includes(options.only))
+    ? manifest.binaries.filter((b) => options.only.split(',').some((n) => b.name.includes(n)))
     : manifest.binaries;
 
   const worklist = [];
