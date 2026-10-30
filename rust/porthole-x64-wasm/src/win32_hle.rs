@@ -380,6 +380,11 @@ impl Win32Kernel {
             ("C:\\Windows\\System32", false),
             ("C:\\Users", true),
             ("C:\\Users\\Public", true),
+            // The PORTHOLE user profile + temp dir that %TEMP%/%USERPROFILE% and
+            // GetTempPath point at must actually exist, or CreateDirectory under
+            // %TEMP% fails with ERROR_PATH_NOT_FOUND (Wine directory.c cascade).
+            ("C:\\Users\\PORTHOLE", true),
+            ("C:\\Users\\PORTHOLE\\Temp", true),
             ("C:\\Game", true),
         ] {
             let key = path.to_ascii_uppercase();
@@ -3101,8 +3106,17 @@ impl Win32Kernel {
                 1
             }
             "NtQueryObject" => {
-                // ObjectBasicInformation (0): 56 bytes on x64, GrantedAccess @4.
-                if a1 == 0 {
+                // NtQueryObject(Handle=a0, ObjectInformationClass=a1, ObjectInformation=a2,
+                // Length=a3, ReturnLength=a4). Only ObjectBasicInformation (0) is modelled:
+                // 56 bytes on x64, Attributes @0, GrantedAccess @4, HandleCount @8,
+                // PointerCount @12.
+                if a1 != 0 {
+                    return HleAction::Return(0xC000_0003u64); // STATUS_INVALID_INFO_CLASS
+                }
+                if a4 != 0 {
+                    let _ = vmm.write_u32(a4, 56);
+                }
+                if a3 < 56 {
                     return HleAction::Return(0xC000_0004u64); // STATUS_INFO_LENGTH_MISMATCH
                 }
                 let granted: u32 = if a0 == CURDIR_HANDLE {
@@ -3114,11 +3128,7 @@ impl Win32Kernel {
                 info[4..8].copy_from_slice(&granted.to_le_bytes());
                 info[8..12].copy_from_slice(&1u32.to_le_bytes());
                 info[12..16].copy_from_slice(&1u32.to_le_bytes());
-                let len = (a2 as usize).min(56);
-                let _ = vmm.write_bytes(a1, &info[..len]);
-                if a3 != 0 {
-                    let _ = vmm.write_u64(a3, 56);
-                }
+                let _ = vmm.write_bytes(a2, &info);
                 0
             }
             // ------------------------------------------------- registry (read-only misses)

@@ -242,13 +242,16 @@ impl BrowserX64Emulator {
                         continue;
                     }
                     Some(UpcallStep::Resume(resume_rip)) => {
-                        // Re-enter the API stub with the stack untouched: this time its handler
-                        // returns a plain value and the driver pops the guest's real return
-                        // address from [rsp] as usual.
+                        // Re-enter the API stub at its original frame: the last constructor's
+                        // `ret` left rsp at (stub_rsp - 0x28) because upcalls are staged with a
+                        // full 0x30-byte frame (sentinel + 0x20 home space + alignment), so add
+                        // the frame bias back before the handler's plain Return pops the guest's
+                        // real return address from [rsp].
                         self.trace_event(format!(
                             "R sentinel->resume 0x{:x} rsp=0x{:x}",
                             resume_rip, self.cpu.gpr[4]
                         ));
+                        self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(0x28);
                         self.cpu.rip = resume_rip;
                         self.pending_upcall = false;
                         continue;
@@ -359,7 +362,17 @@ impl BrowserX64Emulator {
                                 continue;
                             }
                             HleAction::Upcall { target, resume_rip, .. } => {
-                                let ret_slot = rsp.wrapping_sub(8);
+                                // Stage a *real* Win64 call frame 0x30 below the HLE stub's rsp:
+                                // [ret_slot]=sentinel, [ret_slot+8, ret_slot+0x28) = the callee's
+                                // 32-byte register home/shadow space, which the upcalled guest
+                                // function is entitled to write. Staging the sentinel at rsp-8
+                                // (previous behaviour) put that home space on top of the HLE
+                                // caller's own return-address slot at [rsp] — 7-Zip's CRT
+                                // constructors legitimately store into it and destroyed
+                                // _initterm's return address (Tier A fault at insn 96173,
+                                // ret=0x0). rsp-0x30 also preserves the ABI entry alignment
+                                // (rsp % 16 == 8). The matching +0x28 is added back on Resume.
+                                let ret_slot = rsp.wrapping_sub(0x30);
                                 let _ = self.vmm.write_u64(ret_slot, UPCALL_RETURN_THUNK);
                                 self.cpu.gpr[4] = ret_slot;
                                 self.cpu.rip = target;

@@ -287,7 +287,7 @@ fn main() {
     let console = emu.take_console();
     if !console.is_empty() {
         println!("--- guest console ---");
-        for line in console.lines().take(400) {
+        for line in console.lines().take(3000) {
             println!("{line}");
         }
     }

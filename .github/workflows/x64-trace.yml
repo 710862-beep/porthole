@@ -129,7 +129,8 @@ jobs:
           {
             echo "##### tier-a native xtrace: 7za a (create)"
             ./rust/porthole-x64-wasm/target/release/xtrace tests/assets/third-party/7za.exe \
-              --budget 400000000 --slice 2000000 --trace 600 --hle-only --no-watch \
+              --budget 400000000 --slice 2000000 --trace 6000 --hle-only \
+              --watch 0x21ffe60:0x21ffea8 \
               --resident 65536 \
               --mkdir 'C:\Windows' --mkdir 'C:\Windows\System32' --mkdir 'C:\Users' \
               --mkdir 'C:\Users\PORTHOLE' --mkdir 'C:\Users\PORTHOLE\Temp' --mkdir 'C:\Game' \
@@ -145,7 +146,7 @@ jobs:
             echo "##### tier-a native xtrace: 7za e (extract)"
             if [ -f artifacts/native-roundtrip.7z ]; then
               ./rust/porthole-x64-wasm/target/release/xtrace tests/assets/third-party/7za.exe \
-                --budget 400000000 --slice 2000000 --trace 600 --hle-only --no-watch \
+                --budget 400000000 --slice 2000000 --trace 6000 --hle-only --no-watch \
                 --resident 65536 \
                 --mkdir 'C:\Windows' --mkdir 'C:\Windows\System32' --mkdir 'C:\Users' \
                 --mkdir 'C:\Users\PORTHOLE' --mkdir 'C:\Users\PORTHOLE\Temp' --mkdir 'C:\Game' \
