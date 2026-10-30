@@ -84,7 +84,7 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   };
 
   const bytes = fs.readFileSync(manifestEntry.path);
-  const emu = new binding.module.BrowserX64Emulator(1024);
+  const emu = new binding.module.BrowserX64Emulator(8192);
   delete emu.constructor;
 
   // Provision the guest `C:\` tree: the test binary itself plus the temp dir the tests use.

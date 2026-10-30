@@ -44,7 +44,7 @@ const titleProbe = process.argv.includes('--title-probe');
 const titlePresents = Math.max(1, Number(process.env.PORTHOLE_TITLE_PRESENTS || 30) || 30);
 const guestArgs = process.env.PORTHOLE_DOOM_ARGS
   ?? (titleProbe ? '-iwad C:\\Game\\DOOM2.WAD -nosound' : '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound');
-const residentPages = Math.max(64, Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536) || 65536);
+const residentPages = 8192;
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
 const jitEnabled = process.env.PORTHOLE_JIT !== '0';
