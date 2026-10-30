@@ -1295,7 +1295,11 @@ impl Win32Kernel {
                         0
                     }
                     Ok(path) => {
-                        if self.dir_exists(&path) {
+                        let ok = self.dir_exists(&path);
+                        self.note(format!(
+                            "K SetCurrentDirectory raw={raw:?} path={path:?} exists={ok}"
+                        ));
+                        if ok {
                             self.cwd = path;
                             self.write_curdir(vmm);
                             1
@@ -1325,16 +1329,29 @@ impl Win32Kernel {
                         0
                     }
                     Ok(path) => {
-                        if self.dir_exists(&path) {
+                        let parent = Self::dir_of(&path);
+                        let outcome = if self.dir_exists(&path) {
+                            "already-exists"
+                        } else if self.is_root(&path) {
+                            "root-denied"
+                        } else if !self.dir_exists(&parent) {
+                            "no-parent"
+                        } else {
+                            "created"
+                        };
+                        self.note(format!(
+                            "K CreateDirectoryA raw={raw:?} cwd={:?} path={path:?} parent={parent:?} -> {outcome}",
+                            self.cwd
+                        ));
+                        if outcome == "already-exists" {
                             self.set_last_error(ERROR_ALREADY_EXISTS);
                             return HleAction::Return(0);
                         }
-                        if self.is_root(&path) {
+                        if outcome == "root-denied" {
                             self.set_last_error(ERROR_ACCESS_DENIED);
                             return HleAction::Return(0);
                         }
-                        let parent = Self::dir_of(&path);
-                        if !self.dir_exists(&parent) {
+                        if outcome == "no-parent" {
                             self.set_last_error(ERROR_PATH_NOT_FOUND);
                             return HleAction::Return(0);
                         }

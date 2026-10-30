@@ -76,7 +76,8 @@ jobs:
           run user32_test wsprintf -hle --hle-only --no-watch \
             --hle-match "MultiByte,IsDBCS,GetCPInfo,K " --trace 300
           run kernel32_test atom -hle --hle-only --no-watch --budget 3000000 --trace 300
-          run kernel32_test directory -hle --hle-only --no-watch --budget 400000 --trace 300
+          run kernel32_test directory -hle --hle-only --no-watch --budget 400000 --trace 300 \
+            --hle-match "K ,CreateDirectory,SetCurrentDirectory,GetCurrentDirectory"
           wc -l trace.log
       - name: Publish each fixture trace through the Checks API
         if: always()
