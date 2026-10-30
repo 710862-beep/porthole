@@ -4725,6 +4725,31 @@ impl Win32Kernel {
                 self.heap_free(a0);
                 0
             }
+            "strtol" | "strtoul" | "strtoll" | "strtoull" | "_strtoi64" | "_strtoui64" => {
+                let raw = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let text = String::from_utf8_lossy(&raw);
+                let bytes = text.as_bytes();
+                let mut i = 0usize;
+                while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() { i += 1; }
+                let mut neg = false;
+                if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') { neg = bytes[i] == b'-'; i += 1; }
+                let mut radix = a2 as u32;
+                if radix == 0 {
+                    radix = if bytes[i..].starts_with(b"0x") || bytes[i..].starts_with(b"0X") { 16 }
+                        else if bytes[i..].starts_with(b"0") { 8 } else { 10 };
+                }
+                if radix == 16 && bytes[i..].starts_with(b"0x") { i += 2; }
+                let start = i;
+                let mut val: u64 = 0;
+                while i < bytes.len() {
+                    let c = bytes[i] as char;
+                    let d = c.to_digit(radix);
+                    match d { Some(d) => { val = val.wrapping_mul(radix as u64).wrapping_add(d as u64); i += 1; }, None => break }
+                }
+                if i == start { i = 0; }
+                if a1 != 0 { let _ = vmm.write_u64(a1, a0.wrapping_add(i as u64)); }
+                if neg { (val as i64).wrapping_neg() as u64 } else { val }
+            }
             "__setusermatherr" | "frexp" | "atoi" | "malloc" | "calloc" | "realloc" => {
                 self.crt_alloc(vmm, symbol, a0, a1)
             }
