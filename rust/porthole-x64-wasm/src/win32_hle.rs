@@ -333,7 +333,7 @@ impl Win32Kernel {
             next_handle: 0x100,
             cwd_handle: CURDIR_HANDLE,
             heaps: Vec::new(),
-            process_heap: 0x40,
+            process_heap: crate::pe64::PROCESS_HEAP_ADDR,
             waitables: HashMap::new(),
             threads: Vec::new(),
             current_thread: 0,
@@ -2927,6 +2927,51 @@ impl Win32Kernel {
                     let _ = vmm.write_u16(a0 + 20, 0);
                 } else {
                     let _ = vmm.write_u8(a0 + 20, 0);
+                }
+                1
+            }
+            "VerSetConditionMask" => {
+                let condition = (a2 & 7) as u64;
+                let t = a1 as u32;
+                let shift = if t & 0x80 != 0 { 21 } else if t & 0x40 != 0 { 18 }
+                    else if t & 0x20 != 0 { 15 } else if t & 0x10 != 0 { 12 }
+                    else if t & 0x08 != 0 { 9 } else if t & 0x04 != 0 { 6 }
+                    else if t & 0x02 != 0 { 3 } else if t & 0x01 != 0 { 0 }
+                    else { return HleAction::Return(a0); };
+                a0 | (condition << shift)
+            }
+            "VerifyVersionInfoW" => {
+                if a0 == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                let typ = a1 as u32;
+                let cm = a2;
+                if typ == 0 || cm == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                let major = vmm.read_u32(a0 + 4).unwrap_or(0);
+                let minor = vmm.read_u32(a0 + 8).unwrap_or(0);
+                let build = vmm.read_u32(a0 + 12).unwrap_or(0);
+                let platform = vmm.read_u32(a0 + 16).unwrap_or(0);
+                let sp_major = vmm.read_u16(a0 + 276).unwrap_or(0) as u32;
+                let sp_minor = vmm.read_u16(a0 + 278).unwrap_or(0) as u32;
+                let suite = vmm.read_u16(a0 + 280).unwrap_or(0) as u32;
+                let product = vmm.read_u8(a0 + 282).unwrap_or(0) as u32;
+                let cmp = |left: u32, right: u32, cond: u32| -> bool {
+                    match cond { 1 => left == right, 2 => left > right, 3 => left >= right,
+                        4 => left < right, 5 => left <= right, _ => false }
+                };
+                let fields: [(u32, u32, u32, u32); 7] = [
+                    (0x01, 0, minor, 0), (0x02, 3, major, 10), (0x04, 6, build, 19045),
+                    (0x08, 9, platform, 2), (0x10, 12, sp_minor, 0), (0x20, 15, sp_major, 0),
+                    (0x80, 21, product, 1),
+                ];
+                for (bit, shift, req, cur) in fields {
+                    if typ & bit != 0 && !cmp(cur, req, ((cm >> shift) & 7) as u32) {
+                        self.set_last_error(1150); return HleAction::Return(0);
+                    }
+                }
+                if typ & 0x40 != 0 {
+                    let cond = ((cm >> 18) & 7) as u32;
+                    let cur_suite = 0x0000_0100u32; // VER_SUITE_SINGLE_USERTS
+                    let ok = match cond { 6 => (cur_suite & suite) == suite, 7 => (cur_suite & suite) != 0, _ => false };
+                    if !ok { self.set_last_error(1150); return HleAction::Return(0); }
                 }
                 1
             }

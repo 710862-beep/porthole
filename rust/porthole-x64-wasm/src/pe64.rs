@@ -19,6 +19,7 @@ pub const EXIT_THUNK_ADDR: u64 = THUNK_BASE;
 pub const THREAD_EXIT_THUNK_ADDR: u64 = THUNK_BASE + THUNK_STRIDE;
 
 pub const PEB_ADDR: u64 = 0x0000_7FFE_0001_0000;
+pub const PROCESS_HEAP_ADDR: u64 = 0x0000_0000_0040_0000;
 pub const PROC_PARAMS_ADDR: u64 = 0x0000_7FFE_0001_1000;
 pub const CURDIR_BUF_ADDR: u64 = 0x0000_7FFE_0001_1800;
 pub const MAIN_TEB_ADDR: u64 = 0x0000_7FFE_0002_0000;
@@ -297,6 +298,10 @@ where
     // PEB fields
     let _ = vmm.write_u64(PEB_ADDR + 0x10, image_base); // ImageBaseAddress
     let _ = vmm.write_u64(PEB_ADDR + 0x20, PROC_PARAMS_ADDR); // ProcessParameters
+    vmm.map_region(PROCESS_HEAP_ADDR, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+    let _ = vmm.write_u64(PEB_ADDR + 0x30, PROCESS_HEAP_ADDR); // ProcessHeap
+    let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x70, 2); // HEAP_GROWABLE, no debug flags
+    let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x74, 0); // ForceFlags
 
     // Initial CurrentDirectory = "C:\Game\"
     let init_cwd: Vec<u16> = "C:\\Game\\".encode_utf16().collect();
