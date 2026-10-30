@@ -103,7 +103,7 @@ pub enum UpcallState {
 }
 
 /// Next action for the driver after an upcalled guest function returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpcallStep {
     /// Push a fresh sentinel and call this guest function.
     Call(u64),
@@ -1650,11 +1650,11 @@ impl Win32Kernel {
                     params.push(vmm.read_u64(a3.wrapping_add(i as u64 * 8)).unwrap_or(0));
                 }
                 // A continuable software exception resumes after the API call.
-                match self.begin_exception(vmm, cpu, a0 as u32, a1 as u32, ret,
-                                           guest_rsp.wrapping_add(8), &params) {
+                return match self.begin_exception(vmm, cpu, a0 as u32, a1 as u32, ret,
+                                                  guest_rsp.wrapping_add(8), &params) {
                     Some(action) => action,
                     None => HleAction::ExitProcess(a0 as u32),
-                }
+                };
             }
 
             // -------------------------------------------------------- atoms
@@ -6220,6 +6220,7 @@ impl Win32Kernel {
                 // iteration is finished (and pops it itself before returning).
                 Some(UpcallStep::Resume(resume_rip))
             }
+            Some(UpcallState::Exception { .. }) => unreachable!("exception handled above"),
             None => None,
         }
     }

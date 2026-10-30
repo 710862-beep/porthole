@@ -17,7 +17,7 @@ use jit::HybridWasmJit;
 use pe64::{load_pe64_image, init_teb, LoadedPe64Info, MAIN_STACK_BOTTOM, MAIN_STACK_TOP,
            IMPORT_THUNK_BASE, MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
 use vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, PAGE_READWRITE};
-use win32_hle::{HleAction, UpcallStep, Win32Kernel};
+use win32_hle::{HleAction, UpcallState, UpcallStep, Win32Kernel};
 
 /// Extra pseudo-thunk used as the return address of HLE upcalls.
 pub const UPCALL_RETURN_THUNK: u64 = THUNK_BASE + THUNK_REGION_SIZE - THUNK_STRIDE;
