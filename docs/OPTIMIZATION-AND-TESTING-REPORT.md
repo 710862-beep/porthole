@@ -338,3 +338,17 @@ exceeded the 64 MiB blob cap; caps were raised and the lane timeout increased to
   bounded in JSON (full JSONL retained) and the timeout raised to 600 s.
 - pafish remains FAIL with exactly 3 interactive-input findings (mouse click, double click,
   plausible dialog confirmation); all environment/VM checks pass.
+
+### CI-verified Wine d3d12 PASS (run `41124584297`, commit `33a4925`)
+
+The `wine-d3d12` lane now completes **SUCCESS** on GitHub Actions: 671 upstream assertions,
+`effectiveFailures = 0`, with the same 9 Windows-correct `todo_wine` refcount successes.
+Raw report/audit/trace: `artifacts/remote/41124584297/wine-d3d12/artifacts/torture/`.
+
+### Chocolate Doom status
+
+The authoritative-HLE-write fix (`host_write_bytes` faults pages back in; `fread`/`ReadFile` use it)
+resolved the earlier `PNAMES not found` abort. The guest now progresses further into `R_Init` and
+fails on `F_END not found`; the benchmark still reports FAIL, 0 gametics, ~0.07 MIPS. A host-side
+`hasF_END` probe is added to distinguish asset content from guest directory-read truncation.
+No JIT speedup is claimed while the timedemo cannot start.

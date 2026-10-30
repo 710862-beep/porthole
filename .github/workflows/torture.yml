@@ -299,7 +299,7 @@ jobs:
       - run: test "${{ steps.run.outcome }}" = success
 
   vulkan-cts:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+    if: github.event_name == 'schedule' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.full)
     needs: core
     runs-on: windows-2022
     timeout-minutes: 120
