@@ -5018,8 +5018,12 @@ impl Win32Kernel {
         //  * the thunk is registered in `import_thunks`, otherwise `run_slice` sees an address in
         //    the HLE region that resolves to no (dll, symbol) and reports `unmapped thunk` - which
         //    is exactly how the `environ`/`drive`/`directory` winetests died.
+        let mut name = name.to_string();
+        if name.is_empty() && dll.eq_ignore_ascii_case("d3d12.dll") && ordinal == 101 {
+            name = "D3D12CreateDevice".to_string();
+        }
         let key = if !name.is_empty() {
-            name.to_string()
+            name.clone()
         } else {
             format!("#{}", ordinal)
         };
