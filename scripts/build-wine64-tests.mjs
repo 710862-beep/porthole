@@ -137,6 +137,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
     ['vendor/wine-source/include/wine/debug.h', path.join(incDir, 'wine/debug.h')],
     ['vendor/wine-source/include/dxcore.h', path.join(incDir, 'dxcore.h')],
     ['vendor/wine-source/include/dxcore_interface.h', path.join(incDir, 'dxcore_interface.h')],
+    ['vendor/wine-source/include/dxva.h', path.join(incDir, 'dxva.h')],
   ]) {
     fs.copyFileSync(src, dst);
   }
@@ -145,8 +146,10 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
     // Ubuntu MinGW-w64 predates d3d9on12.h. Generate it from the pinned Wine IDL
     // rather than editing the upstream test or substituting a stub header.
     const widl = process.env.PORTHOLE_WIDL || 'widl';
-    const r = spawnSync(widl, ['-I', 'vendor/wine-source/include', '-h', '-H', path.join(incDir, 'd3d9on12.h'), 'vendor/wine-source/include/d3d9on12.idl'], { encoding: 'utf8', timeout: 180000 });
-    if (r.status !== 0) throw new Error(`widl failed for d3d9on12.h (install wine-tools): ${r.stderr || r.stdout || r.error}`);
+    for (const [idl, out] of [['d3d9on12.idl', 'd3d9on12.h'], ['dxva2api.idl', 'dxva2api.h'], ['dxvahd.idl', 'dxvahd.h']]) {
+      const r = spawnSync(widl, ['-I', 'vendor/wine-source/include', '-h', '-H', path.join(incDir, out), `vendor/wine-source/include/${idl}`], { encoding: 'utf8', timeout: 180000 });
+      if (r.status !== 0) throw new Error(`widl failed for ${out} (install wine64-tools): ${r.stderr || r.stdout || r.error}`);
+    }
   }
   const testHeaderPath = path.join(incDir, 'wine/test.h');
   let testHeader = fs.readFileSync(testHeaderPath, 'utf8');
@@ -262,7 +265,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       '-DPeb=ProcessEnvironmentBlock', '-DDECLSPEC_EXPORT=',
       '-DENABLE_VIRTUAL_TERMINAL_PROCESSING=4',
       '-Ddebugstr_a=wine_dbgstr_a', '-Ddebugstr_w=wine_dbgstr_w',
-      '-Ddebugstr_an=wine_dbgstr_an', '-Ddebugstr_wn=wine_dbgstr_wn',
+      '-Ddebugstr_an=wine_dbgstr_an', '-Ddebugstr_wn=wine_dbgstr_wn', '-Ddebugstr_guid=wine_dbgstr_guid',
       '-include', 'windows.h', `-I${incDir}`, ...(toolchain === 'mingw' ? ['-idirafter', 'vendor/wine-source/include'] : []),
       '-Wno-format', '-Wno-int-conversion', '-Wno-incompatible-pointer-types', '-Wno-macro-redefined',
       ...spec.cflags, ...spec.sources, testlistPath, ...spec.libs, ...objects,

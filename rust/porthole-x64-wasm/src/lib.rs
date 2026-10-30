@@ -1159,6 +1159,7 @@ impl BrowserX64Emulator {
     pub fn jit_pending_meta(&self, index: u32) -> String { self.jit.pending_meta(index as usize).unwrap_or_default() }
     pub fn jit_pending_wasm(&self, index: u32) -> Vec<u8> { self.jit.pending_wasm(index as usize).unwrap_or_default() }
     pub fn jit_clear_pending(&mut self) { self.jit.clear_pending(); }
+    pub fn jit_active_wasm(&self) -> Vec<u8> { self.jit_active.as_ref().map(|a| a.wasm_bytes.clone()).unwrap_or_default() }
     pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
 
     /// Copies GPRs into the shared context and arms the artifact at current RIP.

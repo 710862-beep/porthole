@@ -250,6 +250,9 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
         (ComKind::D3d12Device, 42) => "GetResourceTiling",
         (ComKind::D3d12Device, 43) => "GetAdapterLuid",
 
+        (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
+        | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
+        | (ComKind::D3d12Fence, 7) | (ComKind::D3d12QueryHeap, 7) | (ComKind::D3d12CommandSignature, 7) => "GetDevice",
         (ComKind::D3d12CommandQueue, 7) => "GetDevice",
         (ComKind::D3d12CommandQueue, 8) => "UpdateTileMappings",
         (ComKind::D3d12CommandQueue, 9) => "CopyTileMappings",
@@ -1018,10 +1021,11 @@ impl D3d12Subsystem {
         let h = if height == 0 { 480 } else { height };
         let _ = windowed;
 
+        let device_parent = self.objects.get(&queue_or_dev).map(|o| o.parent_device).unwrap_or(queue_or_dev);
         let sc_ptr = self.create_com_object(vmm, ComKind::DxgiSwapChain, 0);
         let mut buffers = Vec::with_capacity(buffer_count as usize);
         for _ in 0..buffer_count {
-            let res_ptr = self.create_com_object(vmm, ComKind::D3d12Resource, 0);
+            let res_ptr = self.create_com_object(vmm, ComKind::D3d12Resource, device_parent);
             if let Some(r_obj) = self.objects.get_mut(&res_ptr) {
                 r_obj.refcount = 0; // Internal swapchain ownership starts at 0 user refs!
                 r_obj.resource = Some(ResourceData {
@@ -1713,6 +1717,22 @@ impl D3d12Subsystem {
                     .unwrap_or(0)
             }
 
+            // ID3D12DeviceChild::GetDevice (slot 7) for resources/lists/allocators/PSOs/etc.
+            (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
+            | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
+            | (ComKind::D3d12Fence, 7) | (ComKind::D3d12QueryHeap, 7) | (ComKind::D3d12CommandSignature, 7) => {
+                let out = args[2];
+                if args[1] == 0 || out == 0 { return E_POINTER as u64; }
+                let parent = self.objects.get(&this).map(|o| o.parent_device).unwrap_or(0);
+                let iid = Self::read_guid(vmm, args[1]);
+                if self.objects.get(&parent).map(|o| o.kind) != Some(ComKind::D3d12Device) || !Self::supports_iid(ComKind::D3d12Device, &iid) {
+                    let _ = vmm.write_u64(out, 0);
+                    return E_NOINTERFACE as u64;
+                }
+                self.add_ref(parent);
+                let _ = vmm.write_u64(out, parent);
+                S_OK as u64
+            }
             // ID3D12Device
             (ComKind::D3d12Device, 7) => 1, // GetNodeCount
             (ComKind::D3d12Device, 8) => {

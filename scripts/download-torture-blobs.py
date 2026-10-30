@@ -12,19 +12,21 @@ pointers=[]
 for a in annotations:
  if a.get('title')=='Porthole torture transfer':pointers.append(json.loads(a['message']))
 root=Path('artifacts/remote')/run;root.mkdir(parents=True,exist_ok=True)
-latest={}
-for ptr in pointers: latest[ptr['job']]=ptr
-seen=set()
-for ptr in latest.values():
- seen.add(ptr['job'])
+by_job={}
+for ptr in pointers:
  b=api(f"repos/{repo}/git/blobs/{ptr['manifestBlob']}");data=base64.b64decode(b['content'])
  assert len(data)==ptr['bytes'] and hashlib.sha256(data).hexdigest()==ptr['sha256']
  m=json.loads(data);assert m['sourceSha']==meta['head_sha'] and str(m['runId'])==run
- for f in m['files']:
+ slot=by_job.setdefault(ptr['job'],{})
+ for f in m['files']: slot[f['path']]=f
+seen=set()
+for job,files in by_job.items():
+ seen.add(job)
+ for f in files.values():
   p=Path(f['path'].replace('\\','/'));assert not p.is_absolute() and '..' not in p.parts and p.parts[:2]==('artifacts','torture')
   b=api(f"repos/{repo}/git/blobs/{f['blob']}");data=base64.b64decode(b['content'])
   assert len(data)==f['bytes'] and hashlib.sha256(data).hexdigest()==f['sha256']
   assert hashlib.sha1(f'blob {len(data)}\0'.encode()+data).hexdigest()==f['blob']
-  out=root/ptr['job']/p;out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data);print('VERIFIED',out,len(data))
+  out=root/job/p;out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data);print('VERIFIED',out,len(data))
 (root/'run.json').write_text(json.dumps(meta,indent=2)+'\n')
 if not seen:raise SystemExit('No torture transfer manifests found')

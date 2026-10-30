@@ -35,6 +35,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { X64JitHost } from '../../js/x64-jit-host.js';
 
 const wasmDir = process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm';
 const exeRel = 'tests/assets/third-party/chocolate-doom.exe';
@@ -46,6 +47,8 @@ const guestArgs = process.env.PORTHOLE_DOOM_ARGS
 const residentPages = Math.max(64, Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536) || 65536);
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
+const jitEnabled = process.env.PORTHOLE_JIT !== '0';
+const maxInstructions = Math.max(0, Number(process.env.PORTHOLE_DOOM_MAX_INSTRUCTIONS || 0) || 0);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
@@ -232,6 +235,8 @@ async function main() {
   report.wasmSha256 = binding.wasmSha256;
 
   const emu = new mod.BrowserX64Emulator(residentPages);
+  const jit = new X64JitHost(emu, mod, { enabled: jitEnabled });
+  report.jit = { enabled: jitEnabled, maxInstructions: maxInstructions || null };
   for (const dir of [
     'C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE',
     'C:\\Users\\PORTHOLE\\Temp', 'C:\\Users\\PORTHOLE\\AppData', 'C:\\Users\\PORTHOLE\\AppData\\Roaming',
@@ -276,7 +281,7 @@ async function main() {
   let pageFaults = 0;
   let terminal = 'slice-budget';
   while (slices < limits.maxSlices && Date.now() <= deadline) {
-    const status = emu.run_slice(limits.slice);
+    const status = await jit.runSlice(limits.slice);
     slices += 1;
     const drained = emu.drain_evicted_pages?.();
     if (drained && drained.length) {
@@ -286,6 +291,7 @@ async function main() {
       }
     }
     sampleFrames();
+    if (maxInstructions && Number(emu.instructions_executed()) >= maxInstructions) { terminal = 'instruction-budget-reached'; break; }
     if (titleProbe && Number(emu.presented_frames?.() || 0) >= titlePresents) {
       terminal = 'title-probe-target-reached';
       break;
@@ -303,6 +309,7 @@ async function main() {
   }
   if (Date.now() > deadline && terminal === 'slice-budget') terminal = 'timeout-still-running';
   const wallMs = Date.now() - started;
+  report.jit.stats = jit.stats;
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
   sampleFrames();
