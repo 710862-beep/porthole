@@ -64,26 +64,45 @@ timeout 300 "$WINE" wineboot -i > artifacts/wine-boot.log 2>&1 || true
 EXPECTED_GAMETICS=2664
 WINE_GAMETICS=0
 log "== (1) timedemo under real Wine =="
+# Run in background and kill as soon as the gametics line prints: upstream then calls
+# I_Error, which under Wine opens a modal OK dialog that otherwise blocks until timeout.
 (
   cd "$WORK"
-  timeout 900 "$WINE" chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -timedemo demo1 -nosound \
-    > ../artifacts/wine-timedemo.log 2>&1
-  echo "wine exit=$?" >> ../artifacts/wine-timedemo.log
+  timeout 300 "$WINE" chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -timedemo demo1 -nosound \
+    > ../artifacts/wine-timedemo.log 2>&1 &
+  echo $! > wine.pid
 )
+for i in $(seq 1 60); do
+  if grep -aqE "timed [0-9]+ gametics" artifacts/wine-timedemo.log 2>/dev/null; then
+    break
+  fi
+  sleep 5
+done
+"$WINESERVER" -k 2>/dev/null || true
+pkill -f chocolate-doom.exe 2>/dev/null || true
+sleep 2
 grep -aE "timed [0-9]+ gametics" artifacts/wine-timedemo.log | tee -a "$REPORT" || true
 WINE_GAMETICS="$(grep -aoE "timed [0-9]+ gametics" artifacts/wine-timedemo.log | grep -oE "[0-9]+" | head -1)"
 WINE_GAMETICS="${WINE_GAMETICS:-0}"
 log "wine_gametics=$WINE_GAMETICS expected=$EXPECTED_GAMETICS"
 
 log "== (2) title screen screenshot under real Wine =="
+# A minimal window manager so the game window can actually take keyboard focus;
+# under bare Xvfb synthetic keys go nowhere (first attempt produced no PCX at all).
+openbox --sm-disable > /tmp/openbox.log 2>&1 &
+sleep 2
 (
   cd "$WORK"
-  "$WINE" chocolate-doom.exe -config default.cfg -iwad DOOM2.WAD -nosound \
+  "$WINE" chocolate-doom.exe -config default.cfg -savedir . -iwad DOOM2.WAD -nosound \
     > ../artifacts/wine-title.log 2>&1 &
   echo $! > wine.pid
 )
-# Wait for the game window, then tap the screenshot key several times while the static
-# TITLEPIC page is up (it lasts only a few seconds before the attract demo starts).
+find_pcx() {
+  find "$WORK" "$ROOT/.wineprefix" "$HOME" -iname 'DOOM*.pcx' 2>/dev/null | sort | head -1
+}
+# Wait for the game window, then tap the screenshot key every second until the guest
+# writes a PCX (the static TITLEPIC page lasts only seconds before the attract demo,
+# so the FIRST PCX found is the title frame). Stop early once we have one.
 WID=""
 for i in $(seq 1 40); do
   WID="$(xdotool search --name "Chocolate Doom" 2>/dev/null | head -1 || true)"
@@ -92,25 +111,27 @@ for i in $(seq 1 40); do
 done
 log "window_id=${WID:-none} after_wait"
 sleep 1
-for i in 1 2 3 4 5; do
+if [ -n "$WID" ]; then
+  xdotool windowactivate --sync "$WID" 2>/dev/null || true
+  xdotool windowfocus --sync "$WID" 2>/dev/null || true
+fi
+PCX=""
+for i in $(seq 1 20); do
   if [ -n "$WID" ]; then
-    xdotool windowfocus --sync "$WID" key x 2>/dev/null || true
     xdotool key --window "$WID" x 2>/dev/null || true
+    xdotool windowactivate --sync "$WID" key x 2>/dev/null || true
   else
     xdotool key x 2>/dev/null || true
   fi
   sleep 1
+  PCX="$(find_pcx)"
+  [ -n "$PCX" ] && break
 done
-sleep 2
+sleep 1
 "$WINESERVER" -k 2>/dev/null || true
 pkill -f chocolate-doom.exe 2>/dev/null || true
 sleep 1
-
-find "$WORK" "$HOME" -iname 'DOOM*.pcx' -newer scripts/run-wine-reference.sh 2>/dev/null | head -8 | tee -a "$REPORT" || true
-PCX="$(find "$WORK" -iname 'DOOM*.pcx' | sort | head -1)"
-if [ -z "$PCX" ]; then
-  PCX="$(find "$HOME" -iname 'DOOM*.pcx' 2>/dev/null | sort | head -1)"
-fi
+PCX="${PCX:-$(find_pcx)}"
 log "guest_screenshot_pcx=${PCX:-none}"
 if [ -n "${PCX:-}" ]; then
   cp "$PCX" artifacts/wine-title-guest.pcx
