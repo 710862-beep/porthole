@@ -1068,7 +1068,7 @@ impl Win32Kernel {
                     if let (Some(src), Some(dst)) =
                         (self.sdl_tex_pixbuf(a1), self.sdl_dst_pixbuf(&r))
                     {
-                        let read_rect = |p: u64, full: (i32, i32)| -> (i32, i32, i32, i32) {
+                        let mut read_rect = |p: u64, full: (i32, i32)| -> (i32, i32, i32, i32) {
                             if p != 0 {
                                 (
                                     vmm.read_u32(p).unwrap_or(0) as i32,
