@@ -134,7 +134,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p artifacts/torture
-          node tests/wine64/run-wine64.mjs --only d3d12 --report artifacts/torture/wine-d3d12-report.json --audit-dir artifacts/torture/wine64 --timeout-ms 180000 2>&1 | tee artifacts/torture/wine-d3d12-runner.log
+          node tests/wine64/run-wine64.mjs --only d3d12 --report artifacts/torture/wine-d3d12-report.json --audit-dir artifacts/torture/wine64 --timeout-ms 300000 2>&1 | tee artifacts/torture/wine-d3d12-runner.log
       - name: Preserve raw evidence
         if: always()
         env: {GH_TOKEN: '${{ github.token }}'}

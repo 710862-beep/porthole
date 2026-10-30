@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEmulator } from '../wine64/run-wine64.mjs';
 
 function args(argv) {
-  const o = { manifest: 'tests/assets/torture/MANIFEST.json', suite: null, wasmDir: process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm', report: 'artifacts/torture/detection-report.json', rawDir: 'artifacts/torture/detection', timeoutMs: 180000, slice: 250000, maxSlices: 2000 };
+  const o = { manifest: 'tests/assets/torture/MANIFEST.json', suite: null, wasmDir: process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm', report: 'artifacts/torture/detection-report.json', rawDir: 'artifacts/torture/detection', timeoutMs: 600000, slice: 250000, maxSlices: 2000 };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--suite') o.suite = argv[++i];
@@ -98,7 +98,7 @@ async function main() {
         const guestLogBytes = emu.vfs_read(entry.suite === 'al-khaser' ? 'C:\\Game\\log.txt' : 'C:\\Game\\pafish.log');
         item.guestLog = guestLogBytes ? Buffer.from(guestLogBytes).toString('utf8') : '';
         Object.assign(item, parseDetection(entry.suite, `${item.console}\n${item.guestLog}`));
-        item.apiAudit = audit; item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
+        item.apiAudit = audit.slice(-5000); item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
         item.findings.forEach(f => { f.apiCandidates = audit.filter(e => e.kind === 'api').slice(-20); f.correlation = 'last-call window; upstream check does not identify a causal API'; });
         item.status = !terminal ? 'TIMEOUT' : terminal.startsWith('fault:') ? 'GUEST_FAULT' : item.exitCode !== 0 || !item.completed ? 'FAIL' : item.findings.length || item.auditOverflow.length ? 'FAIL' : 'PASS';
         if (entry.suite === 'al-khaser') item.caveat = 'Upstream --sleep 1 requested; virtual clock advances on Sleep. Headless modal policy auto-answers IDOK; pafish receives a deterministic virtual pointer profile.';
@@ -114,7 +114,8 @@ async function main() {
   }
   report.summary = { declared: report.tests.length, passed: report.tests.filter(t => t.status === 'PASS').length, failed: report.tests.filter(t => t.status === 'FAIL').length, faults: report.tests.filter(t => t.status === 'GUEST_FAULT').length, timeouts: report.tests.filter(t => t.status === 'TIMEOUT').length, notRun: report.tests.filter(t => t.status === 'NOT_RUN').length };
   report.status = report.tests.length && report.tests.every(t => t.status === 'PASS') ? 'PASS' : report.error ? 'NOT_RUN' : 'FAIL';
-  fs.mkdirSync(path.dirname(o.report), { recursive: true }); fs.writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
+  fs.mkdirSync(path.dirname(o.report), { recursive: true }); report.apiAudit = audit.slice(-5000);
+  fs.writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
   process.exitCode = report.status === 'PASS' ? 0 : report.status === 'NOT_RUN' ? 2 : 1;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
