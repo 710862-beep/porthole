@@ -313,3 +313,28 @@ and Sleep/tick coherence. DialogBox/TaskDialog and comdlg32 file dialogs remain 
   successes are Windows-correct refcount results, 1 remaining failure is the DXCore adapter path.
   DXCore factory/list/adapter COM objects and `DXCoreCreateAdapterFactory` are implemented;
   `LoadLibraryA("dxcore.dll")` now returns a stable module handle. Pending CI rerun.
+
+### Verified local Wine d3d12 PASS (candidate `3d27d4a`, 8192 resident pages)
+
+`node tests/wine64/run-wine64.mjs --only d3d12` completed **PASS** locally:
+- 671 upstream Wine `d3d12` tests executed, 24,121,369 guest instructions, 152 s wall time.
+- 9 Wine `todo_wine` successes (Windows-correct refcounts) are reported separately and do not count as failures.
+- `effectiveFailures = 0`, guest exit code 9 (Wine's todo-success exit), runner exit 0.
+- Fixes verified by this rerun: DXCore `LoadLibraryA` module handle + factory/list/adapter COM path,
+  8192-page resident working set (no `MemoryRangeTooLarge`/swap-storm), todo-aware pass gate.
+- Evidence: `artifacts/local-d3d12-dxcore2.json`, `artifacts/local-d3d12-dxcore2/`.
+
+The corresponding CI lane executed the guest successfully but its evidence-publish step initially
+exceeded the 64 MiB blob cap; caps were raised and the lane timeout increased to 300 s for rerun.
+
+### Detection-suite progress
+
+- al-khaser now reaches 47 checks / ~16.7 M instructions (previously faulted at `SharedUserData`
+  after ~22 k). Remaining findings dropped to 10 after mapping `KUSER_SHARED_DATA`, implementing
+  `NtQueryInformationProcess` debug flags/object/port, `NtSetInformationThread(HideFromDebugger)`,
+  `NtSystemDebugControl`, `NtQuerySystemInformation(KernelDebuggerInformation)`, and returning 0
+  for `NtYieldExecution`. `psapi.EnumProcessModulesEx` and `WUDFPlatform.WudfIs*DebuggerPresent`
+  exports were added. The Windows runner hit a report-serialization size limit; audit output is now
+  bounded in JSON (full JSONL retained) and the timeout raised to 600 s.
+- pafish remains FAIL with exactly 3 interactive-input findings (mouse click, double click,
+  plausible dialog confirmation); all environment/VM checks pass.

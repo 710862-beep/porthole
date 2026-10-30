@@ -51,6 +51,7 @@ async function main() {
     const manifest = JSON.parse(fs.readFileSync(o.manifest, 'utf8'));
     const entries = manifest.binaries.filter(b => !o.suite || b.suite === o.suite);
     if (!entries.length) report.error = `No built fixtures for ${o.suite}`;
+    let lastAudit = [];
     for (const entry of entries) {
       const started = Date.now(), audit = [];
       const item = { name: entry.name, suite: entry.suite, sha256: entry.sha256, sourceRevision: entry.sourceRevision, argv: entry.args, status: 'NOT_RUN', findings: [], checks: [] };
@@ -98,6 +99,7 @@ async function main() {
         const guestLogBytes = emu.vfs_read(entry.suite === 'al-khaser' ? 'C:\\Game\\log.txt' : 'C:\\Game\\pafish.log');
         item.guestLog = guestLogBytes ? Buffer.from(guestLogBytes).toString('utf8') : '';
         Object.assign(item, parseDetection(entry.suite, `${item.console}\n${item.guestLog}`));
+        lastAudit = audit;
         item.apiAudit = audit.slice(-5000); item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
         item.findings.forEach(f => { f.apiCandidates = audit.filter(e => e.kind === 'api').slice(-20); f.correlation = 'last-call window; upstream check does not identify a causal API'; });
         item.status = !terminal ? 'TIMEOUT' : terminal.startsWith('fault:') ? 'GUEST_FAULT' : item.exitCode !== 0 || !item.completed ? 'FAIL' : item.findings.length || item.auditOverflow.length ? 'FAIL' : 'PASS';
@@ -114,7 +116,7 @@ async function main() {
   }
   report.summary = { declared: report.tests.length, passed: report.tests.filter(t => t.status === 'PASS').length, failed: report.tests.filter(t => t.status === 'FAIL').length, faults: report.tests.filter(t => t.status === 'GUEST_FAULT').length, timeouts: report.tests.filter(t => t.status === 'TIMEOUT').length, notRun: report.tests.filter(t => t.status === 'NOT_RUN').length };
   report.status = report.tests.length && report.tests.every(t => t.status === 'PASS') ? 'PASS' : report.error ? 'NOT_RUN' : 'FAIL';
-  fs.mkdirSync(path.dirname(o.report), { recursive: true }); report.apiAudit = audit.slice(-5000);
+  fs.mkdirSync(path.dirname(o.report), { recursive: true }); report.apiAudit = lastAudit.slice(-5000);
   fs.writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
   process.exitCode = report.status === 'PASS' ? 0 : report.status === 'NOT_RUN' ? 2 : 1;
 }

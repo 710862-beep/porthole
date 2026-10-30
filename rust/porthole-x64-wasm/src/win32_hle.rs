@@ -2399,7 +2399,7 @@ impl Win32Kernel {
                 if a1 == 0x11 { 0 } else { 0xC000_0005u64 & 0xFFFF_FFFF } // ThreadHideFromDebugger
             }
             "NtSystemDebugControl" => 0xC000_0354, // STATUS_DEBUGGER_INACTIVE
-            "NtYieldExecution" => 0,
+            "NtYieldExecution" => 0x4000_0024, // STATUS_NO_YIELD_PERFORMED
             "WudfIsAnyDebuggerPresent" | "WudfIsKernelDebuggerPresent" | "WudfIsUserDebuggerPresent" => 0,
             "EnumProcessModulesEx" | "K32EnumProcessModulesEx" => {
                 // List the main executable module; required byte count is one HMODULE.
