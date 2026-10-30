@@ -54,6 +54,9 @@ pub enum ComKind {
     D3d12PipelineState,
     D3d12Resource,
     D3d12Fence,
+    DxcoreAdapterFactory,
+    DxcoreAdapterList,
+    DxcoreAdapter,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +256,11 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
         (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
         | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
         | (ComKind::D3d12Fence, 7) => "GetDevice",
+        (ComKind::DxcoreAdapterFactory, 3) => "CreateAdapterList",
+        (ComKind::DxcoreAdapterList, 3) => "GetAdapter",
+        (ComKind::DxcoreAdapterList, 4) => "GetAdapterCount",
+        (ComKind::DxcoreAdapter, 3) => "IsValid",
+        (ComKind::DxcoreAdapter, 4) => "IsAttributeSupported",
         (ComKind::D3d12CommandQueue, 7) => "GetDevice",
         (ComKind::D3d12CommandQueue, 8) => "UpdateTileMappings",
         (ComKind::D3d12CommandQueue, 9) => "CopyTileMappings",
@@ -373,6 +381,9 @@ pub fn interface_name(kind: ComKind) -> &'static str {
         ComKind::D3d12PipelineState => "ID3D12PipelineState",
         ComKind::D3d12Resource => "ID3D12Resource",
         ComKind::D3d12Fence => "ID3D12Fence",
+        ComKind::DxcoreAdapterFactory => "IDXCoreAdapterFactory",
+        ComKind::DxcoreAdapterList => "IDXCoreAdapterList",
+        ComKind::DxcoreAdapter => "IDXCoreAdapter",
     }
 }
 
@@ -503,6 +514,9 @@ impl D3d12Subsystem {
             (ComKind::D3d12PipelineState, 9),
             (ComKind::D3d12Resource, 15),
             (ComKind::D3d12Fence, 11),
+            (ComKind::DxcoreAdapterFactory, 8),
+            (ComKind::DxcoreAdapterList, 9),
+            (ComKind::DxcoreAdapter, 16),
         ];
 
         for &(kind, slot_count) in specs {
@@ -650,7 +664,16 @@ impl D3d12Subsystem {
         if *iid == IID_IUNKNOWN {
             return true;
         }
+        const IID_DXCORE_ADAPTER_FACTORY: [u8; 16] =
+            D3d12Subsystem::guid(0x78ee5945, 0xc36e, 0x4b13, [0xa6, 0x69, 0x00, 0x5d, 0xd1, 0x1c, 0x0f, 0x06]);
+        const IID_DXCORE_ADAPTER_LIST: [u8; 16] =
+            D3d12Subsystem::guid(0x526c7776, 0x40e9, 0x459b, [0xb7, 0x11, 0xf3, 0x2a, 0xd7, 0x6d, 0xfc, 0x28]);
+        const IID_DXCORE_ADAPTER: [u8; 16] =
+            D3d12Subsystem::guid(0xf0db4c7f, 0xfe5a, 0x42a2, [0xbd, 0x62, 0xf2, 0xa6, 0xcf, 0x6f, 0xc8, 0x3e]);
         match kind {
+            ComKind::DxcoreAdapterFactory => *iid == IID_DXCORE_ADAPTER_FACTORY,
+            ComKind::DxcoreAdapterList => *iid == IID_DXCORE_ADAPTER_LIST,
+            ComKind::DxcoreAdapter => *iid == IID_DXCORE_ADAPTER,
             ComKind::D3d12Device => *iid == IID_D3D12_OBJECT || *iid == IID_D3D12_DEVICE,
             ComKind::D3d12CommandQueue => {
                 *iid == IID_D3D12_OBJECT
@@ -703,6 +726,15 @@ impl D3d12Subsystem {
             }
         }
         false
+    }
+
+    pub fn dxcore_create_adapter_factory(&mut self, vmm: &mut VirtualMemoryManager, riid: u64, out: u64) -> u64 {
+        if out == 0 { return E_POINTER as u64; }
+        let iid = Self::read_guid(vmm, riid);
+        if !Self::supports_iid(ComKind::DxcoreAdapterFactory, &iid) { let _ = vmm.write_u64(out, 0); return E_NOINTERFACE as u64; }
+        let factory = self.create_com_object(vmm, ComKind::DxcoreAdapterFactory, 0);
+        let _ = vmm.write_u64(out, factory);
+        S_OK as u64
     }
 
     pub fn add_ref(&mut self, ptr: u64) -> u32 {
@@ -1717,6 +1749,33 @@ impl D3d12Subsystem {
                     .unwrap_or(0)
             }
 
+            // ---- DXCore adapter enumeration (Windows 10+ display adapter factory) ----
+            (ComKind::DxcoreAdapterFactory, 3) => {
+                let (riid, out) = (args[3], args[4]);
+                if out == 0 { return E_POINTER as u64; }
+                let iid = Self::read_guid(vmm, riid);
+                if !Self::supports_iid(ComKind::DxcoreAdapterList, &iid) { let _ = vmm.write_u64(out, 0); return E_NOINTERFACE as u64; }
+                let list = self.create_com_object(vmm, ComKind::DxcoreAdapterList, this);
+                let _ = vmm.write_u64(out, list);
+                S_OK as u64
+            }
+            (ComKind::DxcoreAdapterList, 3) => {
+                let (index, riid, out) = (args[1], args[2], args[3]);
+                if out == 0 { return E_POINTER as u64; }
+                if index != 0 { let _ = vmm.write_u64(out, 0); return DXGI_ERROR_NOT_FOUND as u64; }
+                let iid = Self::read_guid(vmm, riid);
+                if !Self::supports_iid(ComKind::DxcoreAdapter, &iid) { let _ = vmm.write_u64(out, 0); return E_NOINTERFACE as u64; }
+                let adapter = self.create_com_object(vmm, ComKind::DxcoreAdapter, this);
+                let _ = vmm.write_u64(out, adapter);
+                S_OK as u64
+            }
+            (ComKind::DxcoreAdapterList, 4) => 1,
+            (ComKind::DxcoreAdapterList, 5) => 0,
+            (ComKind::DxcoreAdapter, 3) => 1,
+            (ComKind::DxcoreAdapter, 4) => 1,
+            (ComKind::DxcoreAdapter, 5) => 1,
+            (ComKind::DxcoreAdapter, 7) => { if args[2] != 0 { let _ = vmm.write_u64(args[2], 8); } S_OK as u64 }
+            (ComKind::DxcoreAdapter, 6) => { if args[3] != 0 { let _ = vmm.write_u64(args[3], 0x1234); } S_OK as u64 }
             // ID3D12DeviceChild::GetDevice (slot 7) for resources/lists/allocators/PSOs/etc.
             (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
             | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)

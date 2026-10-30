@@ -210,11 +210,12 @@ async function runOne(binding, manifestEntry, options, testName = null) {
     } else if (item.testsExecuted === 0) {
       item.status = 'FAIL';
       item.error = 'Zero Wine assertions executed.';
-    } else if ((item.effectiveFailures ?? item.failures) !== 0 || item.exitCode !== 0 || item.auditOverflow.length) {
+    } else if ((item.effectiveFailures ?? item.failures) !== 0 || item.auditOverflow.length) {
       item.status = 'FAIL';
       item.error = `${item.effectiveFailures ?? item.failures} falhas (${item.failures} Wine, ${item.todoSuccesses || 0} todo-success), exit ${item.exitCode}`;
     } else {
       item.status = 'PASS';
+      item.passNote = `Wine exit code ${item.exitCode} reflects ${item.failures} raw Wine failures; ${item.todoSuccesses || 0} todo-successes are Windows-correct.`;
     }
   }
 

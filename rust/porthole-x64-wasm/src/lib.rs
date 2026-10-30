@@ -528,7 +528,7 @@ impl BrowserX64Emulator {
                     if !self.hle_trace_only {
                         self.trace_instruction(insn_rip, rsp_before);
                     }
-                    self.maybe_jit_compile(insn_rip);
+                    if self.jit_enabled { self.maybe_jit_compile(insn_rip); }
                 }
                 Ok(ExecOutcome::Fault(msg)) => {
                     if let Some(snapshot) = exception_snapshot.clone() {

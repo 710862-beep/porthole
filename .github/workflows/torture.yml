@@ -280,7 +280,9 @@ jobs:
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 meson ninja-build glslang-tools wine64-tools
       - name: Build pinned upstream internal D3D12 tests
-        run: node scripts/build-vkd3d-tests.mjs
+        run: |
+          mkdir -p artifacts/torture
+          node scripts/build-vkd3d-tests.mjs 2>&1 | tee artifacts/torture/vkd3d-build.log
       - name: Execute root-signature/descriptor/PSO subset in VMM
         id: run
         continue-on-error: true
@@ -306,7 +308,10 @@ jobs:
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
       - run: python -m pip install lxml
       - name: Build upstream deqp-vk.exe x64
-        run: node scripts/build-vk-cts.mjs
+        shell: bash
+        run: |
+          mkdir -p artifacts/torture
+          node scripts/build-vk-cts.mjs 2>&1 | tee artifacts/torture/cts-build.log
       - name: Execute info and functional API cases in VMM
         id: run
         continue-on-error: true

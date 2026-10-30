@@ -1515,6 +1515,9 @@ impl Win32Kernel {
 
         // Resolve well-known d3d12/dxgi entry points first.
         match (dll, symbol) {
+            ("dxcore.dll", "DXCoreCreateAdapterFactory") => {
+                self.d3d12.dxcore_create_adapter_factory(vmm, args[0], args[1])
+            }
             ("d3d12.dll", "D3D12CreateDevice") => {
                 return HleAction::Return(
                     self.d3d12.d3d12_create_device(vmm, a0, a1 as u32, a2, a3) as u64
@@ -3641,12 +3644,6 @@ impl Win32Kernel {
                 } else {
                     self.read_wide(vmm, a0)
                 };
-                // dxcore.dll is intentionally not implemented: the d3d12 test then skips the
-                // DXCore adapter path instead of exercising a stub.
-                if name.to_ascii_lowercase().starts_with("dxcore") {
-                    self.set_last_error(ERROR_MOD_NOT_FOUND);
-                    return HleAction::Return(0);
-                }
                 if name.eq_ignore_ascii_case("userenv.dll") {
                     self.set_last_error(ERROR_MOD_NOT_FOUND);
                     return HleAction::Return(0);

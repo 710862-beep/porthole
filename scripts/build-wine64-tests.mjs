@@ -206,7 +206,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       name: 'd3d11_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
       sources: ['vendor/wine-source/dlls/d3d11/tests/d3d11.c'], resources: ['vendor/wine-source/dlls/d3d11/tests/resource.rc'],
       subtests: ['d3d11'], cflags: ['-O1', '-DCOBJMACROS=', '-DWIDL_C_INLINE_WRAPPERS'],
-      libs: ['-ld3d11', '-ldxgi', '-ld3dcompiler', '-luser32', '-lgdi32', '-lkernel32', '-luuid'],
+      libs: ['-ld3d11', '-ldxgi', '-ld3dcompiler', '-luser32', '-lgdi32', '-lkernel32', '-luuid', '-lntdll'],
     },
     {
       name: 'dxgi_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
