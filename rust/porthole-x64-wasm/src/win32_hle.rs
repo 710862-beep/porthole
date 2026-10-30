@@ -610,22 +610,67 @@ impl Win32Kernel {
     }
 
     fn expand_env(&self, src: &str) -> String {
+        self.expand_env_tokens(src).into_iter().map(|t| t.1).collect()
+    }
+
+    /// Splits `src` into expansion units: `(atomic, text)`.
+    ///
+    /// `atomic` is true for a resolved `%VAR%` (and for the literal text of an unresolved one):
+    /// wine copies a variable's value into the destination only if it fits *whole* and otherwise
+    /// stops, while literal characters are copied one at a time until the buffer is full. That
+    /// distinction is what environ.c:440-465 (ExpandEnvironmentStrings tests 8-20) measures.
+    fn expand_env_tokens(&self, src: &str) -> Vec<(bool, String)> {
         let chars: Vec<char> = src.chars().collect();
-        let mut out = String::with_capacity(src.len() + 16);
+        let mut out: Vec<(bool, String)> = Vec::with_capacity(chars.len());
         let mut i = 0usize;
         while i < chars.len() {
             if chars[i] == '%' {
                 if let Some(close) = chars[i + 1..].iter().position(|&c| c == '%') {
                     let name: String = chars[i + 1..i + 1 + close].iter().collect();
                     if let Some(val) = self.env_get(&name) {
-                        out.push_str(val);
+                        out.push((true, val.to_string()));
+                        i = i + 1 + close + 1;
+                        continue;
+                    }
+                    if close > 0 {
+                        let literal: String = chars[i..i + 1 + close + 1].iter().collect();
+                        out.push((true, literal));
                         i = i + 1 + close + 1;
                         continue;
                     }
                 }
             }
-            out.push(chars[i]);
+            out.push((false, chars[i].to_string()));
             i += 1;
+        }
+        out
+    }
+
+    /// Copies an expansion into a `count`-character destination the way wine does.
+    ///
+    /// Returns the number of characters the full expansion needs, *including* the terminator.
+    /// A complete copy is NUL-terminated; a copy that fills the buffer exactly is not, and a copy
+    /// that stops early because the next variable did not fit is NUL-terminated.
+    fn copy_expansion(tokens: &[(bool, String)], needed: usize, dst_chars: usize) -> Vec<u16> {
+        if dst_chars == 0 {
+            return Vec::new();
+        }
+        let cap = dst_chars - 1;
+        let mut out: Vec<u16> = Vec::with_capacity(dst_chars);
+        'outer: for (atomic, text) in tokens {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            if *atomic && out.len() + units.len() > cap {
+                break 'outer;
+            }
+            for u in units {
+                if out.len() >= cap {
+                    break 'outer;
+                }
+                out.push(u);
+            }
+        }
+        if out.len() < cap || out.len() + 1 >= needed {
+            out.push(0);
         }
         out
     }
@@ -807,11 +852,12 @@ impl Win32Kernel {
             }
             buf.extend_from_slice(&[0, 0]);
             let _ = vmm.write_bytes(buffer, &buf);
-            if len >= count {
+            if len + 1 > count && n == 0 {
+                // A one-character buffer cannot hold anything: that is the only truncation wine
+                // reports as an error for this API (atom.c:530). A partial copy is silent.
                 self.set_last_error(ERROR_MORE_DATA);
-                return n as u64;
             }
-            return len;
+            return n as u64;
         }
         // `GlobalGetAtomNameW` copies as many characters as fit *without* needing room for the
         // terminator, and only reports ERROR_MORE_DATA when it actually truncated
@@ -1086,7 +1132,7 @@ impl Win32Kernel {
                 }
                 match self.env_get(&name).map(|s| s.to_string()) {
                     None => {
-                        let _ = vmm.write_bytes(a1, &[0]);
+                        // A missing variable leaves the caller's buffer untouched (environ.c:138).
                         self.set_last_error(ERROR_ENVVAR_NOT_FOUND);
                         0
                     }
@@ -1120,7 +1166,6 @@ impl Win32Kernel {
                 }
                 match self.env_get(&name).map(|s| s.to_string()) {
                     None => {
-                        let _ = vmm.write_u16(a1, 0);
                         self.set_last_error(ERROR_ENVVAR_NOT_FOUND);
                         0
                     }
@@ -1217,23 +1262,21 @@ impl Win32Kernel {
                     return HleAction::Return(if a1 == 0 || a2 == 0 { 1 } else { 0 });
                 }
                 let src = self.read_wide(vmm, a0);
-                let result = self.expand_env(&src);
-                let units: Vec<u16> = result.encode_utf16().collect();
-                let needed = units.len() + 1;
+                let tokens = self.expand_env_tokens(&src);
+                let needed: usize = 1 + tokens
+                    .iter()
+                    .map(|(_, t)| t.encode_utf16().count())
+                    .sum::<usize>();
                 let count = a2 as u32 as usize;
                 if a1 == 0 || count == 0 {
                     return HleAction::Return(needed as u64);
                 }
-                if count >= needed {
-                    let _ = self.write_wide(vmm, a1, &result);
-                } else {
-                    // Partial fill: no NUL written, mirrors RtlExpandEnvironmentStrings_U.
-                    let mut buf = Vec::with_capacity((count - 1) * 2);
-                    for u in units.iter().take(count - 1) {
-                        buf.extend_from_slice(&u.to_le_bytes());
-                    }
-                    let _ = vmm.write_bytes(a1, &buf);
+                let units = Self::copy_expansion(&tokens, needed, count);
+                let mut buf = Vec::with_capacity(units.len() * 2);
+                for u in &units {
+                    buf.extend_from_slice(&u.to_le_bytes());
                 }
+                let _ = vmm.write_bytes(a1, &buf);
                 needed as u64
             }
             "ExpandEnvironmentStringsA" => {
@@ -1241,21 +1284,81 @@ impl Win32Kernel {
                     return HleAction::Return(if a1 == 0 || a2 == 0 { 1 } else { 0 });
                 }
                 let src = self.read_ansi(vmm, a0);
-                let result = self.expand_env(&src);
-                let (bytes, _) = wide_to_mb(ANSI_CODEPAGE, &result.encode_utf16().collect::<Vec<_>>());
-                let needed_a = bytes.len() as u32;
-                let count = a2 as u32;
+                let tokens = self.expand_env_tokens(&src);
+                let needed: usize = 1 + tokens
+                    .iter()
+                    .map(|(_, t)| wide_to_mb(ANSI_CODEPAGE, &t.encode_utf16().collect::<Vec<_>>()).0.len())
+                    .sum::<usize>();
+                let count = a2 as u32 as usize;
                 if a1 == 0 || count == 0 {
-                    return HleAction::Return(needed_a as u64 + 1);
+                    return HleAction::Return(needed as u64);
                 }
-                if count > needed_a {
-                    let mut out = bytes.clone();
-                    out.push(0);
-                    let _ = vmm.write_bytes(a1, &out);
-                    return HleAction::Return(needed_a as u64);
+                let units = Self::copy_expansion(&tokens, needed, count);
+                let (mut bytes, _) = wide_to_mb(ANSI_CODEPAGE, &units);
+                if bytes.last() != Some(&0) && bytes.len() < count {
+                    bytes.push(0);
                 }
-                let _ = vmm.write_bytes(a1, &[0]);
-                needed_a as u64 + 1
+                let _ = vmm.write_bytes(a1, &bytes);
+                needed as u64
+            }
+
+            // ------------------------------------------------- tokens / profile
+            //
+            // environ.c:67-90 asks for the user profile directory through a process token. The
+            // emulator has no security model, so the token is an opaque handle and every query
+            // answers with the single local user.
+            "OpenProcessToken" => {
+                if a2 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let token = self.alloc_handle();
+                let _ = vmm.write_u64(a2, token);
+                1
+            }
+            "GetTokenInformation" => {
+                // Only TOKEN_USER (1) is ever asked for; size it so the caller can proceed.
+                if a4 == 0 {
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(0);
+                }
+                let need = 32u32;
+                if (a3 as u32) < need {
+                    let _ = vmm.write_u32(a4, need);
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(0);
+                }
+                let mut buf = [0u8; 32];
+                // SID: revision 1, one sub-authority "BUILTIN\Users" style S-1-1-0.
+                buf[0] = 1;
+                buf[1] = 1;
+                buf[7] = 0;
+                let _ = vmm.write_bytes(a1, &buf);
+                let _ = vmm.write_u32(a4, need);
+                1
+            }
+            "GetUserProfileDirectoryA" | "GetUserProfileDirectoryW" => {
+                let profile = "C:\\Users\\PORTHOLE";
+                let wide = symbol.ends_with('W');
+                let units: Vec<u16> = profile.encode_utf16().collect();
+                let needed = if wide { units.len() + 1 } else { profile.len() + 1 };
+                if a2 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let cap = vmm.read_u32(a2).unwrap_or(0) as usize;
+                if cap < needed {
+                    let _ = vmm.write_u32(a2, needed as u32);
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(0);
+                }
+                let ok = if wide {
+                    self.write_wide(vmm, a1, profile).is_ok()
+                } else {
+                    self.write_ansi(vmm, a1, profile).is_ok()
+                };
+                let _ = vmm.write_u32(a2, needed as u32);
+                ok as u64
             }
 
             // -------------------------------------------------------- names
