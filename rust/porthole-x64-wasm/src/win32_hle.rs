@@ -6312,8 +6312,8 @@ mod heap_regression_tests {
     fn vectored_exception_abi_and_unhandled_filter_chain() {
         let mut k = Win32Kernel::new();
         let mut vmm = VirtualMemoryManager::new(256);
-        vmm.map_region(crate::pe64::PROCESS_HEAP_ADDR, 0x10000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
         k.process_heap = crate::pe64::PROCESS_HEAP_ADDR;
+        k.init_heaps(&mut vmm);
         let mut cpu = crate::cpu::CpuState::new();
         cpu.gpr[0] = 0x1122; cpu.gpr[4] = 0x8000; cpu.rip = 0x401000; cpu.rflags = 0x202;
         let mut args = [0u64; 10]; args[0] = 1; args[1] = 0x5000;
