@@ -153,6 +153,28 @@ ThreadHideFromDebugger, NtSystemDebugControl and UnhandledExcepFilterTest. The r
 on unimplemented `INT 0xcd` at `0x1400176a7`. These are exact upstream check names and BAD/GOOD
 results; they are not crash-only passes.
 
+#### pafish64 retest (same run)
+
+`pafish64.exe` now exits cleanly (`exit:0`) after 64,565 instructions, but the suite is still
+**FAIL**: 58 parsed checks, 10 `traced!` findings. The previous Wine export fingerprint is gone
+from the guest log. Remaining raw findings include:
+
+```text
+Checking mouse presence OK traced!
+Checking mouse movement OK traced!
+Checking mouse click activity OK traced!
+Checking mouse double click activity OK traced!
+Checking plausible dialog confirmation OK traced!
+Checking if disk size <= 60GB via GetDiskFreeSpaceExA() OK traced!
+Checking if Sleep() is patched using GetTickCount() OK traced!
+Checking if NumberOfProcessors is < 2 via PEB access OK traced!
+Checking if NumberOfProcessors is < 2 via GetSystemInfo() OK traced!
+Checking operating system uptime using GetTickCount() OK traced!
+```
+
+This is a verified improvement from `GUEST_FAULT` to a completed upstream run, but it is not a
+pass: the expected result for each check is `OK`, and the actual result is `traced!`.
+
 A fault-free run with zero assertions remains a failure. Phase 2 top-20 fixing continues from
 these recorded failures.
 
