@@ -6394,4 +6394,25 @@ mod heap_regression_tests {
         assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "RemoveVectoredExceptionHandler", 0, &args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 0);
     }
 
+    #[test]
+    fn messagebox_yields_host_modal_and_sleep_advances_tick_clock() {
+        let mut k = Win32Kernel::new();
+        let mut vmm = VirtualMemoryManager::new(256);
+        let mut cpu = crate::cpu::CpuState::new();
+        let text_va = vmm.virtual_alloc(0, 0x1000, crate::vmm::MEM_COMMIT, crate::vmm::PAGE_READWRITE);
+        let text: Vec<u16> = "Continue?\n".encode_utf16().chain([0]).collect();
+        let bytes: Vec<u8> = text.iter().flat_map(|u| u.to_le_bytes()).collect();
+        vmm.write_bytes(text_va, &bytes).unwrap();
+        let args = [0, text_va, 0, 0, 0, 0, 0, 0, 0, 0];
+        match k.dispatch(&mut vmm, "user32.dll", "MessageBoxW", 0, &args, 0, 0, &mut cpu) {
+            HleAction::Modal { request_json } => assert!(request_json.contains("Continue?")),
+            _ => panic!("MessageBoxW did not yield a host modal"),
+        }
+        let t0 = match k.dispatch(&mut vmm, "kernel32.dll", "GetTickCount", 0, &[0;10], 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() };
+        let sleep_args = [500,0,0,0,0,0,0,0,0,0];
+        assert_eq!(match k.dispatch(&mut vmm, "kernel32.dll", "Sleep", 0, &sleep_args, 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() }, 0);
+        let t1 = match k.dispatch(&mut vmm, "kernel32.dll", "GetTickCount", 0, &[0;10], 0, 0, &mut cpu) { HleAction::Return(v) => v, _ => panic!() };
+        assert_eq!(t1.wrapping_sub(t0), 500);
+    }
+
 }
