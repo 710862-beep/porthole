@@ -40,6 +40,19 @@ static void porthole_assert_emit(const char *file, int line, const char *expr, i
     }
     winetest_ok(actual, "%s", message);
 }
+static void porthole_assert_explicit(int actual, const char *fmt, ...)
+{
+    struct winetest_thread_data *data = winetest_get_thread_data();
+    char message[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+    porthole_assert_emit(data->current_file ? data->current_file : "(unknown)",
+                         data->current_line, "(explicit ok_)", actual, "%s", message);
+}
 #define PORTHOLE_OK(file, line, cond, ...) porthole_assert_emit(file, line, #cond, !!(cond), __VA_ARGS__)
+#undef ok_
+#define ok_(file, line) (winetest_set_location(file, line), 0) ? (void)0 : porthole_assert_explicit
 #undef ok
 #define ok(...) PORTHOLE_OK(__FILE__, __LINE__, __VA_ARGS__)

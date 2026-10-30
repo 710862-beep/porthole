@@ -63,6 +63,12 @@ jobs:
         run: |
           wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
           sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+      - name: Publish verified candidate for restricted-egress retest
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p artifacts/torture/candidate
+          cp artifacts/porthole-x64-wasm/* artifacts/torture/candidate/
+          python3 scripts/publish-torture-blobs.py
       - uses: actions/upload-artifact@v4
         with:
           name: torture-core
@@ -194,8 +200,13 @@ jobs:
         with: {node-version: 22}
       - uses: actions/download-artifact@v4
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
-      - name: Install MinGW-w64
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 wine-tools
+      - name: Install MinGW-w64 and Wine IDL compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 wine64-tools
+          WIDL=$(find /usr/lib/wine -type f -name widl | head -1)
+          test -x "$WIDL"
+          echo "PORTHOLE_WIDL=$WIDL" >> "$GITHUB_ENV"
       - run: node scripts/fetch-wine-source.mjs
       - name: Build expanded upstream PE32+ matrix
         id: expanded-build
@@ -204,12 +215,13 @@ jobs:
           set -o pipefail
           mkdir -p artifacts/torture
           node scripts/build-wine64-tests.mjs --toolchain mingw 2>&1 | tee artifacts/torture/expanded-wine-build.log
-      - name: Require expanded build
-        run: test "${{ steps.expanded-build.outcome }}" = success
       - name: Execute graphics and dialog subtests
         id: run
         continue-on-error: true
-        run: node tests/wine64/run-wine64.mjs --only d3d9_test,d3d11_test,d3d12_test,dxgi_test,vulkan_test,comdlg32_test,user32_dialog_test --report artifacts/torture/expanded-wine-report.json --audit-dir artifacts/torture/expanded-wine --timeout-ms 120000 --max-slices 200
+        run: |
+          test "${{ steps.expanded-build.outcome }}" = success
+          set -o pipefail
+          node tests/wine64/run-wine64.mjs --only d3d9_test,d3d11_test,d3d12_test,dxgi_test,vulkan_test,comdlg32_test,user32_dialog_test --report artifacts/torture/expanded-wine-report.json --audit-dir artifacts/torture/expanded-wine --timeout-ms 120000 --max-slices 200 2>&1 | tee artifacts/torture/expanded-wine-runner.log
       - name: Preserve raw evidence
         if: always()
         env: {GH_TOKEN: '${{ github.token }}'}
@@ -233,7 +245,7 @@ jobs:
         with: {node-version: 22}
       - uses: actions/download-artifact@v4
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 meson ninja-build glslang-tools wine-tools
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 meson ninja-build glslang-tools wine64-tools
       - name: Build pinned upstream internal D3D12 tests
         run: node scripts/build-vkd3d-tests.mjs
       - name: Execute root-signature/descriptor/PSO subset in VMM

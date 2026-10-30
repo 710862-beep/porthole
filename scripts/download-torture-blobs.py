@@ -12,9 +12,10 @@ pointers=[]
 for a in annotations:
  if a.get('title')=='Porthole torture transfer':pointers.append(json.loads(a['message']))
 root=Path('artifacts/remote')/run;root.mkdir(parents=True,exist_ok=True)
+latest={}
+for ptr in pointers: latest[ptr['job']]=ptr
 seen=set()
-for ptr in pointers:
- if ptr['job'] in seen:continue
+for ptr in latest.values():
  seen.add(ptr['job'])
  b=api(f"repos/{repo}/git/blobs/{ptr['manifestBlob']}");data=base64.b64decode(b['content'])
  assert len(data)==ptr['bytes'] and hashlib.sha256(data).hexdigest()==ptr['sha256']

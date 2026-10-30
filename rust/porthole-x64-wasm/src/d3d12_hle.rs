@@ -1307,6 +1307,34 @@ impl D3d12Subsystem {
             (ComKind::D3dBlob, 4) => self.objects.get(&this).map(|o| o.blob_size as u64).unwrap_or(0),
 
             // IDXGIFactory / IDXGIFactory2 / IDXGIFactory4
+            (ComKind::DxgiOutput, 6) => {
+                // IDXGIObject::GetParent: an output belongs to its enumerating adapter.
+                let out = args[2];
+                if args[1] == 0 || out == 0 { return E_POINTER as u64; }
+                let parent = self.objects.get(&this).map(|o| o.parent_device).unwrap_or(0);
+                let kind = self.objects.get(&parent).map(|o| o.kind);
+                let iid = Self::read_guid(vmm, args[1]);
+                if kind != Some(ComKind::DxgiAdapter) || !Self::supports_iid(ComKind::DxgiAdapter, &iid) {
+                    let _ = vmm.write_u64(out, 0);
+                    return E_NOINTERFACE as u64;
+                }
+                self.add_ref(parent);
+                let _ = vmm.write_u64(out, parent);
+                S_OK as u64
+            }
+            (ComKind::DxgiSwapChain, 15) => {
+                // GetContainingOutput: the virtual desktop has one attached output.
+                let out = args[1];
+                if out == 0 { return E_POINTER as u64; }
+                if !self.objects.contains_key(&this) {
+                    let _ = vmm.write_u64(out, 0);
+                    return DXGI_ERROR_INVALID_CALL as u64;
+                }
+                let adapter = self.create_com_object(vmm, ComKind::DxgiAdapter, 0);
+                let output = self.create_com_object(vmm, ComKind::DxgiOutput, adapter);
+                let _ = vmm.write_u64(out, output);
+                S_OK as u64
+            }
             (ComKind::DxgiFactory, 7) | (ComKind::DxgiFactory, 12) => {
                 // EnumAdapters / EnumAdapters1 (this, idx, ppAdapter)
                 let idx = args[1] as u32;
@@ -1433,7 +1461,7 @@ impl D3d12Subsystem {
                     }
                     return DXGI_ERROR_NOT_FOUND as u64;
                 }
-                let out_ptr = self.create_com_object(vmm, ComKind::DxgiOutput, 0);
+                let out_ptr = self.create_com_object(vmm, ComKind::DxgiOutput, this);
                 let _ = vmm.write_u64(out_output, out_ptr);
                 S_OK as u64
             }
@@ -1491,7 +1519,10 @@ impl D3d12Subsystem {
                     let _ = vmm.write_bytes(desc_ptr, &zero);
                     let _ = vmm.write_u32(desc_ptr + 72, 1920);
                     let _ = vmm.write_u32(desc_ptr + 76, 1080);
+                    let name: Vec<u16> = "\\\\.\\DISPLAY1".encode_utf16().collect();
+                    for (i, &ch) in name.iter().enumerate() { let _ = vmm.write_u16(desc_ptr + i as u64 * 2, ch); }
                     let _ = vmm.write_u32(desc_ptr + 80, 1); // AttachedToDesktop
+                    let _ = vmm.write_u32(desc_ptr + 84, 1); // DXGI_MODE_ROTATION_IDENTITY
                 }
                 S_OK as u64
             }
