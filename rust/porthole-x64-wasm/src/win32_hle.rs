@@ -1516,7 +1516,7 @@ impl Win32Kernel {
         // Resolve well-known d3d12/dxgi entry points first.
         match (dll, symbol) {
             ("dxcore.dll", "DXCoreCreateAdapterFactory") => {
-                self.d3d12.dxcore_create_adapter_factory(vmm, args[0], args[1])
+                return HleAction::Return(self.d3d12.dxcore_create_adapter_factory(vmm, args[0], args[1]));
             }
             ("d3d12.dll", "D3D12CreateDevice") => {
                 return HleAction::Return(
