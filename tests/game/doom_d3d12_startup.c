@@ -18,21 +18,52 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*
+ * `/blockstage:N` makes the process stop *before* stage N and emit the same one-line failure
+ * report a real failure produces. It exists so the report path itself is measured in CI instead of
+ * only being exercised when something breaks.
+ */
+static int g_block_stage = 0;
+
+static void block_stage(int n, const char *api)
+{
+    printf("STAGE_FAIL n=%d api=%s hr=0x887a0001 last_error=0 "
+           "expected=\"S_OK (stage %d completes)\" actual=\"hr=0x887a0001 ptr=NULL\" "
+           "fix=\"simulated blocked stage (--blockstage) for failure-report validation\"\n",
+           n, api, n);
+    fflush(stdout);
+    ExitProcess((UINT)n);
+}
 
 #define STAGE(n, api)                                    \
     do                                                   \
     {                                                    \
+        if (g_block_stage == (n))                        \
+            block_stage((n), (api));                     \
         printf("STAGE %d: %s\n", (n), (api));            \
         fflush(stdout);                                  \
     } while (0)
 
-#define FAIL(n, api, hr)                                                    \
-    do                                                                      \
-    {                                                                       \
-        printf("STAGE_FAIL n=%d api=%s hr=0x%08lx last_error=%lu\n",        \
-               (n), (api), (unsigned long)(hr), (unsigned long)GetLastError()); \
-        fflush(stdout);                                                     \
-        ExitProcess((UINT)(n));                                             \
+/*
+ * One line, four fields, enough to act on without reading any emulator source:
+ *
+ *   STAGE_FAIL n=13 api=... hr=... last_error=... expected=... actual=... fix=...
+ *
+ * `expected` is what a working D3D12 driver returns, `actual` is what this run produced, and
+ * `fix` names the emulator subsystem that has to grow for the stage to pass.
+ */
+#define FAIL_EX(n, api, hr, expected, fix)                                      \
+    do                                                                          \
+    {                                                                           \
+        printf("STAGE_FAIL n=%d api=%s hr=0x%08lx last_error=%lu "              \
+               "expected=\"%s\" actual=\"hr=0x%08lx ptr=NULL\" fix=\"%s\"\n",     \
+               (n), (api), (unsigned long)(hr), (unsigned long)GetLastError(),  \
+               (expected), (unsigned long)(hr), (fix));                         \
+        fflush(stdout);                                                         \
+        ExitProcess((UINT)(n));                                                 \
     } while (0)
 
 /* A minimal, hand-written DXBC container: magic + version + size + zero chunks. It is enough for
@@ -84,6 +115,13 @@ int main(void)
 
     (void)unused;
 
+    {
+        const char *cmd = GetCommandLineA();
+        const char *hit = cmd ? strstr(cmd, "/blockstage:") : NULL;
+        if (hit)
+            g_block_stage = atoi(hit + 12);
+    }
+
     printf("DOOM_STARTUP_BEGIN\n");
     fflush(stdout);
 
@@ -92,18 +130,18 @@ int main(void)
     hwnd = CreateWindowExW(0, L"PortholeGameWindow", L"PORTHOLE", WS_OVERLAPPEDWINDOW,
                            0, 0, 1280, 720, NULL, NULL, NULL, NULL);
     if (!hwnd)
-        FAIL(1, "CreateWindowExW", -1);
+        FAIL_EX(1, "CreateWindowExW", -1, "hwnd != NULL from CreateWindowExW", "Win32 HLE: CreateWindowExW must allocate a window object");
 
     /* ---------------------------------------------------------------- dxgi ------------ */
     STAGE(2, "CreateDXGIFactory2(IID_IDXGIFactory4)");
     hr = CreateDXGIFactory2(0, &IID_IDXGIFactory4, (void **)&factory);
     if (FAILED(hr) || !factory)
-        FAIL(2, "CreateDXGIFactory2", hr);
+        FAIL_EX(2, "CreateDXGIFactory2", hr, "S_OK and a non-NULL IDXGIFactory4", "D3D12 HLE: CreateDXGIFactory2 -> create_dxgi_factory");
 
     STAGE(3, "IDXGIFactory1::EnumAdapters1(0)");
     hr = IDXGIFactory1_EnumAdapters1(factory, 0, &adapter);
     if (FAILED(hr) || !adapter)
-        FAIL(3, "IDXGIFactory1::EnumAdapters1", hr);
+        FAIL_EX(3, "IDXGIFactory1::EnumAdapters1", hr, "S_OK and a non-NULL IDXGIAdapter1", "D3D12 HLE: IDXGIFactory1::EnumAdapters1 (slot 12) must answer an adapter object");
     {
         DXGI_ADAPTER_DESC1 desc;
         ZeroMemory(&desc, sizeof(desc));
@@ -119,7 +157,7 @@ int main(void)
     hr = D3D12CreateDevice((IUnknown *)adapter, D3D_FEATURE_LEVEL_12_0, &IID_ID3D12Device,
                            (void **)&device);
     if (FAILED(hr) || !device)
-        FAIL(4, "D3D12CreateDevice", hr);
+        FAIL_EX(4, "D3D12CreateDevice", hr, "S_OK and a non-NULL ID3D12Device", "D3D12 HLE: D3D12CreateDevice / supports_iid(ID3D12Device)");
 
     STAGE(5, "ID3D12Device::CheckFeatureSupport(FeatureLevels)");
     {
@@ -143,25 +181,25 @@ int main(void)
     hr = ID3D12Device_CreateCommandQueue(device, &qdesc, &IID_ID3D12CommandQueue,
                                          (void **)&queue);
     if (FAILED(hr) || !queue)
-        FAIL(6, "ID3D12Device::CreateCommandQueue", hr);
+        FAIL_EX(6, "ID3D12Device::CreateCommandQueue", hr, "S_OK and a non-NULL ID3D12CommandQueue", "D3D12 HLE: ID3D12Device::CreateCommandQueue (slot 8)");
 
     STAGE(7, "ID3D12Device::CreateCommandAllocator(DIRECT)");
     hr = ID3D12Device_CreateCommandAllocator(device, D3D12_COMMAND_LIST_TYPE_DIRECT,
                                              &IID_ID3D12CommandAllocator, (void **)&allocator);
     if (FAILED(hr) || !allocator)
-        FAIL(7, "ID3D12Device::CreateCommandAllocator", hr);
+        FAIL_EX(7, "ID3D12Device::CreateCommandAllocator", hr, "S_OK and a non-NULL ID3D12CommandAllocator", "D3D12 HLE: ID3D12Device::CreateCommandAllocator (slot 9)");
 
     STAGE(8, "ID3D12Device::CreateCommandList");
     hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator,
                                         NULL, &IID_ID3D12GraphicsCommandList, (void **)&list);
     if (FAILED(hr) || !list)
-        FAIL(8, "ID3D12Device::CreateCommandList", hr);
+        FAIL_EX(8, "ID3D12Device::CreateCommandList", hr, "S_OK and a non-NULL ID3D12GraphicsCommandList", "D3D12 HLE: ID3D12Device::CreateCommandList (slot 12)");
 
     STAGE(9, "ID3D12Device::CreateFence(0, FLAG_NONE)");
     hr = ID3D12Device_CreateFence(device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence,
                                   (void **)&fence);
     if (FAILED(hr) || !fence)
-        FAIL(9, "ID3D12Device::CreateFence", hr);
+        FAIL_EX(9, "ID3D12Device::CreateFence", hr, "S_OK and a non-NULL ID3D12Fence", "D3D12 HLE: ID3D12Device::CreateFence (slot 36)");
 
     /* ---------------------------------------------------------------- descriptors ----- */
     ZeroMemory(&heap_desc, sizeof(heap_desc));
@@ -171,7 +209,7 @@ int main(void)
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap,
                                            (void **)&rtv_heap);
     if (FAILED(hr) || !rtv_heap)
-        FAIL(10, "ID3D12Device::CreateDescriptorHeap", hr);
+        FAIL_EX(10, "ID3D12Device::CreateDescriptorHeap", hr, "S_OK and a non-NULL ID3D12DescriptorHeap", "D3D12 HLE: ID3D12Device::CreateDescriptorHeap (slot 14) with real descriptor memory");
     rtv_stride = ID3D12Device_GetDescriptorHandleIncrementSize(device,
                                                                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     printf("  rtv_stride=%u\n", rtv_stride);
@@ -184,12 +222,12 @@ int main(void)
     hr = D3D12SerializeRootSignature(&rs_desc /* zeroed: an empty root signature */,
                                      D3D_ROOT_SIGNATURE_VERSION_1, &sig_blob, &err_blob);
     if (FAILED(hr) || !sig_blob)
-        FAIL(11, "D3D12SerializeRootSignature", hr);
+        FAIL_EX(11, "D3D12SerializeRootSignature", hr, "S_OK, a non-NULL root signature and a usable DXBC blob", "D3D12 HLE: D3D12SerializeRootSignature must return a real DXBC root signature, not a 16-byte stub");
     hr = ID3D12Device_CreateRootSignature(device, 0, ID3D10Blob_GetBufferPointer(sig_blob),
                                           ID3D10Blob_GetBufferSize(sig_blob),
                                           &IID_ID3D12RootSignature, (void **)&root_sig);
     if (FAILED(hr) || !root_sig)
-        FAIL(11, "ID3D12Device::CreateRootSignature", hr);
+        FAIL_EX(11, "ID3D12Device::CreateRootSignature", hr, "S_OK, a non-NULL root signature and a usable DXBC blob", "D3D12 HLE: D3D12SerializeRootSignature must return a real DXBC root signature, not a 16-byte stub");
     ID3D10Blob_Release(sig_blob);
     sig_blob = NULL;
 
@@ -210,7 +248,7 @@ int main(void)
     hr = ID3D12Device_CreateGraphicsPipelineState(device, &pso_desc, &IID_ID3D12PipelineState,
                                                   (void **)&pso);
     if (FAILED(hr) || !pso)
-        FAIL(12, "ID3D12Device::CreateGraphicsPipelineState", hr);
+        FAIL_EX(12, "ID3D12Device::CreateGraphicsPipelineState", hr, "S_OK and a non-NULL ID3D12PipelineState", "D3D12 HLE: CreateGraphicsPipelineState (slot 10) including DXBC parsing");
 
     /* ---------------------------------------------------------------- swap chain ----- */
     ZeroMemory(&sc_desc, sizeof(sc_desc));
@@ -226,12 +264,12 @@ int main(void)
     hr = IDXGIFactory4_CreateSwapChainForHwnd(factory, (IUnknown *)queue, hwnd, &sc_desc, NULL,
                                               NULL, &sc1);
     if (FAILED(hr) || !sc1)
-        FAIL(13, "IDXGIFactory4::CreateSwapChainForHwnd", hr);
+        FAIL_EX(13, "IDXGIFactory4::CreateSwapChainForHwnd", hr, "S_OK and a non-NULL IDXGISwapChain1", "D3D12 HLE: IDXGIFactory4::CreateSwapChainForHwnd (slot 15)");
 
     STAGE(14, "IDXGISwapChain1::QueryInterface(IID_IDXGISwapChain3)");
     hr = IDXGISwapChain1_QueryInterface(sc1, &IID_IDXGISwapChain3, (void **)&swapchain);
     if (FAILED(hr) || !swapchain)
-        FAIL(14, "IDXGISwapChain1::QueryInterface(IDXGISwapChain3)", hr);
+        FAIL_EX(14, "IDXGISwapChain1::QueryInterface(IDXGISwapChain3)", hr, "S_OK and a non-NULL IDXGISwapChain3", "D3D12 HLE: QueryInterface must accept IID_IDXGISwapChain3");
 
     /* ---------------------------------------------------------------- back buffers --- */
     for (i = 0; i < 2; i++)
@@ -240,7 +278,7 @@ int main(void)
         hr = IDXGISwapChain3_GetBuffer(swapchain, (UINT)i, &IID_ID3D12Resource,
                                        (void **)&backbuffer[i]);
         if (FAILED(hr) || !backbuffer[i])
-            FAIL(15, "IDXGISwapChain::GetBuffer", hr);
+            FAIL_EX(15, "IDXGISwapChain::GetBuffer", hr, "S_OK and a non-NULL ID3D12Resource back buffer", "D3D12 HLE: IDXGISwapChain::GetBuffer (slot 9) with real backing surfaces");
 
         STAGE(16, "ID3D12Device::CreateRenderTargetView");
         rtv_handle = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(rtv_heap);
@@ -296,7 +334,7 @@ int main(void)
     STAGE(25, "IDXGISwapChain::Present(1, 0)");
     hr = IDXGISwapChain3_Present(swapchain, 1, 0);
     if (FAILED(hr))
-        FAIL(25, "IDXGISwapChain::Present", hr);
+        FAIL_EX(25, "IDXGISwapChain::Present", hr, "S_OK from Present(1, 0)", "D3D12 HLE: IDXGISwapChain::Present (slot 8) must produce a frame");
 
     printf("DOOM_STARTUP_FRAME_PRESENTED\n");
     printf("DOOM_STARTUP_BACKBUFFER_INDEX %u\n",

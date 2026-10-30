@@ -83,7 +83,7 @@ jobs:
             elif [ -f "$img" ]; then
               ./rust/porthole-x64-wasm/target/release/xtrace "$img" \
                 --budget 4000000 --slice 200000 --trace 400 --no-watch \
-                --args "C:\\Game\\$(basename "$img")" "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
+                --args "C:\\Game\\$(basename "$img")${GAME_EXTRA_ARGS:-}" "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
             else
               echo "fixture missing" >> "$out"
             fi
@@ -111,6 +111,10 @@ jobs:
           run_game tests/assets/game/game_startup.exe
           run_game tests/assets/game/doom_d3d12_startup.exe
           run_game tests/assets/game/doom_d3d12_startup.exe hle --hle-only --trace 400
+          # The failure-report path itself: stops before CreateSwapChainForHwnd and prints
+          # API / expected / actual / fix, then exits 13.
+          GAME_EXTRA_ARGS=' /blockstage:13' \
+            run_game tests/assets/game/doom_d3d12_blocked.exe blocked --hle-only --trace 200
           wc -l trace.log
       - name: Publish each fixture trace through the Checks API
         if: always()

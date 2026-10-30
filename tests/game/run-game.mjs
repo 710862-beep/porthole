@@ -69,13 +69,19 @@ async function loadEmulator(wasmDir) {
 
 /** Parses the guest console for the fixture's own stage markers. */
 function parseStage(consoleText) {
-  const failed = /STAGE_FAIL n=(\d+) api=([^\s]+) hr=(0x[0-9a-f]+) last_error=(\d+)/i.exec(consoleText);
+  const failed =
+    /STAGE_FAIL n=(\d+) api=(\S+) hr=(0x[0-9a-f]+) last_error=(\d+)(?: expected="([^"]*)" actual="([^"]*)" fix="([^"]*)")?/i.exec(
+      consoleText
+    );
   if (failed) {
     return {
       failedStage: Number(failed[1]),
       failedApi: failed[2],
       hresult: failed[3],
       lastError: Number(failed[4]),
+      expected: failed[5] ?? null,
+      actual: failed[6] ?? null,
+      fix: failed[7] ?? null,
       lastStage: null,
     };
   }
@@ -127,7 +133,7 @@ async function runOne(binding, entry, options) {
   emu.vfs_insert(`C:\\Game\\${entry.name}`, new Uint8Array(bytes));
 
   item.load = JSON.parse(emu.load_pe(new Uint8Array(bytes)));
-  emu.set_command_line(`C:\\Game\\${entry.name}`);
+  emu.set_command_line(entry.commandLine || `C:\\Game\\${entry.name}`);
 
   const pageCache = new Map();
   let done = null;
@@ -209,6 +215,14 @@ async function runOne(binding, entry, options) {
 
   if (done === 'exit') {
     const marker = entry.expect?.marker;
+    if (entry.expect?.stageBlocked) {
+      // Deliberate stop at a named stage: the point is the report, not the exit code.
+      item.status = item.stage.failedStage ? 'STAGE_BLOCKED' : 'FAIL';
+      item.error = item.stage.failedStage
+        ? `stage ${item.stage.failedStage} ${item.stage.failedApi} hr=${item.stage.hresult}`
+        : 'expected a STAGE_FAIL report, none found';
+      return item;
+    }
     const markerSeen = !marker || item.console.includes(marker);
     if (item.exitCode === entry.expect?.exitCode && markerSeen) {
       item.status = 'PASS';
@@ -254,6 +268,12 @@ function printBlock(item) {
   if (item.unimplementedApis.length) say(`    unimplemented win32: ${item.unimplementedApis.join(' ')}`);
   if (item.unimplementedMethods.length) say(`    unimplemented com:   ${item.unimplementedMethods.join(' ')}`);
   if (item.stage?.lastStage) say(`    last stage: ${item.stage.lastStage.stage} ${item.stage.lastStage.api}`);
+  if (item.stage?.failedStage) {
+    say(`    FAILED STAGE ${item.stage.failedStage}: ${item.stage.failedApi} hr=${item.stage.hresult} last_error=${item.stage.lastError}`);
+    if (item.stage.expected) say(`      expected: ${item.stage.expected}`);
+    if (item.stage.actual) say(`      actual:   ${item.stage.actual}`);
+    if (item.stage.fix) say(`      fix:      ${item.stage.fix}`);
+  }
   const all = item.console.split('\n').filter(Boolean);
   // Short consoles are printed whole; long ones are filtered down to the fixture's own markers.
   const lines = all.length <= 40

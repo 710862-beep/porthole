@@ -39,6 +39,16 @@ const SPECS = [
     libs: ['-lkernel32'],
   },
   {
+    // Same image code, stopped before stage 13, so the failure-report format is measured in CI
+    // rather than only appearing when a real regression happens.
+    name: 'doom_d3d12_blocked.exe',
+    source: 'tests/game/doom_d3d12_startup.c',
+    description: 'D3D12 boot that deliberately stops before CreateSwapChainForHwnd',
+    commandLine: 'C:\\Game\\doom_d3d12_blocked.exe /blockstage:13',
+    expect: { exitCode: 13, stageBlocked: true },
+    libs: ['-ld3d12', '-ldxgi', '-lkernel32', '-luuid'],
+  },
+  {
     name: 'doom_d3d12_startup.exe',
     source: 'tests/game/doom_d3d12_startup.c',
     description: 'DOOM-2016-shaped D3D12 boot: factory→device→queue→PSO→swapchain→Present',
