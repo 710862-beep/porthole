@@ -137,6 +137,7 @@
             this.stats.executedBlocks += 1;
             this.stats.executedInstructions += meta.insnCount;
             remaining = Math.max(0, remaining - meta.insnCount);
+            status = 'next';
           } else if (commit.startsWith('page-fault:')) {
             this.stats.commitPageFaults += 1;
             await this.drainPending();

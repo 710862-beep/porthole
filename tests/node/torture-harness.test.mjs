@@ -66,6 +66,15 @@ test('JIT trap invalidates the active artifact and counts only fallback instruct
   assert.match(host.stats.lastTrap, /Wasm memory export unavailable|CompileError|missing/);
 });
 
+test('JIT budget exhaustion returns next, not the internal jit handoff status', async () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const emu = fakeEmu();
+  const host = new X64JitHost(emu, {}, { memory });
+  const status = await host.runSlice(1);
+  assert.equal(status, 'next');
+  assert.equal(host.stats.executedBlocks, 1);
+});
+
 test('core JIT validation fault replays the block in the interpreter', async () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const emu = fakeEmu({ commitFault: true });
