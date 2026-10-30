@@ -260,3 +260,29 @@ and Sleep/tick coherence. DialogBox/TaskDialog and comdlg32 file dialogs remain 
   `widl` path. Full VKD3D/CTS builds and lanes remain pending.
 - Evidence downloader now merges all per-job transfer manifests instead of keeping only the last,
   so candidate Wasm and diagnostics from the same job are both recovered.
+
+### Verified retest at `bf5fcd9` (torture run `41113063354`)
+
+- Native core **SUCCESS**; candidate Wasm published and downloaded (SHA-256 verified).
+- **pafish: findings reduced 10 → 5.** The multi-core PEB/GetSystemInfo, 512 GiB disk,
+  Sleep/GetTickCount coherence, uptime and mouse-presence fixes are verified by the upstream
+  guest now reporting OK for those checks. Remaining BAD findings are interactive/input-path
+  checks: mouse movement, mouse speed, mouse click activity, mouse double click activity,
+  plausible dialog confirmation. (A deterministic virtual pointer profile was added afterwards
+  to exercise movement/speed through GetCursorPos; pending rerun.)
+- **Wine d3d12:** `ID3D12Resource::GetDevice` no longer returns E_NOTIMPL; the guest progressed
+  to `CopyTextureRegion`/`Close`. The lane then hit a **resident-page thrash timeout**:
+  telemetry showed `residentLimit=1024` while the pinned working set (2 MiB stack + 2 MiB COM
+  heap + image/PEB/thunks) exceeded 1024 pages, so every slice ended in a page fault. Root cause
+  fixed by raising the Wine/Doom/browser resident budget to 8192 pages (32 MiB). Local retest with
+  8192 pages advanced to **20,000,000 instructions with 0 page faults**, reaching
+  `test_swapchain_refcount` (`d3d12.c:1157+`).
+- **Wine todo semantics:** the refcount assertions at `d3d12.c:1157/1169/1174/1179/1185/1188`
+  are `todo_wine` checks where Porthole returned the Windows-correct refcount (2/3). Wine counts
+  a todo success as a failure; the observer/runner now distinguish `todo-success`
+  (Windows-correct) from real compatibility failures, while still recording exact
+  expression/expected/actual. This is not a relaxation of non-todo assertions.
+- **Expanded Wine:** d3d11 compile advanced past DXVA headers; link failed on `NtQueryObject`.
+  Fixed by linking `-lntdll`. Pending rerun.
+- **al-khaser:** unchanged 14 findings / GUEST_FAULT at SharedUserData KdDebuggerEnabled;
+  trap-flag, PAGE_GUARD, NtYieldExecution and SystemKernelDebuggerInformation remain open.

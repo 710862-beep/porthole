@@ -244,8 +244,7 @@ async function main() {
   ]) emu.vfs_mkdir(dir);
   emu.vfs_insert('C:\\Game\\chocolate-doom.exe', new Uint8Array(exeBytes));
   emu.vfs_insert('C:\\Game\\DOOM2.WAD', new Uint8Array(wadBytes));
-  emu.enable_trace?.(2000);
-  emu.set_hle_trace_only?.(true);
+  if (process.env.PORTHOLE_DOOM_TRACE !== '0') { emu.enable_trace?.(2000); emu.set_hle_trace_only?.(true); }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
   emu.set_exe_path?.('C:\\Game\\chocolate-doom.exe');
   emu.set_command_line(`C:\\Game\\chocolate-doom.exe ${guestArgs}`);
