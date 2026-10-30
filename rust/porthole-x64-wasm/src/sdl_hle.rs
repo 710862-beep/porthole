@@ -360,6 +360,32 @@ impl Win32Kernel {
         self.sdl.presented_frames += 1;
     }
 
+    /// Surface info with pixels/pitch refreshed from the guest SDL_Surface struct. Real SDL
+    /// operates on the application-visible struct, and applications (Chocolate Doom's
+    /// I_FinishUpdate) legally rewrite its pixels/pitch fields — Chocolate locks its
+    /// streaming texture DIRECTLY into &argbbuffer->pixels/&argbbuffer->pitch and then blits
+    /// the paletted screen into the texture through that surface. Trusting creation-time
+    /// values here made every blit write into a dead buffer (pitch=0) and produced constant
+    /// presented frames while the simulation ran perfectly.
+    fn sdl_surface_live(
+        &self,
+        vmm: &mut VirtualMemoryManager,
+        surf: u64,
+    ) -> Option<SdlSurfaceInfo> {
+        let mut s = self.sdl.surfaces.get(&surf).cloned()?;
+        if let Ok(p) = vmm.read_u64(surf + 32) {
+            if p != 0 {
+                s.pixels = p;
+            }
+        }
+        if let Ok(p) = vmm.read_u32(surf + 24) {
+            if p != 0 {
+                s.pitch = p as i32;
+            }
+        }
+        Some(s)
+    }
+
     fn sdl_present_surface(&mut self, vmm: &mut VirtualMemoryManager, surf: u64) {
         if let Some(s) = self.sdl.surfaces.get(&surf).cloned() {
             self.sdl_capture_pixels(
@@ -930,7 +956,7 @@ impl Win32Kernel {
                 tex
             }
             "SDL_CreateTextureFromSurface" => {
-                let s = match self.sdl.surfaces.get(&a1).cloned() {
+                let s = match self.sdl_surface_live(vmm, a1) {
                     Some(s) => s,
                     None => return 0,
                 };
@@ -1206,7 +1232,7 @@ impl Win32Kernel {
                 0
             }
             "SDL_FillRect" => {
-                if let Some(s) = self.sdl.surfaces.get(&a0).cloned() {
+                if let Some(s) = self.sdl_surface_live(vmm, a0) {
                     let (rx, ry, rw, rh) = if a1 != 0 {
                         (
                             vmm.read_u32(a1).unwrap_or(0) as i32,
@@ -1236,8 +1262,8 @@ impl Win32Kernel {
             "SDL_UpperBlit" | "SDL_LowerBlit" | "SDL_UpperBlitScaled" | "SDL_LowerBlitScaled" => {
                 // SDL_BlitSurface(src=a0, srcrect=a1, dst=a2, dstrect=a3)
                 let (src, dst) = match (
-                    self.sdl.surfaces.get(&a0).cloned(),
-                    self.sdl.surfaces.get(&a2).cloned(),
+                    self.sdl_surface_live(vmm, a0),
+                    self.sdl_surface_live(vmm, a2),
                 ) {
                     (Some(s), Some(d)) => (s, d),
                     _ => return (-1i64) as u64,
