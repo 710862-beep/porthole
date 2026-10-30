@@ -45,7 +45,7 @@ pub struct BrowserX64Emulator {
     status: RunStatus,
     fault_message: String,
     pending_upcall: bool,
-    modal_pending: Option<(u64, String, String, Vec<u64>, Vec<Option<Vec<u8>>>)>,
+    modal_pending: Option<(u64, String, String, [u64; 10], Vec<String>)>,
     frames_presented_seen: u64,
     console: Vec<u8>,
     /// Instruction-level execution trace (see [`BrowserX64Emulator::enable_trace`]).
@@ -454,7 +454,7 @@ impl BrowserX64Emulator {
                             }
                             HleAction::Modal { request_json } => {
                                 let api = format!("{dll}!{symbol}");
-                                self.modal_pending = Some((rsp, request_json, api, args.to_vec(), audit_before));
+                                self.modal_pending = Some((rsp, request_json, api, args, audit_before));
                                 self.status = RunStatus::Running;
                                 self.trace_event(format!("M 0x{:x} {} modal pending", insn_rip, api));
                                 self.drain_watch();
