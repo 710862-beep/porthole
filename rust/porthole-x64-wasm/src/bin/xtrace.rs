@@ -183,6 +183,13 @@ fn main() {
             print!("{}", emu.peek_qwords(*addr, 4));
         }
     }
+    println!("--- hle histogram (top 40) ---");
+    println!("{}", emu.hle_histogram(40));
+    let missing = emu.unimplemented_symbols();
+    if !missing.is_empty() {
+        println!("--- unimplemented symbols ---");
+        println!("{missing}");
+    }
     let console = emu.take_console();
     if !console.is_empty() {
         println!("--- guest console ---");

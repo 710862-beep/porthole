@@ -238,6 +238,10 @@ pub struct Win32Kernel {
     export_thunk_next: u64,
     /// Diagnostics emitted from inside an HLE handler; the driver drains these into its trace.
     pub hle_notes: Vec<String>,
+    /// How often each imported symbol was called (published as a histogram by the trace driver).
+    pub hle_calls: HashMap<String, u64>,
+    /// Symbols that reached the default arm, i.e. the guest called an API nobody implemented.
+    pub hle_unimplemented: Vec<String>,
 }
 
 impl Win32Kernel {
@@ -285,6 +289,8 @@ impl Win32Kernel {
             tzname_ptr: 0,
             export_thunk_next: 0,
             hle_notes: Vec::new(),
+            hle_calls: HashMap::new(),
+            hle_unimplemented: Vec::new(),
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -337,6 +343,29 @@ impl Win32Kernel {
         if self.hle_notes.len() < 100_000 {
             self.hle_notes.push(line);
         }
+    }
+
+    /// Records a symbol that reached the default dispatch arm.
+    fn record_unimplemented(&mut self, symbol: &str) {
+        if self.hle_unimplemented.len() < 512 && !self.hle_unimplemented.iter().any(|s| s == symbol) {
+            self.hle_unimplemented.push(symbol.to_string());
+        }
+    }
+
+    /// `symbol=count` lines, most-called first.
+    pub fn hle_histogram(&self, top: usize) -> String {
+        let mut pairs: Vec<(&String, &u64)> = self.hle_calls.iter().collect();
+        pairs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        pairs
+            .into_iter()
+            .take(top)
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn unimplemented_symbols(&self) -> String {
+        self.hle_unimplemented.join(" ")
     }
 
     pub fn set_last_error(&mut self, err: u32) {
@@ -706,7 +735,7 @@ impl Win32Kernel {
             return 0;
         }
         if atom == 0 || atom > 0xFFFF {
-            self.set_last_error(ERROR_INVALID_HANDLE);
+            self.set_last_error(ERROR_INVALID_PARAMETER);
             return 0;
         }
         let name = if atom <= 0xBFFF {
@@ -715,7 +744,7 @@ impl Win32Kernel {
             match self.atoms_local.name_of(atom as u16) {
                 Some(n) => n.to_string(),
                 None => {
-                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
                     return 0;
                 }
             }
@@ -768,7 +797,23 @@ impl Win32Kernel {
         };
         let units: Vec<u16> = name.encode_utf16().collect();
         let len = units.len() as u64;
-        // The wide variant copies as many characters as fit *without* requiring room for the
+        if !global {
+            // `GetAtomNameW` truncates like its ANSI sibling: count-1 characters plus a terminator,
+            // returning the copied count (atom.c:433-435).
+            let n = len.min(count.saturating_sub(1)) as usize;
+            let mut buf = Vec::with_capacity((n + 1) * 2);
+            for u in &units[..n] {
+                buf.extend_from_slice(&u.to_le_bytes());
+            }
+            buf.extend_from_slice(&[0, 0]);
+            let _ = vmm.write_bytes(buffer, &buf);
+            if len >= count {
+                self.set_last_error(ERROR_MORE_DATA);
+                return n as u64;
+            }
+            return len;
+        }
+        // `GlobalGetAtomNameW` copies as many characters as fit *without* needing room for the
         // terminator, and only reports ERROR_MORE_DATA when it actually truncated
         // (atom.c:212-214, 273).
         let n = len.min(count) as usize;
@@ -831,6 +876,7 @@ impl Win32Kernel {
         guest_rsp: u64,
         call_rip: u64,
     ) -> HleAction {
+        *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
         let a0 = args[0];
         let a1 = args[1];
         let a2 = args[2];
@@ -2491,6 +2537,7 @@ impl Win32Kernel {
             // ----------------------------------------------- d3d12 / dxgi objects
             _ => {
                 let _ = (a4, a5, a6, a7, a8, ordinal);
+                self.record_unimplemented(symbol);
                 self.set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
                 0
             }

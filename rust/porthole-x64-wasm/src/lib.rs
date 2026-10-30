@@ -597,6 +597,16 @@ impl BrowserX64Emulator {
 
     /// Arms a data breakpoint over `[lo, hi)`; every guest/HLE store into that window is emitted
     /// into the execution trace as a `W` line with the value written and the writing RIP.
+    /// `symbol=count` histogram of the APIs the guest actually called.
+    pub fn hle_histogram(&self, top: usize) -> String {
+        self.kernel.hle_histogram(top)
+    }
+
+    /// Symbols the guest called that fell through to the "not implemented" default arm.
+    pub fn unimplemented_symbols(&self) -> String {
+        self.kernel.unimplemented_symbols()
+    }
+
     /// Keep only HLE (`H`/`U`/`R`/`E`) events in the trace ring buffer.
     ///
     /// A 22 000-instruction run overflows a 260-line buffer long before the interesting API call,
