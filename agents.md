@@ -1,5 +1,51 @@
 # agents.md — Porthole Runtime
 
+## Active phase — Foundation complete, UI handoff · 2026-10-30
+
+**Read `docs/HANDOFF-PACKAGE.md` first.** Then `docs/FINAL-STATUS-REPORT.md`,
+`docs/HANDBOOK.md`, `ARCHITECTURE.md`, `docs/KNOWN-ISSUES.md`.
+
+State of the world (measured, CI): Gate 1 Tier A ✅ · Gate 1 Tier B ✅ · Gate 2 ✅
+(Chocolate Doom: 2,664 gametics == Wine 9.0; title frame 64,000/64,000 px vs independent
+decode) · Gate 3 ⏳ coded in `tests/gate3/`, never run · Gate 4 ⏳ probe in
+`gate4-probe.html`, needs the physical Chromebook · Gate 5 ⚠️ 6/7 (`environ` 38 failures,
+itemisation first). All numbers so far are Node on Azure CI — never present them as
+Chrome/Chromebook results.
+
+Architecture in one breath: Rust/Wasm x86-64 interpreter + software-MMU VMM (sparse VA,
+LRU resident window, dirty-page eviction to host shards) + PE32+ loader + Win32/SDL2 HLE
+with a real compositor; browser layer (`x64.html`, `js/x64-app.js`) mounts storage
+(File System Access → OPFS fallback), pumps drain/supply and frames; new product shell
+in `ui/` (Game Store + Desktop modes around that runtime; contracts in
+`ui/runtime/contracts.ts`). Dependency rules + the planned (not yet executed) directory
+move live in `ARCHITECTURE.md`; guard: `node scripts/check-boundaries.mjs`.
+
+Non-negotiables inherited by every agent here:
+1. **Evidence discipline.** Unmodified, hash-pinned third-party binaries for
+   compatibility claims; authored fixtures are harnesses, never proof. Separate
+   AUTHORING / EXECUTION / RENDERING / GAMEPLAY. A frame counts only if every byte came
+   from the guest. Fail-closed runners that name blockers; never loosen one to go green.
+2. **Gate order.** 1 → 2 → 3 → 4 → 5; UI work proceeds in parallel but must not be used
+   to imply an unproven gate. No D3D12 shader work this cycle (DXBC ≠ DXIL;
+   `dxil-spirv` is a separate future item).
+3. **Environment reality.** No local Rust in the sandbox: core changes verify through
+   GitHub Actions + Checks-API-published reports (job colour lies; read the report).
+   Batch fixes; expect ~10 min per Tier B cycle at ~6 MIPS.
+4. **Git.** Work only on the session branch you were given; commit measured numbers
+   into `docs/x64-emulator-status.md` as you go.
+
+UI agent's first tasks: `docs/HANDOFF-PACKAGE.md` §4 (P0: real Game Store wiring +
+absorb `js/x64-app.js` into `ui/runtime/`; P1: input — coordinate with core, KI-04).
+
+Negative-test status: no dedicated negative suite exists yet. Required scenarios when
+built (track in `docs/KNOWN-ISSUES.md`): WebGPU device loss → WebGL2/software fallback;
+storage quota/write failure → guest paused, no dropped pages (see KI-02); shader-compile
+failure → `E_NOTIMPL`-style failure, no crash; Yes/No dialogs operable by keyboard
+(Esc = No) in every shell state. The shell's dialogs + storage detection already cover
+the UI half; runtime fallbacks need device/CI proof (Gates 3–4).
+
+---
+
 ## Fase ativa — Emulador Pure-Browser x86-64 + Suíte Real Wine · 2026-10-29
 
 - **Branch obrigatória da sessão:** `arena/e737e676-porthole` (nunca trocar, criar ou fazer push em outra branch).
