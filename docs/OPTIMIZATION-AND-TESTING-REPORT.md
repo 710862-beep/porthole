@@ -110,8 +110,51 @@ reports exact assertion results:
 6. The generated Wine debug-string buffer and assertion location observer were hardened;
    upstream Wine `.c` test sources remain unmodified.
 
-Retest evidence will be appended with the new run ID and exact expected/actual assertion
-records. A fault-free run with zero assertions remains a failure.
+### First retest evidence — run `41103475282`, source `37e1a681b1df64989b43b3615f49d3bc5b06f48f`
+
+The same upstream fixtures were rebuilt and rerun after the HLE fixes. Results are still
+**FAIL/GUEST_FAULT**, but the harness now reaches real assertions and check results.
+
+#### Wine d3d12 exact assertion failures
+
+`d3d12_test.exe` SHA-256 `bc1da9b25e2ef23efd2864666e99332a61f4c3ca77ffd5b8486311d7ae31e04e`;
+20,898 instructions executed before a later null-call fault. Two observer records:
+
+```json
+{"expression":"pfn_101 == pfn_D3D12CreateDevice","expected":true,"actual":false,
+ "message":"Got 00007FF000010010, expected 00007FF000010000.\n","file":"d3d12.c","line":796}
+{"expression":"hr == ((HRESULT)0x00000000)","expected":true,"actual":false,
+ "message":"Got unexpected hr 0x80004001.\n","file":"d3d12.c","line":912}
+```
+
+- `GetProcAddress(d3d12, 101)` returned a distinct export thunk instead of the named
+  `D3D12CreateDevice` thunk. A canonicalization fix is committed for the next rerun.
+- `d3d12.c:912` received `E_NOTIMPL (0x80004001)` where `S_OK` was expected. This remains an
+  open D3D12 HLE failure, not a pass.
+
+#### al-khaser retest
+
+The guest executed 74,708 instructions and emitted 22 check records, 11 findings. The earlier
+ProcessHeap crash is gone; raw console now includes:
+
+```text
+[*] Checking ProcessHeap.Flags                                                                     [ GOOD ]
+[*] Checking ProcessHeap.ForceFlags                                                                [ GOOD ]
+[*] Checking Low Fragmentation Heap                                                                [ GOOD ]
+[*] Checking NtQueryInformationProcess with ProcessDebugFlags                                      [ BAD  ]
+[*] Checking NtQueryInformationProcess with ProcessDebugObject                                     [ BAD  ]
+[*] Checking NtSetInformationThread with ThreadHideFromDebugger                                    [ BAD  ]
+[*] Checking NtSystemDebugControl
+```
+
+Findings: missing `psapi.dll!EnumProcessModulesEx` and three `WUDFPlatform.dll` exports; BAD TLS
+process/thread attach callbacks; BAD ProcessDebugFlags, ProcessDebugObject,
+ThreadHideFromDebugger, NtSystemDebugControl and UnhandledExcepFilterTest. The run then faulted
+on unimplemented `INT 0xcd` at `0x1400176a7`. These are exact upstream check names and BAD/GOOD
+results; they are not crash-only passes.
+
+A fault-free run with zero assertions remains a failure. Phase 2 top-20 fixing continues from
+these recorded failures.
 
 ### Phase 2
 
