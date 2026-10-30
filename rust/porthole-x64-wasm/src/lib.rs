@@ -61,6 +61,9 @@ pub struct BrowserX64Emulator {
     audit_max: usize,
     audit_seq: u64,
     audit_dropped: u64,
+    jit_enabled: bool,
+    jit_ctx: Vec<u64>,
+    jit_active: Option<jit::CompiledJitArtifact>,
 }
 
 #[wasm_bindgen]
@@ -87,6 +90,9 @@ impl BrowserX64Emulator {
             audit_max: 0,
             audit_seq: 0,
             audit_dropped: 0,
+            jit_enabled: false,
+            jit_ctx: vec![0; 16],
+            jit_active: None,
         }
     }
 
@@ -488,6 +494,18 @@ impl BrowserX64Emulator {
                         self.console.extend_from_slice(&self.kernel.drain_stdout());
                     return format!("fault:{}", self.fault_message);
                     }
+                }
+            }
+
+            // --- compiled Wasm block handoff ---------------------------------------------------
+            // The host owns WebAssembly.Module compilation. When a valid artifact exists at RIP,
+            // yield a distinct status so the JS bridge can execute it with the core's exported
+            // memory, then commit registers atomically. Diagnostics lanes stay interpreted.
+            if self.jit_enabled && !self.trace_enabled && self.jit_active.is_none() {
+                let epoch = self.vmm.page_write_epoch(insn_rip & !0xFFF);
+                if self.jit.get_valid_artifact(insn_rip, epoch).is_some() {
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return "jit".to_string();
                 }
             }
 
@@ -1134,10 +1152,69 @@ impl BrowserX64Emulator {
         self.vmm.set_max_resident_pages(pages as usize);
     }
 
+    // -------------------------------------------------------- hybrid JIT host bridge
+
+    pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
+    pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }
+    pub fn jit_pending_meta(&self, index: u32) -> String { self.jit.pending_meta(index as usize).unwrap_or_default() }
+    pub fn jit_pending_wasm(&self, index: u32) -> Vec<u8> { self.jit.pending_wasm(index as usize).unwrap_or_default() }
+    pub fn jit_clear_pending(&mut self) { self.jit.clear_pending(); }
+    pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
+
+    /// Copies GPRs into the shared context and arms the artifact at current RIP.
+    pub fn jit_enter_block(&mut self) -> String {
+        let epoch = self.vmm.page_write_epoch(self.cpu.rip & !0xFFF);
+        let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
+        self.jit_ctx.copy_from_slice(&self.cpu.gpr);
+        let meta = format!("{{\"entryRip\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\",\"ctx\":{}}}",
+            art.entry_rip, art.page_epoch, art.byte_len, art.insn_count, art.ends_with_ret, art.code_hash, self.jit_context_ptr());
+        self.jit_active = Some(art);
+        meta
+    }
+
+    /// Atomically commits a completed host-executed Wasm block. On any epoch/entry mismatch the
+    /// block is discarded and the interpreter resumes at the unchanged RIP (safe SMC fallback).
+    pub fn jit_commit_block(&mut self) -> String {
+        let Some(art) = self.jit_active.take() else { return "fault:no active JIT block".into(); };
+        let epoch = self.vmm.page_write_epoch(art.entry_rip & !0xFFF);
+        if art.entry_rip != self.cpu.rip || art.page_epoch != epoch {
+            self.jit.invalidate_entry(art.entry_rip);
+            return "next".into();
+        }
+        self.cpu.gpr.copy_from_slice(&self.jit_ctx);
+        if art.ends_with_ret {
+            let rsp = self.cpu.gpr[4];
+            match self.vmm.read_u64(rsp) {
+                Ok(ret) => { self.cpu.gpr[4] = rsp.wrapping_add(8); self.cpu.rip = ret; }
+                Err(MemoryTrap::PageFault(a)) => return format!("page-fault:{a}"),
+                Err(MemoryTrap::AccessViolation(a)) => { self.status = RunStatus::Fault; self.fault_message = format!("JIT ret read access violation at 0x{a:x}"); return format!("fault:{}", self.fault_message); }
+            }
+        } else {
+            self.cpu.rip = art.entry_rip.wrapping_add(art.byte_len as u64);
+        }
+        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(art.insn_count as u64);
+        self.kernel.instructions = self.cpu.instructions_executed;
+        "next".into()
+    }
+
+    /// Drops a trapped active block without applying its register writes; the interpreter will
+    /// re-execute from the original RIP and reproduce the precise fault/page-fault.
+    pub fn jit_abort_block(&mut self) { self.jit_active = None; }
+
+    /// Imports a persisted artifact only after re-hashing the live guest bytes and epoch.
+    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, code_hash: u64, wasm: &[u8]) -> bool {
+        if byte_len == 0 || byte_len > 4096 || insn_count == 0 || insn_count > 4096 { return false; }
+        let mut live = vec![0u8; byte_len as usize];
+        if self.vmm.host_read_bytes(entry_rip, &mut live).is_err() { return false; }
+        if jit::HybridWasmJit::fnv1a_64(&live) != code_hash { return false; }
+        if self.vmm.page_write_epoch(entry_rip & !0xFFF) != page_epoch { return false; }
+        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, wasm.to_vec())
+    }
+
     /// Instantaneous counters consumed by the browser telemetry panel.
     pub fn telemetry_json(&self) -> String {
         format!(
-            "{{\"instructions\":{},\"rip\":{},\"residentPages\":{},\"swappedPages\":{},\"residentLimit\":{},\"pagesEvicted\":{},\"dirtyQueued\":{},\"icacheHits\":{},\"icacheMisses\":{},\"jitArtifacts\":{},\"jitEmitted\":{},\"frames\":{},\"status\":\"{}\"}}",
+            "{{\"instructions\":{},\"rip\":{},\"residentPages\":{},\"swappedPages\":{},\"residentLimit\":{},\"pagesEvicted\":{},\"dirtyQueued\":{},\"icacheHits\":{},\"icacheMisses\":{},\"jitArtifacts\":{},\"jitEmitted\":{},\"jitEnabled\":{},\"frames\":{},\"status\":\"{}\"}}",
             self.cpu.instructions_executed,
             self.cpu.rip,
             self.vmm.resident_page_count(),
@@ -1149,6 +1226,7 @@ impl BrowserX64Emulator {
             self.cpu.icache_misses,
             self.jit.artifact_count(),
             self.jit.modules_emitted,
+            self.jit_enabled,
             self.kernel.d3d12.frames_presented,
             self.status_text().replace('"', "'")
         )

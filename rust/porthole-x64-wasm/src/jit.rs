@@ -83,7 +83,13 @@ impl HybridWasmJit {
         page_epoch: u32,
         bytes: &[u8],
     ) -> Option<CompiledJitArtifact> {
-        let (ops, byte_len, insn_count, ends_with_ret) = Self::decode_pure_gpr_block(bytes)?;
+        let (ops, mut byte_len, insn_count, ends_with_ret) = Self::decode_pure_gpr_block(bytes)?;
+        let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
+        if byte_len > page_remain {
+            // Never cache a block whose code epoch is only validated on its first page.
+            byte_len = page_remain;
+            return None;
+        }
         if ops.is_empty() {
             return None;
         }
@@ -144,6 +150,20 @@ impl HybridWasmJit {
         }
         out
     }
+
+    pub fn pending_count(&self) -> usize { self.pending_export_rips.len() }
+    pub fn pending_meta(&self, index: usize) -> Option<String> {
+        let rip = *self.pending_export_rips.get(index)?;
+        let a = self.artifacts.get(&rip)?;
+        Some(format!("{{\"entryRip\":{},\"pageBase\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\"}}",
+            a.entry_rip, a.page_base, a.page_epoch, a.byte_len, a.insn_count, a.ends_with_ret, a.code_hash))
+    }
+    pub fn pending_wasm(&self, index: usize) -> Option<Vec<u8>> {
+        let rip = *self.pending_export_rips.get(index)?;
+        self.artifacts.get(&rip).map(|a| a.wasm_bytes.clone())
+    }
+    pub fn clear_pending(&mut self) { self.pending_export_rips.clear(); }
+    pub fn invalidate_entry(&mut self, rip: u64) { if self.artifacts.remove(&rip).is_some() { self.invalidations += 1; } }
 
     pub fn artifact_count(&self) -> usize {
         self.artifacts.len()
