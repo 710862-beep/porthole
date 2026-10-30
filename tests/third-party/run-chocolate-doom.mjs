@@ -334,12 +334,20 @@ async function main() {
   report.run.realtics = realtics;
   const timedemoDone = gametics > 0;
   const okExit = terminal === 'exit:0' || (terminal === 'exit:4294967295' && timedemoDone);
-  // RENDERING: guest presents happened, the framebuffer actually changed across the run
-  // (demo-input-driven), and the host-side fingerprint of the captured frame agrees with the
-  // emulator's own checksum of the same guest bytes.
+  // RENDERING: guest presents happened, the framebuffer genuinely evolves under demo input
+  // (>=100 distinct checksums sampled across the run, and first/mid/final frames pairwise
+  // different — a stale, cleared or otherwise static buffer has exactly 1-2), and the
+  // host-side fingerprint of the captured frame agrees with the emulator's own checksum.
+  // (History: an earlier build passed a >=2 check with a constant clear-colour buffer because
+  // SDL_RenderCopy moved no pixels; these thresholds exist so that class of fake frame can
+  // never pass again. A real 2,664-tic demo yields distinct checksums in the high hundreds.)
+  const fcs = [frameSamples.first, frameSamples.mid, frameSamples.final]
+    .filter(Boolean).map((f) => f.checksum);
+  const sampledPairwiseDistinct = fcs.length === 3 && new Set(fcs).size === 3;
   const framesOk = report.run.presentedFrames > 0
     && !!report.run.frameChecksum
-    && report.run.distinctFrameChecksums >= 2
+    && report.run.distinctFrameChecksums >= 100
+    && sampledPairwiseDistinct
     && checksumCrossCheck;
   if (okExit && framesOk) {
     report.status = 'PASS';
@@ -348,7 +356,7 @@ async function main() {
     const blockers = report.run.unimplemented ? report.run.unimplemented.split(/\s+/).filter(Boolean).slice(0, 24).join(' ') : '';
     const why = [];
     if (!okExit) why.push(`terminal=${terminal} (timedemoDone=${timedemoDone}, gametics=${gametics})`);
-    if (!framesOk) why.push(`presented=${report.run.presentedFrames} distinctChecksums=${report.run.distinctFrameChecksums} crossCheck=${checksumCrossCheck}`);
+    if (!framesOk) why.push(`presented=${report.run.presentedFrames} distinctChecksums=${report.run.distinctFrameChecksums} sampledPairwiseDistinct=${sampledPairwiseDistinct} crossCheck=${checksumCrossCheck}`);
     report.reason = `${why.join('; ')}${blockers ? `; first named blockers: ${blockers}` : ''}`;
   }
   writeReport(report);

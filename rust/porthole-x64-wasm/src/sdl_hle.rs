@@ -48,15 +48,18 @@ struct SdlWindowInfo {
     w: i32,
     h: i32,
     id: u32,
-    /// Lazily created SDL_Surface* backing SDL_GetWindowSurface.
+    /// Lazily created SDL_Surface* backing SDL_GetWindowSurface (aliases `backbuffer`).
     surface: u64,
+    /// Guest-memory window backbuffer (ARGB8888). SDL_RenderClear/RenderCopy with no render
+    /// target draw here; SDL_RenderPresent captures exactly these guest-written bytes.
+    backbuffer: u64,
+    bb_pitch: i32,
 }
 
 #[derive(Clone)]
 struct SdlRendererInfo {
     window: u64,
     target: u64,
-    last_copy: u64,
     draw_color: [u8; 4],
 }
 
@@ -158,6 +161,31 @@ fn decode_packed(px: u32, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> [u8
         chan(bmask),
         if amask == 0 { 255 } else { chan(amask) },
     ]
+}
+
+/// Inverse of decode_packed: pack an RGBA8 colour into a masked pixel value.
+fn encode_packed(rgba: [u8; 4], rmask: u32, gmask: u32, bmask: u32, amask: u32) -> u32 {
+    let enc = |v: u8, mask: u32| -> u32 {
+        if mask == 0 {
+            return 0;
+        }
+        let shift = mask.trailing_zeros();
+        let max = mask >> shift;
+        (((v as u32 * max + 127) / 255) << shift) & mask
+    };
+    enc(rgba[0], rmask) | enc(rgba[1], gmask) | enc(rgba[2], bmask) | enc(rgba[3], amask)
+}
+
+/// A drawable pixel buffer (texture or window backbuffer) for renderer blits.
+#[derive(Clone)]
+struct PixBuf {
+    pixels: u64,
+    w: i32,
+    h: i32,
+    pitch: i32,
+    format: u32,
+    bpp: u32,
+    masks: (u32, u32, u32, u32),
 }
 
 impl Win32Kernel {
@@ -345,6 +373,133 @@ impl Win32Kernel {
                 s.palette,
             );
         }
+    }
+
+    fn sdl_tex_pixbuf(&self, tex: u64) -> Option<PixBuf> {
+        self.sdl.textures.get(&tex).map(|t| PixBuf {
+            pixels: t.pixels,
+            w: t.w,
+            h: t.h,
+            pitch: t.pitch,
+            format: t.format,
+            bpp: bpp_for_format(t.format),
+            masks: masks_for_format(t.format),
+        })
+    }
+
+    /// The renderer's current drawing destination: its target texture, or the window backbuffer.
+    fn sdl_dst_pixbuf(&self, r: &SdlRendererInfo) -> Option<PixBuf> {
+        if r.target != 0 {
+            return self.sdl_tex_pixbuf(r.target);
+        }
+        self.sdl.windows.get(&r.window).and_then(|w| {
+            if w.backbuffer == 0 {
+                None
+            } else {
+                Some(PixBuf {
+                    pixels: w.backbuffer,
+                    w: w.w,
+                    h: w.h,
+                    pitch: w.bb_pitch,
+                    format: PF_ARGB8888,
+                    bpp: 4,
+                    masks: masks_for_format(PF_ARGB8888),
+                })
+            }
+        })
+    }
+
+    /// Fill a PixBuf entirely with one RGBA colour (SDL_RenderClear on the current target).
+    fn sdl_fill_pixbuf(&mut self, vmm: &mut VirtualMemoryManager, dst: &PixBuf, rgba: [u8; 4]) {
+        if dst.w <= 0 || dst.h <= 0 || dst.pitch <= 0 || dst.pixels == 0 {
+            return;
+        }
+        let bpp = dst.bpp as usize;
+        let packed = encode_packed(rgba, dst.masks.0, dst.masks.1, dst.masks.2, dst.masks.3);
+        let mut buf = vec![0u8; (dst.pitch as usize) * (dst.h as usize)];
+        for y in 0..dst.h as usize {
+            let row = y * dst.pitch as usize;
+            for x in 0..dst.w as usize {
+                let off = row + x * bpp;
+                buf[off..off + bpp.min(4)].copy_from_slice(&packed.to_le_bytes()[..bpp.min(4)]);
+            }
+        }
+        let _ = vmm.write_bytes(dst.pixels, &buf);
+    }
+
+    /// SDL_RenderCopy: nearest-neighbour scaled blit of a guest texture into the current render
+    /// destination. Every output pixel is a guest texture pixel (converted between pixel
+    /// formats via the real masks); this is what makes the presented frame guest-rendered
+    /// instead of a stale recording of an untouched target buffer.
+    fn sdl_render_blit(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        src: &PixBuf,
+        srect: (i32, i32, i32, i32),
+        dst: &PixBuf,
+        drect: (i32, i32, i32, i32),
+    ) {
+        let (sx, sy, sw, sh) = srect;
+        let (dx, dy, dw, dh) = drect;
+        if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || src.pitch <= 0 || dst.pitch <= 0 {
+            return;
+        }
+        let mut sdata = vec![0u8; (src.pitch as usize) * (src.h.max(0) as usize)];
+        if vmm.read_bytes(src.pixels, &mut sdata).is_err() {
+            return;
+        }
+        let mut ddata = vec![0u8; (dst.pitch as usize) * (dst.h.max(0) as usize)];
+        if vmm.read_bytes(dst.pixels, &mut ddata).is_err() {
+            return;
+        }
+        let sbpp = src.bpp as usize;
+        let dbpp = dst.bpp as usize;
+        let read_src = |x: i32, y: i32| -> [u8; 4] {
+            let cx = x.clamp(0, src.w - 1) as usize;
+            let cy = y.clamp(0, src.h - 1) as usize;
+            let off = cy * src.pitch as usize + cx * sbpp;
+            match sbpp {
+                1 => {
+                    let v = sdata[off];
+                    [v, v, v, 255]
+                }
+                2 => {
+                    let v = u16::from_le_bytes([sdata[off], sdata[off + 1]]) as u32;
+                    decode_packed(v, src.masks.0, src.masks.1, src.masks.2, src.masks.3)
+                }
+                3 => [sdata[off], sdata[off + 1], sdata[off + 2], 255],
+                _ => {
+                    let v = u32::from_le_bytes([
+                        sdata[off],
+                        sdata[off + 1],
+                        sdata[off + 2],
+                        sdata[off + 3],
+                    ]);
+                    decode_packed(v, src.masks.0, src.masks.1, src.masks.2, src.masks.3)
+                }
+            }
+        };
+        for j in 0..dh {
+            let ty = dy + j;
+            if ty < 0 || ty >= dst.h {
+                continue;
+            }
+            let syy = sy + ((j as i64 * sh as i64) / dh as i64) as i32;
+            let drow = ty as usize * dst.pitch as usize;
+            for i in 0..dw {
+                let tx = dx + i;
+                if tx < 0 || tx >= dst.w {
+                    continue;
+                }
+                let sxx = sx + ((i as i64 * sw as i64) / dw as i64) as i32;
+                let rgba = read_src(sxx, syy);
+                let packed = encode_packed(rgba, dst.masks.0, dst.masks.1, dst.masks.2, dst.masks.3);
+                let off = drow + tx as usize * dbpp;
+                ddata[off..off + dbpp.min(4)]
+                    .copy_from_slice(&packed.to_le_bytes()[..dbpp.min(4)]);
+            }
+        }
+        let _ = vmm.write_bytes(dst.pixels, &ddata);
     }
 
     /// Entry point for every SDL-family DLL import. Returns the value for RAX.
@@ -579,13 +734,25 @@ impl Win32Kernel {
                 }
                 let id = self.sdl.next_window_id;
                 self.sdl.next_window_id += 1;
+                let (w, h) = (if w > 0 { w } else { 640 }, if h > 0 { h } else { 480 });
+                let bb_pitch = w * 4;
+                let backbuffer =
+                    self.heap_alloc(vmm, self.process_heap, (bb_pitch as u64) * (h as u64));
+                if backbuffer != 0 {
+                    let _ = vmm.write_bytes(
+                        backbuffer,
+                        &vec![0u8; (bb_pitch as usize) * (h as usize)],
+                    );
+                }
                 self.sdl.windows.insert(
                     win,
                     SdlWindowInfo {
-                        w: if w > 0 { w } else { 640 },
-                        h: if h > 0 { h } else { 480 },
+                        w,
+                        h,
                         id,
                         surface: 0,
+                        backbuffer,
+                        bb_pitch,
                     },
                 );
                 win
@@ -614,9 +781,28 @@ impl Win32Kernel {
                 0
             }
             "SDL_SetWindowSize" => {
-                if let Some(w) = self.sdl.windows.get_mut(&a0) {
-                    w.w = a1 as i32;
-                    w.h = a2 as i32;
+                let (nw, nh) = (a1 as i32, a2 as i32);
+                let need_realloc = match self.sdl.windows.get(&a0) {
+                    Some(w) => w.w != nw || w.h != nh,
+                    None => false,
+                };
+                if need_realloc && nw > 0 && nh > 0 {
+                    let bb_pitch = nw * 4;
+                    let backbuffer =
+                        self.heap_alloc(vmm, self.process_heap, (bb_pitch as u64) * (nh as u64));
+                    if backbuffer != 0 {
+                        let _ = vmm.write_bytes(
+                            backbuffer,
+                            &vec![0u8; (bb_pitch as usize) * (nh as usize)],
+                        );
+                    }
+                    if let Some(w) = self.sdl.windows.get_mut(&a0) {
+                        w.w = nw;
+                        w.h = nh;
+                        w.backbuffer = backbuffer;
+                        w.bb_pitch = bb_pitch;
+                        w.surface = 0; // force GetWindowSurface to re-wrap the new backbuffer
+                    }
                 }
                 0
             }
@@ -625,14 +811,28 @@ impl Win32Kernel {
             | "SDL_HideWindow" | "SDL_RaiseWindow" => 0,
             "SDL_SetWindowFullscreen" => 0,
             "SDL_GetWindowSurface" => {
-                let (w, h, existing) = match self.sdl.windows.get(&a0) {
-                    Some(info) => (info.w, info.h, info.surface),
+                let (w, h, existing, backbuffer, bb_pitch) = match self.sdl.windows.get(&a0) {
+                    Some(info) => (info.w, info.h, info.surface, info.backbuffer, info.bb_pitch),
                     None => return 0,
                 };
                 if existing != 0 {
                     return existing;
                 }
-                let surf = self.sdl_new_surface(vmm, w, h, PF_ARGB8888, None, None, None);
+                // The window surface aliases the renderer backbuffer: pixels the guest writes
+                // through either API are the same bytes SDL_RenderPresent captures.
+                let surf = if backbuffer != 0 {
+                    self.sdl_new_surface(
+                        vmm,
+                        w,
+                        h,
+                        PF_ARGB8888,
+                        None,
+                        Some(backbuffer),
+                        Some(bb_pitch),
+                    )
+                } else {
+                    self.sdl_new_surface(vmm, w, h, PF_ARGB8888, None, None, None)
+                };
                 if let Some(info) = self.sdl.windows.get_mut(&a0) {
                     info.surface = surf;
                 }
@@ -660,7 +860,6 @@ impl Win32Kernel {
                     SdlRendererInfo {
                         window: a0,
                         target: 0,
-                        last_copy: 0,
                         draw_color: [0, 0, 0, 255],
                     },
                 );
@@ -852,68 +1051,63 @@ impl Win32Kernel {
             }
             "SDL_GetRenderDrawColor" => 0,
             "SDL_RenderClear" => {
+                // Fill the current destination (target texture or window backbuffer) with the
+                // guest-issued draw colour.
                 if let Some(r) = self.sdl.renderers.get(&a0).cloned() {
-                    if r.target != 0 {
-                        if let Some(t) = self.sdl.textures.get(&r.target).cloned() {
-                            let px = (r.draw_color[3] as u32) << 24
-                                | (r.draw_color[0] as u32) << 16
-                                | (r.draw_color[1] as u32) << 8
-                                | r.draw_color[2] as u32;
-                            let mut row =
-                                vec![0u8; (t.w.max(0) as usize) * 4];
-                            for i in 0..t.w.max(0) as usize {
-                                row[i * 4..i * 4 + 4].copy_from_slice(&px.to_le_bytes());
-                            }
-                            for y in 0..t.h.max(0) as u64 {
-                                let _ = vmm.write_bytes(
-                                    t.pixels + y * t.pitch.max(0) as u64,
-                                    &row,
-                                );
-                            }
-                        }
+                    if let Some(dst) = self.sdl_dst_pixbuf(&r) {
+                        self.sdl_fill_pixbuf(vmm, &dst, r.draw_color);
                     }
                 }
                 0
             }
             "SDL_RenderCopy" | "SDL_RenderCopyEx" => {
-                if let Some(r) = self.sdl.renderers.get_mut(&a0) {
-                    r.last_copy = a1;
+                // Real scaled blit of the guest texture into the current destination
+                // (RenderCopyEx rotation/flip are not modelled; Chocolate Doom uses plain
+                // RenderCopy). NULL srcrect = whole texture; NULL dstrect = whole destination.
+                if let Some(r) = self.sdl.renderers.get(&a0).cloned() {
+                    if let (Some(src), Some(dst)) =
+                        (self.sdl_tex_pixbuf(a1), self.sdl_dst_pixbuf(&r))
+                    {
+                        let read_rect = |p: u64, full: (i32, i32)| -> (i32, i32, i32, i32) {
+                            if p != 0 {
+                                (
+                                    vmm.read_u32(p).unwrap_or(0) as i32,
+                                    vmm.read_u32(p + 4).unwrap_or(0) as i32,
+                                    vmm.read_u32(p + 8).unwrap_or(0) as i32,
+                                    vmm.read_u32(p + 12).unwrap_or(0) as i32,
+                                )
+                            } else {
+                                (0, 0, full.0, full.1)
+                            }
+                        };
+                        let srect = read_rect(a2, (src.w, src.h));
+                        let drect = read_rect(a3, (dst.w, dst.h));
+                        self.sdl_render_blit(vmm, &src, srect, &dst, drect);
+                    }
                 }
                 0
             }
             "SDL_RenderPresent" => {
-                // THE Gate 2 present: capture exactly what the guest last copied (or its render
-                // target), at guest texture resolution. No scaling is modelled and no host pixel
-                // is ever introduced; the frame counter advances only on a real guest present.
+                // THE Gate 2 present: capture the window BACKBUFFER — the bytes composed solely
+                // from the guest's own RenderClear/RenderCopy draws this frame. (The previous
+                // implementation captured the last RenderCopy *source* texture while RenderCopy
+                // moved no pixels, yielding a constant clear-colour checksum for 2,703 frames;
+                // the checksum-evolution evidence exposed that, and the compositor above is the
+                // fix.) No host pixel is ever introduced; the counter advances only here.
                 if let Some(r) = self.sdl.renderers.get(&a0).cloned() {
-                    let tex = if r.last_copy != 0 { r.last_copy } else { r.target };
-                    if tex != 0 {
-                        if let Some(t) = self.sdl.textures.get(&tex).cloned() {
-                            let masks = masks_for_format(t.format);
+                    if let Some(w) = self.sdl.windows.get(&r.window).cloned() {
+                        if w.backbuffer != 0 {
                             self.sdl_capture_pixels(
                                 vmm,
-                                t.pixels,
-                                t.w,
-                                t.h,
-                                t.pitch,
-                                bpp_for_format(t.format),
-                                masks,
+                                w.backbuffer,
+                                w.w,
+                                w.h,
+                                w.bb_pitch,
+                                4,
+                                masks_for_format(PF_ARGB8888),
                                 0,
                             );
                         }
-                    } else if let Some(w) = self.sdl.windows.get(&r.window).cloned() {
-                        // Guest presented only a clear (or nothing drawn): frame is the
-                        // guest-issued draw colour over the window.
-                        let (ww, wh) = (w.w.max(1), w.h.max(1));
-                        let mut out = vec![0u8; (ww as usize) * (wh as usize) * 4];
-                        for px in out.chunks_exact_mut(4) {
-                            px.copy_from_slice(&r.draw_color);
-                        }
-                        self.sdl.last_frame_rgba = out;
-                        self.sdl.last_frame_w = ww as u32;
-                        self.sdl.last_frame_h = wh as u32;
-                        self.sdl.frame_dirty = true;
-                        self.sdl.presented_frames += 1;
                     }
                 }
                 0
