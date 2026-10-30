@@ -239,6 +239,7 @@ jobs:
             artifacts/emu-title-probe.log
             artifacts/chocolate-doom-title-probe.json
             artifacts/chocolate-doom-title-native.ppm
+            artifacts/title-reference-decoded.ppm
             artifacts/tier-b-pin.json
           if-no-files-found: warn
           retention-days: 14
