@@ -267,6 +267,7 @@ struct FileMapping {
 
 pub struct Win32Kernel {
     pub last_error: u32,
+    pub exe_image_base: u64,
     atoms_global: AtomTable,
     atoms_local: AtomTable,
     env: Vec<(String, String)>,
@@ -287,9 +288,11 @@ pub struct Win32Kernel {
     pub stdout: Vec<u8>,
     pub exit_code: Option<u32>,
     pub ticks: u64,
+    pub last_input_tick: u64,
     pub cursor_x: i32,
     pub cursor_y: i32,
     pub virtual_input: bool,
+    console_attribute: u16,
     upcall_stack: Vec<UpcallState>,
     vectored_handlers: Vec<(u64, u64)>,
     unhandled_filter: u64,
@@ -356,6 +359,7 @@ impl Win32Kernel {
     pub fn new() -> Self {
         let mut kernel = Self {
             last_error: 0,
+            exe_image_base: 0,
             atoms_global: AtomTable::new(),
             atoms_local: AtomTable::new(),
             env: Vec::new(),
@@ -375,9 +379,11 @@ impl Win32Kernel {
             stdout: Vec::new(),
             exit_code: None,
             ticks: 3_600_000, // plausible uptime (>12 min); Sleep advances it
+            last_input_tick: 3_599_900,
             cursor_x: 640,
             cursor_y: 360,
             virtual_input: false,
+            console_attribute: 7,
             upcall_stack: Vec::new(),
             vectored_handlers: Vec::new(),
             unhandled_filter: 0,
@@ -1686,7 +1692,7 @@ impl Win32Kernel {
                         let mut info = [0u8; 22];
                         info[0..2].copy_from_slice(&80u16.to_le_bytes());
                         info[2..4].copy_from_slice(&25u16.to_le_bytes());
-                        info[8..10].copy_from_slice(&7u16.to_le_bytes()); // wAttributes
+                        info[8..10].copy_from_slice(&self.console_attribute.to_le_bytes()); // wAttributes
                         info[14..16].copy_from_slice(&79u16.to_le_bytes()); // window right
                         info[16..18].copy_from_slice(&24u16.to_le_bytes()); // window bottom
                         info[18..20].copy_from_slice(&80u16.to_le_bytes());
@@ -1698,6 +1704,10 @@ impl Win32Kernel {
                     self.set_last_error(ERROR_INVALID_HANDLE);
                     0
                 }
+            }
+            "SetConsoleTextAttribute" => {
+                self.console_attribute = a1 as u16;
+                1
             }
             "SetConsoleCtrlHandler" => 1,
             "SetFileApisToOEM" | "SetFileApisToANSI" => 0,
@@ -2550,7 +2560,10 @@ impl Win32Kernel {
             "GetLastInputInfo" => {
                 if a0 != 0 {
                     let _ = vmm.write_u32(a0, 8);
-                    let _ = vmm.write_u32(a0 + 4, self.ticks.saturating_sub(100) as u32);
+                    // The headless virtual-input profile simulates a recent pointing-device
+                    // event; without it, a deterministic CI guest would always look idle.
+                    let t = if self.virtual_input { self.ticks.saturating_sub(10) } else { self.last_input_tick };
+                    let _ = vmm.write_u32(a0 + 4, t as u32);
                 }
                 1
             }
@@ -5330,7 +5343,7 @@ impl Win32Kernel {
     // ------------------------------------------------------------- helpers
 
     fn image_base(&self) -> u64 {
-        self.modules.get("kernel32.dll").copied().unwrap_or(0)
+        if self.exe_image_base != 0 { self.exe_image_base } else { self.modules.get("kernel32.dll").copied().unwrap_or(0) }
     }
 
     fn module_handle(&mut self, name: &str) -> u64 {

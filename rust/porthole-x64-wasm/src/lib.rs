@@ -187,6 +187,7 @@ impl BrowserX64Emulator {
         })
         .map_err(|e| JsValue::from_str(&e))?;
         let thunk_slot_count = thunk_slots.len();
+        self.kernel.exe_image_base = info.image_base;
 
         // Fill each bound thunk with RET and record the thunk -> (dll,symbol) mapping used by the
         // dispatcher when RIP enters the HLE region.
@@ -1212,7 +1213,7 @@ impl BrowserX64Emulator {
         true
     }
     /// Host-driven virtual mouse input (browser pointer events).
-    pub fn inject_mouse_move(&mut self, x: i32, y: i32) { self.kernel.cursor_x = x; self.kernel.cursor_y = y; }
+    pub fn inject_mouse_move(&mut self, x: i32, y: i32) { self.kernel.cursor_x = x; self.kernel.cursor_y = y; self.kernel.last_input_tick = self.kernel.ticks; }
     pub fn set_virtual_input_profile(&mut self, on: bool) { self.kernel.virtual_input = on; }
 
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }

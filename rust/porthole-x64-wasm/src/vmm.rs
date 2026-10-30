@@ -481,16 +481,34 @@ impl VirtualMemoryManager {
         false
     }
 
-    pub fn virtual_protect(&mut self, addr: u64, _size: u64, new_protect: u32) -> Option<u32> {
-        let aligned = Self::align_down(addr);
-        if let Some((_, reg)) = self.regions.range_mut(..=aligned).next_back() {
-            if aligned < reg.base + reg.size {
-                let old = reg.protect;
-                reg.protect = new_protect;
-                return Some(old);
+    pub fn virtual_protect(&mut self, addr: u64, size: u64, new_protect: u32) -> Option<u32> {
+        if size == 0 { return None; }
+        let lo = Self::align_down(addr);
+        let hi = Self::align_up(addr.saturating_add(size));
+        let reg = self.find_region(lo)?.clone();
+        // This implementation changes protection within one allocation region. Splitting keeps
+        // the untouched prefix/suffix executable/read-only instead of relabeling the whole image.
+        if lo < reg.base || hi > reg.base.saturating_add(reg.size) { return None; }
+        let old = reg.protect;
+        self.regions.remove(&reg.base);
+        let mut insert = |base: u64, end: u64, protect: u32| {
+            if end > base {
+                self.regions.insert(base, VmaRegion {
+                    base, size: end - base, allocation_base: reg.allocation_base,
+                    allocation_protect: reg.allocation_protect, protect,
+                    state: reg.state, mem_type: reg.mem_type,
+                });
             }
+        };
+        insert(reg.base, lo, old);
+        insert(lo, hi, new_protect);
+        insert(hi, reg.base + reg.size, old);
+        let mut page = lo;
+        while page < hi {
+            self.bump_write_epoch(page);
+            page = page.saturating_add(PAGE_SIZE as u64);
         }
-        None
+        Some(old)
     }
 
     pub fn find_region(&self, addr: u64) -> Option<&VmaRegion> {
@@ -981,5 +999,20 @@ mod tests {
         let restored = vmm.read_page(base).unwrap();
         assert_eq!(&restored[..3], &[0x41, 9, 0]);
         assert_eq!(restored[4095], 0x5a);
+    }
+
+    #[test]
+    fn virtual_protect_splits_region_and_preserves_neighbors() {
+        let mut vmm = VirtualMemoryManager::new(64);
+        let base = 0x1_0000u64;
+        vmm.map_region(base, 3 * PAGE_SIZE as u64, PAGE_EXECUTE_READ, MEM_COMMIT, MEM_PRIVATE, false);
+        let epoch_before = vmm.page_write_epoch(base + PAGE_SIZE as u64);
+        assert_eq!(vmm.virtual_protect(base + PAGE_SIZE as u64, PAGE_SIZE as u64, PAGE_READWRITE), Some(PAGE_EXECUTE_READ));
+        assert_eq!(vmm.find_region(base).unwrap().protect, PAGE_EXECUTE_READ);
+        assert_eq!(vmm.find_region(base + PAGE_SIZE as u64).unwrap().protect, PAGE_READWRITE);
+        assert_eq!(vmm.find_region(base + 2 * PAGE_SIZE as u64).unwrap().protect, PAGE_EXECUTE_READ);
+        assert!(vmm.write_u64(base + PAGE_SIZE as u64, 0x1234).is_ok());
+        assert!(vmm.write_u64(base, 0x1234).is_err());
+        assert_ne!(vmm.page_write_epoch(base + PAGE_SIZE as u64), epoch_before);
     }
 }
