@@ -426,15 +426,22 @@ impl Win32Kernel {
         if !s.starts_with('\\') {
             s = format!("\\{}", s);
         }
-        // Normalize "." and ".." and duplicate separators.
-        let mut parts: Vec<&str> = Vec::new();
+        // Normalize "." and ".." and duplicate separators, and strip the trailing dots/spaces
+        // Win32 removes from every component ("Please Remove Me." names "Please Remove Me",
+        // directory.c:255-266).
+        let mut parts: Vec<String> = Vec::new();
         for part in s.split('\\') {
             match part {
                 "" | "." => {}
                 ".." => {
                     parts.pop();
                 }
-                other => parts.push(other),
+                other => {
+                    let trimmed = other.trim_end_matches(['.', ' ']);
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                }
             }
         }
         Ok(format!("C:\\{}", parts.join("\\")))
