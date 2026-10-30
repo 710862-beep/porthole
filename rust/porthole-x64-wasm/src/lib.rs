@@ -116,13 +116,7 @@ impl BrowserX64Emulator {
             vmm::MEM_PRIVATE,
             true,
         );
-        let mut next_thunk = THUNK_BASE + 0x1000;
-        let kernel_thunk_pool = next_thunk;
-        self.kernel.d3d12.init_memory(&mut self.vmm, || {
-            let slot = next_thunk;
-            next_thunk += THUNK_STRIDE;
-            slot
-        });
+        self.kernel.d3d12.init_memory(&mut self.vmm);
 
         let vmm = &mut self.vmm;
         let jit = &mut self.jit;
@@ -153,7 +147,7 @@ impl BrowserX64Emulator {
             self.kernel
                 .remember_import_thunk(*thunk, dll, symbol, *ordinal);
         }
-        let _ = (kernel_thunk_pool, &bindings);
+        let _ = &bindings;
 
         // Entry state: Win64 startup stack with the return address pointing at the exit thunk.
         self.cpu = CpuState::new();
@@ -254,6 +248,55 @@ impl BrowserX64Emulator {
             let rsp_before = self.cpu.gpr[4];
             self.vmm.current_rip = insn_rip;
 
+            // --- COM vtable stubs --------------------------------------------------------------
+            // Checked first, and in a range of their own: a COM slot must never be able to
+            // resolve as a Win32 import thunk (or vice versa).
+            if insn_rip >= d3d12_hle::COM_THUNK_BASE
+                && insn_rip < d3d12_hle::COM_THUNK_BASE + d3d12_hle::COM_THUNK_REGION_SIZE
+            {
+                if let Some((kind, slot)) = self.kernel.d3d12.lookup_method(insn_rip) {
+                    let args = self.capture_args();
+                    let rsp = self.cpu.gpr[4];
+                    let result = {
+                        let client_sizes = self.kernel.window_sizes();
+                        let kernel = &mut self.kernel;
+                        kernel.d3d12.dispatch_vtable_call(
+                            kind,
+                            slot,
+                            &args,
+                            &mut self.vmm,
+                            |_h| {},
+                            move |hwnd| {
+                                client_sizes
+                                    .iter()
+                                    .find(|(h, _, _)| *h == hwnd)
+                                    .map(|(_, w, h)| (*w, *h))
+                            },
+                        )
+                    };
+                    self.drain_d3d12_notes();
+                    self.cpu.gpr[0] = result;
+                    let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+                    self.cpu.gpr[4] = rsp.wrapping_add(8);
+                    self.cpu.rip = ret;
+                    self.cpu.instructions_executed += 1;
+                    self.trace_event(format!(
+                        "H d3d12 {}::{} this=0x{:x} -> rax=0x{:x} (0x{:08x})",
+                        d3d12_hle::interface_name(kind),
+                        d3d12_hle::method_name(kind, slot),
+                        args[0],
+                        result,
+                        result as u32
+                    ));
+                    executed += 1;
+                    continue;
+                }
+                self.status = RunStatus::Fault;
+                self.fault_message = format!("unregistered COM thunk 0x{insn_rip:x}");
+                self.trace_event(format!("F unregistered COM thunk 0x{insn_rip:x}"));
+                return format!("fault:{}", self.fault_message);
+            }
+
             // --- HLE thunk range ---------------------------------------------------------------
             if insn_rip >= THUNK_BASE && insn_rip < THUNK_BASE + THUNK_REGION_SIZE {
                 match self.kernel.lookup_import_thunk(insn_rip) {
@@ -318,38 +361,9 @@ impl BrowserX64Emulator {
                         }
                     }
                     None => {
-                        if let Some((kind, slot)) = self.kernel.d3d12.lookup_method(insn_rip) {
-                            let args = self.capture_args();
-                            let rsp = self.cpu.gpr[4];
-                            let result = {
-                                let client_sizes = self.kernel.window_sizes();
-                                let d3d = &mut self.kernel.d3d12;
-                                d3d.dispatch_vtable_call(
-                                    kind,
-                                    slot,
-                                    &args,
-                                    &mut self.vmm,
-                                    |_h| {},
-                                    move |hwnd| {
-                                        client_sizes
-                                            .iter()
-                                            .find(|(h, _, _)| *h == hwnd)
-                                            .map(|(_, w, h)| (*w, *h))
-                                    },
-                                )
-                            };
-                            self.drain_d3d12_notes();
-                            self.cpu.gpr[0] = result;
-                            let ret = self.vmm.read_u64(rsp).unwrap_or(0);
-                            self.cpu.gpr[4] = rsp.wrapping_add(8);
-                            self.cpu.rip = ret;
-                            self.trace_event(format!(
-                                "H d3d12 0x{:x} slot={} rsp=0x{:x} -> rax=0x{:x} ret=0x{:x}",
-                                insn_rip, slot, rsp, result, ret
-                            ));
-                            executed += 1;
-                            continue;
-                        }
+                        // COM slots are handled in their own range above; reaching here means the
+                        // guest jumped to an address inside the import-thunk window that no import
+                        // was ever bound to.
                         self.status = RunStatus::Fault;
                         self.fault_message = format!("unmapped thunk 0x{insn_rip:x}");
                         self.trace_event(format!("F unmapped thunk 0x{insn_rip:x} rsp=0x{rsp_before:x}"));

@@ -3,6 +3,16 @@ use std::collections::HashMap;
 use crate::vmm::{VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_READWRITE};
 
 pub const COM_HEAP_BASE: u64 = 0x0000_7FF4_0000_0000;
+/// COM vtable stubs live in their own VA range.
+///
+/// They used to be allocated from `THUNK_BASE + 0x1000`, i.e. the *same* address the Win32 import
+/// thunk pool starts at. The two pools therefore handed out identical addresses, the import
+/// registration overwrote the COM slot map, and a real guest call such as
+/// `factory->lpVtbl->EnumAdapters1` silently landed on `kernel32!VirtualProtect` - it returned 1,
+/// the guest saw "S_OK, adapter == NULL", and the failure looked like a missing D3D12 feature
+/// instead of an address-space collision. One VA range per pool, always.
+pub const COM_THUNK_BASE: u64 = 0x0000_7FF1_0000_0000;
+pub const COM_THUNK_REGION_SIZE: u64 = 0x0001_0000; // 65536 bytes = 4096 thunk slots
 pub const COM_HEAP_SIZE: u64 = 0x0020_0000; // 2 MB for COM objects + vtables
 pub const GPU_BUFFER_VA_BASE: u64 = 0x0000_0002_0000_0000; // 8 GB+ for mapped D3D12 resources
 
@@ -192,68 +202,74 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
         (ComKind::D3dBlob, 3) => "GetBufferPointer",
         (ComKind::D3dBlob, 4) => "GetBufferSize",
 
-        (ComKind::D3d12Device, 3) => "SetPrivateData",
-        (ComKind::D3d12Device, 4) => "SetPrivateDataInterface",
-        (ComKind::D3d12Device, 5) => "SetName",
-        (ComKind::D3d12Device, 6) => "GetNodeCount",
-        (ComKind::D3d12Device, 7) => "CreateCommandQueue",
-        (ComKind::D3d12Device, 8) => "CreateCommandAllocator",
-        (ComKind::D3d12Device, 9) => "CreateGraphicsPipelineState",
-        (ComKind::D3d12Device, 10) => "CreateComputePipelineState",
-        (ComKind::D3d12Device, 11) => "CreateCommandList",
-        (ComKind::D3d12Device, 12) => "CheckFeatureSupport",
-        (ComKind::D3d12Device, 13) => "CreateDescriptorHeap",
-        (ComKind::D3d12Device, 14) => "GetDescriptorHandleIncrementSize",
-        (ComKind::D3d12Device, 15) => "CreateRootSignature",
-        (ComKind::D3d12Device, 16) => "CreateConstantBufferView",
-        (ComKind::D3d12Device, 17) => "CreateShaderResourceView",
-        (ComKind::D3d12Device, 18) => "CreateUnorderedAccessView",
-        (ComKind::D3d12Device, 19) => "CreateRenderTargetView",
-        (ComKind::D3d12Device, 20) => "CreateDepthStencilView",
-        (ComKind::D3d12Device, 21) => "CreateSampler",
-        (ComKind::D3d12Device, 22) => "CopyDescriptors",
-        (ComKind::D3d12Device, 23) => "CopyDescriptorsSimple",
-        (ComKind::D3d12Device, 24) => "GetResourceAllocationInfo",
-        (ComKind::D3d12Device, 25) => "GetCustomHeapProperties",
-        (ComKind::D3d12Device, 26) => "CreateCommittedResource",
-        (ComKind::D3d12Device, 27) => "CreateHeap",
-        (ComKind::D3d12Device, 28) => "CreatePlacedResource",
-        (ComKind::D3d12Device, 29) => "CreateReservedResource",
-        (ComKind::D3d12Device, 30) => "CreateSharedHandle",
-        (ComKind::D3d12Device, 31) => "OpenSharedHandle",
-        (ComKind::D3d12Device, 32) => "OpenSharedHandleByName",
-        (ComKind::D3d12Device, 33) => "MakeResident",
-        (ComKind::D3d12Device, 34) => "Evict",
-        (ComKind::D3d12Device, 35) => "CreateFence",
-        (ComKind::D3d12Device, 36) => "GetDeviceRemovedReason",
-        (ComKind::D3d12Device, 37) => "GetCopyableFootprints",
-        (ComKind::D3d12Device, 38) => "CreateQueryHeap",
-        (ComKind::D3d12Device, 39) => "SetStablePowerState",
-        (ComKind::D3d12Device, 40) => "CreateCommandSignature",
-        (ComKind::D3d12Device, 41) => "GetResourceTiling",
-        (ComKind::D3d12Device, 42) => "GetAdapterLuid",
-        (ComKind::D3d12Device, 43) => "CreatePipelineLibrary",
+        // ---- D3D12 ------------------------------------------------------------------------
+        // Layout note: ID3D12Object has FOUR methods (GetPrivateData is slot 3 - unlike DXGI's
+        // IDXGIObject, which starts with SetPrivateData), so GetNodeCount is 7 and every
+        // ID3D12Device method sits one slot higher than a naive IUnknown+3 count suggests.
+        (ComKind::D3d12Device, 3) => "GetPrivateData",
+        (ComKind::D3d12Device, 4) => "SetPrivateData",
+        (ComKind::D3d12Device, 5) => "SetPrivateDataInterface",
+        (ComKind::D3d12Device, 6) => "SetName",
+        (ComKind::D3d12Device, 7) => "GetNodeCount",
+        (ComKind::D3d12Device, 8) => "CreateCommandQueue",
+        (ComKind::D3d12Device, 9) => "CreateCommandAllocator",
+        (ComKind::D3d12Device, 10) => "CreateGraphicsPipelineState",
+        (ComKind::D3d12Device, 11) => "CreateComputePipelineState",
+        (ComKind::D3d12Device, 12) => "CreateCommandList",
+        (ComKind::D3d12Device, 13) => "CheckFeatureSupport",
+        (ComKind::D3d12Device, 14) => "CreateDescriptorHeap",
+        (ComKind::D3d12Device, 15) => "GetDescriptorHandleIncrementSize",
+        (ComKind::D3d12Device, 16) => "CreateRootSignature",
+        (ComKind::D3d12Device, 17) => "CreateConstantBufferView",
+        (ComKind::D3d12Device, 18) => "CreateShaderResourceView",
+        (ComKind::D3d12Device, 19) => "CreateUnorderedAccessView",
+        (ComKind::D3d12Device, 20) => "CreateRenderTargetView",
+        (ComKind::D3d12Device, 21) => "CreateDepthStencilView",
+        (ComKind::D3d12Device, 22) => "CreateSampler",
+        (ComKind::D3d12Device, 23) => "CopyDescriptors",
+        (ComKind::D3d12Device, 24) => "CopyDescriptorsSimple",
+        (ComKind::D3d12Device, 25) => "GetResourceAllocationInfo",
+        (ComKind::D3d12Device, 26) => "GetCustomHeapProperties",
+        (ComKind::D3d12Device, 27) => "CreateCommittedResource",
+        (ComKind::D3d12Device, 28) => "CreateHeap",
+        (ComKind::D3d12Device, 29) => "CreatePlacedResource",
+        (ComKind::D3d12Device, 30) => "CreateReservedResource",
+        (ComKind::D3d12Device, 31) => "CreateSharedHandle",
+        (ComKind::D3d12Device, 32) => "OpenSharedHandle",
+        (ComKind::D3d12Device, 33) => "OpenSharedHandleByName",
+        (ComKind::D3d12Device, 34) => "MakeResident",
+        (ComKind::D3d12Device, 35) => "Evict",
+        (ComKind::D3d12Device, 36) => "CreateFence",
+        (ComKind::D3d12Device, 37) => "GetDeviceRemovedReason",
+        (ComKind::D3d12Device, 38) => "GetCopyableFootprints",
+        (ComKind::D3d12Device, 39) => "CreateQueryHeap",
+        (ComKind::D3d12Device, 40) => "SetStablePowerState",
+        (ComKind::D3d12Device, 41) => "CreateCommandSignature",
+        (ComKind::D3d12Device, 42) => "GetResourceTiling",
+        (ComKind::D3d12Device, 43) => "GetAdapterLuid",
 
-        (ComKind::D3d12CommandQueue, 7) => "UpdateTileMappings",
-        (ComKind::D3d12CommandQueue, 8) => "CopyTileMappings",
-        (ComKind::D3d12CommandQueue, 9) => "ExecuteCommandLists",
-        (ComKind::D3d12CommandQueue, 10) => "SetMarker",
-        (ComKind::D3d12CommandQueue, 11) => "BeginEvent",
-        (ComKind::D3d12CommandQueue, 12) => "EndEvent",
-        (ComKind::D3d12CommandQueue, 13) => "Signal",
-        (ComKind::D3d12CommandQueue, 14) => "Wait",
-        (ComKind::D3d12CommandQueue, 15) => "GetTimestampFrequency",
-        (ComKind::D3d12CommandQueue, 16) => "GetClockCalibration",
-        (ComKind::D3d12CommandQueue, 17) => "GetDesc",
+        (ComKind::D3d12CommandQueue, 7) => "GetDevice",
+        (ComKind::D3d12CommandQueue, 8) => "UpdateTileMappings",
+        (ComKind::D3d12CommandQueue, 9) => "CopyTileMappings",
+        (ComKind::D3d12CommandQueue, 10) => "ExecuteCommandLists",
+        (ComKind::D3d12CommandQueue, 11) => "SetMarker",
+        (ComKind::D3d12CommandQueue, 12) => "BeginEvent",
+        (ComKind::D3d12CommandQueue, 13) => "EndEvent",
+        (ComKind::D3d12CommandQueue, 14) => "Signal",
+        (ComKind::D3d12CommandQueue, 15) => "Wait",
+        (ComKind::D3d12CommandQueue, 16) => "GetTimestampFrequency",
+        (ComKind::D3d12CommandQueue, 17) => "GetClockCalibration",
+        (ComKind::D3d12CommandQueue, 18) => "GetDesc",
 
-        (ComKind::D3d12CommandAllocator, 7) => "Reset",
+        (ComKind::D3d12CommandAllocator, 7) => "GetDevice",
+        (ComKind::D3d12CommandAllocator, 8) => "Reset",
 
-        (ComKind::D3d12CommandList, 3) => "SetPrivateData",
-        (ComKind::D3d12CommandList, 4) => "SetPrivateDataInterface",
-        (ComKind::D3d12CommandList, 5) => "SetName",
-        (ComKind::D3d12CommandList, 6) => "GetDevice",
-        (ComKind::D3d12CommandList, 7) => "GetType",
-        (ComKind::D3d12CommandList, 8) => "ExecuteBundle",
+        (ComKind::D3d12CommandList, 3) => "GetPrivateData",
+        (ComKind::D3d12CommandList, 4) => "SetPrivateData",
+        (ComKind::D3d12CommandList, 5) => "SetPrivateDataInterface",
+        (ComKind::D3d12CommandList, 6) => "SetName",
+        (ComKind::D3d12CommandList, 7) => "GetDevice",
+        (ComKind::D3d12CommandList, 8) => "GetType",
         (ComKind::D3d12CommandList, 9) => "Close",
         (ComKind::D3d12CommandList, 10) => "Reset",
         (ComKind::D3d12CommandList, 11) => "ClearState",
@@ -272,6 +288,7 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
         (ComKind::D3d12CommandList, 24) => "OMSetStencilRef",
         (ComKind::D3d12CommandList, 25) => "SetPipelineState",
         (ComKind::D3d12CommandList, 26) => "ResourceBarrier",
+        (ComKind::D3d12CommandList, 27) => "ExecuteBundle",
         (ComKind::D3d12CommandList, 28) => "SetDescriptorHeaps",
         (ComKind::D3d12CommandList, 29) => "SetComputeRootSignature",
         (ComKind::D3d12CommandList, 30) => "SetGraphicsRootSignature",
@@ -305,29 +322,30 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
         (ComKind::D3d12CommandList, 58) => "EndEvent",
         (ComKind::D3d12CommandList, 59) => "ExecuteIndirect",
 
-        (ComKind::D3d12DescriptorHeap, 7) => "GetDesc",
-        (ComKind::D3d12DescriptorHeap, 8) => "GetCPUDescriptorHandleForHeapStart",
-        (ComKind::D3d12DescriptorHeap, 9) => "GetGPUDescriptorHandleForHeapStart",
+        (ComKind::D3d12DescriptorHeap, 7) => "GetDevice",
+        (ComKind::D3d12DescriptorHeap, 8) => "GetDesc",
+        (ComKind::D3d12DescriptorHeap, 9) => "GetCPUDescriptorHandleForHeapStart",
+        (ComKind::D3d12DescriptorHeap, 10) => "GetGPUDescriptorHandleForHeapStart",
 
-        (ComKind::D3d12RootSignature, 5) => "SetName",
-        (ComKind::D3d12PipelineState, 5) => "SetName",
+        (ComKind::D3d12RootSignature, 6) => "SetName",
+        (ComKind::D3d12PipelineState, 6) => "SetName",
 
-        (ComKind::D3d12Resource, 3) => "SetPrivateData",
-        (ComKind::D3d12Resource, 4) => "SetPrivateDataInterface",
-        (ComKind::D3d12Resource, 5) => "SetName",
-        (ComKind::D3d12Resource, 6) => "GetNodeCount",
-        (ComKind::D3d12Resource, 7) => "GetDesc",
-        (ComKind::D3d12Resource, 8) => "Map",
-        (ComKind::D3d12Resource, 9) => "Unmap",
-        (ComKind::D3d12Resource, 10) => "WriteToSubresource",
-        (ComKind::D3d12Resource, 11) => "ReadFromSubresource",
-        (ComKind::D3d12Resource, 12) => "GetHeapProperties",
-        (ComKind::D3d12Resource, 13) => "SetEvictionPriority",
-        (ComKind::D3d12Resource, 14) => "GetEvictionPriority",
+        (ComKind::D3d12Resource, 3) => "GetPrivateData",
+        (ComKind::D3d12Resource, 4) => "SetPrivateData",
+        (ComKind::D3d12Resource, 5) => "SetPrivateDataInterface",
+        (ComKind::D3d12Resource, 6) => "SetName",
+        (ComKind::D3d12Resource, 7) => "GetDevice",
+        (ComKind::D3d12Resource, 8) => "GetDesc",
+        (ComKind::D3d12Resource, 9) => "Map",
+        (ComKind::D3d12Resource, 10) => "Unmap",
+        (ComKind::D3d12Resource, 11) => "WriteToSubresource",
+        (ComKind::D3d12Resource, 12) => "ReadFromSubresource",
+        (ComKind::D3d12Resource, 13) => "GetHeapProperties",
 
-        (ComKind::D3d12Fence, 7) => "GetCompletedValue",
-        (ComKind::D3d12Fence, 8) => "SetEventOnCompletion",
-        (ComKind::D3d12Fence, 9) => "Signal",
+        (ComKind::D3d12Fence, 7) => "GetDevice",
+        (ComKind::D3d12Fence, 8) => "GetCompletedValue",
+        (ComKind::D3d12Fence, 9) => "SetEventOnCompletion",
+        (ComKind::D3d12Fence, 10) => "Signal",
 
         _ => "UnknownMethod",
     }
@@ -446,10 +464,7 @@ impl D3d12Subsystem {
         }
     }
 
-    pub fn init_memory<F>(&mut self, vmm: &mut VirtualMemoryManager, mut alloc_thunk: F)
-    where
-        F: FnMut() -> u64,
-    {
+    pub fn init_memory(&mut self, vmm: &mut VirtualMemoryManager) {
         vmm.map_region(
             COM_HEAP_BASE,
             COM_HEAP_SIZE,
@@ -458,6 +473,15 @@ impl D3d12Subsystem {
             MEM_PRIVATE,
             true,
         );
+        vmm.map_region(
+            COM_THUNK_BASE,
+            COM_THUNK_REGION_SIZE,
+            PAGE_EXECUTE_READWRITE,
+            MEM_COMMIT,
+            MEM_PRIVATE,
+            true,
+        );
+        let mut next_thunk = COM_THUNK_BASE;
 
         let specs: &[(ComKind, usize)] = &[
             (ComKind::DxgiFactory, 28),
@@ -479,7 +503,8 @@ impl D3d12Subsystem {
         for &(kind, slot_count) in specs {
             let vtbl_va = self.alloc_com_space((slot_count * 8) as u64);
             for slot in 0..slot_count {
-                let thunk_va = alloc_thunk();
+                let thunk_va = next_thunk;
+                next_thunk += 8;
                 let _ = vmm.write_u64(vtbl_va + (slot as u64) * 8, thunk_va);
                 self.method_map.insert(thunk_va, (kind, slot));
             }
@@ -1410,6 +1435,32 @@ impl D3d12Subsystem {
                 let _ = vmm.write_u64(out_output, out_ptr);
                 S_OK as u64
             }
+            (ComKind::DxgiAdapter, 10) => {
+                // GetDesc1 (DXGI_ADAPTER_DESC1 = DXGI_ADAPTER_DESC + Flags at 304)
+                let desc_ptr = args[1];
+                if desc_ptr == 0 {
+                    return E_INVALIDARG as u64;
+                }
+                let zero = [0u8; 312];
+                let _ = vmm.write_bytes(desc_ptr, &zero);
+                let name: Vec<u16> = "Porthole WebGPU x86-64 Virtual Adapter"
+                    .encode_utf16()
+                    .collect();
+                for (i, &ch) in name.iter().enumerate() {
+                    let _ = vmm.write_u16(desc_ptr + (i as u64) * 2, ch);
+                }
+                let _ = vmm.write_u32(desc_ptr + 256, 0x1AE0);
+                let _ = vmm.write_u32(desc_ptr + 260, 0xD312);
+                let _ = vmm.write_u64(desc_ptr + 272, 1024 * 1024 * 1024);
+                let _ = vmm.write_u64(desc_ptr + 280, 0);
+                let _ = vmm.write_u64(desc_ptr + 288, 2 * 1024 * 1024 * 1024);
+                let _ = vmm.write_u32(desc_ptr + 296, ADAPTER_LUID_LOW);
+                let _ = vmm.write_u32(desc_ptr + 300, ADAPTER_LUID_HIGH);
+                // DXGI_ADAPTER_FLAG_SOFTWARE (0x2) would make engines skip the adapter; this is a
+                // hardware-class adapter as far as the guest can tell.
+                let _ = vmm.write_u32(desc_ptr + 304, 0);
+                S_OK as u64
+            }
             (ComKind::DxgiAdapter, 8) => {
                 // GetDesc (DXGI_ADAPTER_DESC = 304 bytes: Description[128] WCHAR @0, VendorId@256, DeviceId@260, AdapterLuid@296)
                 let desc_ptr = args[1];
@@ -1707,11 +1758,57 @@ impl D3d12Subsystem {
             }
             (ComKind::D3d12Device, 13) => {
                 // CheckFeatureSupport(this, Feature, pFeatureSupportData, FeatureSupportDataSize)
+                //
+                // Zero-filling used to be "good enough", but a zeroed answer is a *negative*
+                // answer: MaxSupportedFeatureLevel = 0 means "no feature level at all",
+                // HighestShaderModel = 0 is not even a valid enum, and engines bail out of device
+                // creation on that (or, worse, size a resource heap from MaxGPUVirtualAddressBits
+                // = 0). Answer the questions a renderer actually asks.
+                let feature = args[1] as u32;
                 let ptr = args[2];
                 let sz = args[3] as usize;
                 if ptr != 0 && sz > 0 && sz <= 256 {
                     let zero = vec![0u8; sz];
                     let _ = vmm.write_bytes(ptr, &zero);
+                }
+                match feature {
+                    2 => {
+                        // D3D12_FEATURE_FEATURE_LEVELS: report the highest level the guest asked
+                        // for that we support (12_0), by walking its requested array.
+                        if ptr != 0 && sz >= 24 {
+                            let count = vmm.read_u32(ptr).unwrap_or(0) as u64;
+                            let list = vmm.read_u64(ptr + 8).unwrap_or(0);
+                            let mut best: u32 = 0;
+                            for i in 0..count.min(16) {
+                                let want = vmm.read_u32(list + i * 4).unwrap_or(0);
+                                if want >= 0xb000 && want <= 0xc000 && want > best {
+                                    best = want;
+                                }
+                            }
+                            let chosen = if best != 0 { best } else { 0xc000 };
+                            let _ = vmm.write_u32(ptr + 16, chosen);
+                        }
+                    }
+                    1 => {
+                        // D3D12_FEATURE_ARCHITECTURE: discrete GPU, UMA = FALSE.
+                    }
+                    6 => {
+                        // D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT: 40-bit GPU VAs.
+                        if ptr != 0 && sz >= 8 {
+                            let _ = vmm.write_u32(ptr, 40);
+                            let _ = vmm.write_u32(ptr + 4, 40);
+                        }
+                    }
+                    7 => {
+                        // D3D12_FEATURE_SHADER_MODEL: the guest passes in the highest model it
+                        // understands; answer with that if it is <= 6.7.
+                        if ptr != 0 && sz >= 4 {
+                            let asked = vmm.read_u32(ptr).unwrap_or(0x67);
+                            let reply = if (0x51..=0x67).contains(&asked) { asked } else { 0x67 };
+                            let _ = vmm.write_u32(ptr, reply);
+                        }
+                    }
+                    _ => {}
                 }
                 S_OK as u64
             }
