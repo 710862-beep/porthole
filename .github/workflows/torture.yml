@@ -31,8 +31,19 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Native core tests
+        id: core-test
+        continue-on-error: true
         working-directory: rust/porthole-x64-wasm
-        run: cargo test --all-targets
+        run: |
+          set -o pipefail
+          mkdir -p ../../artifacts/torture
+          cargo test --all-targets 2>&1 | tee ../../artifacts/torture/core-test.log
+      - name: Publish core diagnostics
+        if: always()
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: python3 scripts/publish-torture-blobs.py
+      - name: Require native core tests
+        run: test "${{ steps.core-test.outcome }}" = success
       - uses: actions/cache@v4
         with:
           path: |

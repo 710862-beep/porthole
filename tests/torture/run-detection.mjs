@@ -25,9 +25,9 @@ export function parseDetection(suite, consoleText) {
   for (const line of consoleText.split(/\r?\n/)) {
     const warning = /^\[\*\] Warning: API (\S+) was expected to exist but was not found\./.exec(line);
     if (warning) findings.push({ kind: 'missing-api', api: warning[1], expected: 'export available', actual: 'not found', raw: line });
-    const check = /^\[\*\] (.*?)(?:\s*\.\.\.)?\s*$/.exec(line);
+    const check = /^\[\*\] (.*?)(?:\s*\.\.\.)?(?:\s*\[\s*(?:BAD|GOOD)\s*\])?\s*$/.exec(line);
     if (check && !line.includes('Warning:')) pending = check[1].trim();
-    const result = /\[ (BAD|GOOD) \]/.exec(line);
+    const result = /\[\s*(BAD|GOOD)\s*\]/.exec(line);
     if (result && pending) {
       const item = { kind: 'check', name: pending, expected: 'GOOD', actual: result[1], raw: `${pending} [ ${result[1]} ]` };
       checks.push(item); if (item.actual === 'BAD') findings.push(item); pending = null;
