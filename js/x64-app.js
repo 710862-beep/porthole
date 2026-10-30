@@ -18,6 +18,7 @@ const state = {
   sliceInstructions: 250000,
   counters: { instructions: 0, frames: 0, pages: 0, lastTick: performance.now(), ips: 0, fps: 0 },
   audio: null,
+  jit: null,
 };
 
 function log(message) {
@@ -49,7 +50,8 @@ async function loadWasm() {
   }
   state.module = mod;
   state.emulator = new mod.BrowserX64Emulator(2048);
-  log('Núcleo x86-64 Wasm inicializado (cache LRU de 2048 páginas = 8 MB).');
+  state.jit = new Porthole.X64JitHost(state.emulator, mod, { enabled: true });
+  log('Núcleo x86-64 Wasm inicializado (cache LRU de 2048 páginas = 8 MB; JIT híbrido ativo).');
 }
 
 function initAudio() {
@@ -76,11 +78,42 @@ function syncFrames() {
   }
 }
 
+function showGuestModal(request) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1b1f27;color:#e8e8e8;border:1px solid #444;border-radius:8px;padding:20px;min-width:320px;max-width:560px;font-family:system-ui';
+    const title = document.createElement('h3');
+    title.textContent = request.caption || 'Guest dialog';
+    const body = document.createElement('p');
+    body.textContent = request.text || '';
+    body.style.whiteSpace = 'pre-wrap';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px';
+    // MB_* button sets; default OK. Values are Win32 ID* constants.
+    const buttons = [[1, 'OK']];
+    const kind = (request.type || 0) & 0xF;
+    if (kind === 1) buttons.splice(0, 1, [1, 'OK'], [2, 'Cancel']);
+    if (kind === 3) buttons.splice(0, 1, [6, 'Yes'], [7, 'No'], [2, 'Cancel']);
+    if (kind === 4) buttons.splice(0, 1, [6, 'Yes'], [7, 'No']);
+    for (const [id, label] of buttons) {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.onclick = () => { overlay.remove(); resolve(id); };
+      row.appendChild(b);
+    }
+    box.append(title, body, row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
+}
+
 async function tick() {
   if (!state.running) return;
   const emu = state.emulator;
   const started = performance.now();
-  let status = emu.run_slice(state.sliceInstructions);
+  let status = await state.jit.runSlice(state.sliceInstructions);
 
   // Resolve NVMe page faults through the real swap shards.
   let guard = 0;
@@ -95,8 +128,16 @@ async function tick() {
       state.running = false;
       break;
     }
-    status = emu.run_slice(state.sliceInstructions);
+    status = await state.jit.runSlice(state.sliceInstructions);
     guard += 1;
+  }
+
+  if (status === 'modal') {
+    const request = JSON.parse(emu.modal_request());
+    const result = await showGuestModal(request);
+    emu.modal_respond(result);
+    state.rafId = requestAnimationFrame(tick);
+    return;
   }
 
   if (status.startsWith('exit:') || status.startsWith('fault:')) {
@@ -188,6 +229,9 @@ async function loadExecutable() {
       return;
     }
     const info = JSON.parse(emu.load_pe(target.bytes));
+    for (const m of cached) {
+      try { await state.jit.importCached(m.meta, m.bytes); } catch { /* stale artifact rejected by core */ }
+    }
     log(`PE32+ mapeado: ${target.path} base=0x${info.imageBase.toString(16)} entry=0x${info.entryPoint.toString(16)} imports=${info.imports} AOT=${info.aotBlocks}`);
     $('run').disabled = false;
   } catch (error) {
@@ -216,6 +260,11 @@ function pause() {
   log('Execução pausada.');
 }
 
+$('x64-canvas').addEventListener('pointermove', (ev) => {
+  if (!state.emulator || typeof state.emulator.inject_mouse_move !== 'function') return;
+  const rect = ev.currentTarget.getBoundingClientRect();
+  state.emulator.inject_mouse_move(Math.round(ev.clientX - rect.left), Math.round(ev.clientY - rect.top));
+});
 $('mount').addEventListener('click', mountNvme);
 $('load-exe').addEventListener('click', loadExecutable);
 $('run').addEventListener('click', start);
