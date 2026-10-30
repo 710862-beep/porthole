@@ -1322,10 +1322,14 @@ mod tests {
         let scratch = 0x8_0002_0000u64;
         emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
         emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
-        emu.vmm.map_region(scratch, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        emu.vmm.map_region(scratch, 70 * 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
         emu.vmm.host_write_bytes(code, &[0x90, 0xC3]).unwrap();
         emu.vmm.host_write_bytes(stack, &0x1234u64.to_le_bytes()).unwrap();
-        emu.vmm.host_write_bytes(scratch, &[1; 4096]).unwrap();
+        // The VMM's minimum resident budget is 64 pages; touch enough unpinned pages to
+        // evict the stack while the pinned code page remains resident.
+        for i in 0..70u64 {
+            emu.vmm.host_write_bytes(scratch + i * 0x1000, &[1]).unwrap();
+        }
         let saved = emu.vmm.drain_evicted_dirty_pages();
         let old = saved.iter().find(|p| p.page_base == stack).expect("stack evicted");
         let epoch = emu.vmm.page_write_epoch(code);

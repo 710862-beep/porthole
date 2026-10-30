@@ -6598,10 +6598,14 @@ mod heap_regression_tests {
         let out = 0x9_0000_0000u64;
         vmm.map_region(out, 0x2000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
         let scratch = 0x9_0001_0000u64;
-        vmm.map_region(scratch, 0x2000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
+        vmm.map_region(scratch, 0x2000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, true);
+        let pressure = 0x9_0002_0000u64;
+        vmm.map_region(pressure, 70 * 0x1000, crate::vmm::PAGE_READWRITE, crate::vmm::MEM_COMMIT, crate::vmm::MEM_PRIVATE, false);
         vmm.host_write_bytes(out, &[0x41; 4096]).unwrap();
         vmm.host_write_bytes(out + 0x1000, &[0x42; 4096]).unwrap();
-        vmm.host_write_bytes(scratch, &[0x43; 4096]).unwrap();
+        for i in 0..70u64 {
+            vmm.host_write_bytes(pressure + i * 0x1000, &[0x43]).unwrap();
+        }
         let saved = vmm.drain_evicted_dirty_pages();
         let old = saved.iter().find(|p| p.page_base == out).expect("output page evicted");
         k.vfs_insert_file("C:\\Game\\test.wad", b"0123456789abcdef");

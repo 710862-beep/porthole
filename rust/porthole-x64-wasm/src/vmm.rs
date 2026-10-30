@@ -748,7 +748,7 @@ impl VirtualMemoryManager {
             let page_base = Self::align_down(cur_va);
             let off = (cur_va & PAGE_MASK) as usize;
             let chunk = (PAGE_SIZE - off).min(data.len() - cursor);
-            let page = self.ensure_page_mut(page_base, true, false, Some(page_base))?;
+            let page = self.ensure_page_mut(page_base, true, false, None)?;
             page[off..off + chunk].copy_from_slice(&data[cursor..cursor + chunk]);
             cursor += chunk;
         }
@@ -916,14 +916,15 @@ mod tests {
     fn partial_host_write_requires_swapped_page_without_zeroing_it() {
         let mut vmm = VirtualMemoryManager::new(2);
         let base = 0x8_0000_0000u64;
-        vmm.map_region(base, 3 * PAGE_SIZE as u64, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+        // VMM enforces a 64-page minimum resident budget; create real LRU pressure.
+        vmm.map_region(base, 66 * PAGE_SIZE as u64, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
         let mut first = [0u8; PAGE_SIZE];
         first[0] = 0x41;
         first[4095] = 0x5a;
         vmm.host_write_bytes(base, &first).unwrap();
-        // Evict and drain the first page, modelling an OPFS/shard-backed resident window.
-        vmm.host_write_bytes(base + PAGE_SIZE as u64, &[2; 4096]).unwrap();
-        vmm.host_write_bytes(base + 2 * PAGE_SIZE as u64, &[3; 4096]).unwrap();
+        for i in 1..=65u64 {
+            vmm.host_write_bytes(base + i * PAGE_SIZE as u64, &[2]).unwrap();
+        }
         let saved = vmm.drain_evicted_dirty_pages();
         let old = saved.iter().find(|p| p.page_base == base).expect("first page evicted");
         assert_eq!(vmm.host_write_bytes(base + 1, &[9]), Err(MemoryTrap::PageFault(base)));
