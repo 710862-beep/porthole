@@ -344,6 +344,20 @@ impl Win32Kernel {
             hle_notes: Vec::new(),
             hle_calls: HashMap::new(),
             hle_unimplemented: Vec::new(),
+            exe_path: String::new(),
+            fmode_cell: 0,
+            commode_cell: 0,
+            iob_base: 0,
+            initenv_cell: 0,
+            atexit_funcs: Vec::new(),
+            semaphores: HashMap::new(),
+            find_searches: HashMap::new(),
+            file_mappings: HashMap::new(),
+            next_mapping_va: 0x0000_0006_0000_0000,
+            alloc_sizes: HashMap::new(),
+            free_blocks: Vec::new(),
+            qpc_ticks: 0,
+            app_type: 0,
         };
         kernel.env.push(("PATH".into(), "C:\\Windows\\System32".into()));
         kernel.env.push(("SystemRoot".into(), "C:\\Windows".into()));
@@ -3138,7 +3152,7 @@ impl Win32Kernel {
             "LookupPrivilegeValueW" | "LookupPrivilegeValueA" => {
                 if a2 != 0 {
                     let _ = vmm.write_u32(a2, 1);
-                    let _ = vmm.write_i32(a2 + 4, 0);
+                    let _ = vmm.write_u32(a2 + 4, 0);
                 }
                 1
             }
