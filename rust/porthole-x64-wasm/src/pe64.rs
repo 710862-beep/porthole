@@ -19,6 +19,7 @@ pub const EXIT_THUNK_ADDR: u64 = THUNK_BASE;
 pub const THREAD_EXIT_THUNK_ADDR: u64 = THUNK_BASE + THUNK_STRIDE;
 
 pub const PEB_ADDR: u64 = 0x0000_7FFE_0001_0000;
+pub const PROCESS_HEAP_ADDR: u64 = 0x0000_0000_0060_0000;
 pub const PROC_PARAMS_ADDR: u64 = 0x0000_7FFE_0001_1000;
 pub const CURDIR_BUF_ADDR: u64 = 0x0000_7FFE_0001_1800;
 pub const MAIN_TEB_ADDR: u64 = 0x0000_7FFE_0002_0000;
@@ -36,6 +37,7 @@ pub struct LoadedPe64Info {
     pub text_size: u64,
     pub import_count: usize,
     pub aot_blocks_compiled: usize,
+    pub tls_callbacks: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +285,9 @@ where
         }
     }
 
+    // KUSER_SHARED_DATA is fixed at 0x7FFE0000 on Windows x64. Zeroed => no kernel debugger.
+    vmm.map_region(0x7FFE0000, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+
     // Initialize PEB, RTL_USER_PROCESS_PARAMETERS, and Main Thread TEB + Stack
     vmm.map_region(PEB_ADDR, 0x20000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
     vmm.map_region(
@@ -297,6 +302,11 @@ where
     // PEB fields
     let _ = vmm.write_u64(PEB_ADDR + 0x10, image_base); // ImageBaseAddress
     let _ = vmm.write_u64(PEB_ADDR + 0x20, PROC_PARAMS_ADDR); // ProcessParameters
+    vmm.map_region(PROCESS_HEAP_ADDR, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+    let _ = vmm.write_u64(PEB_ADDR + 0x30, PROCESS_HEAP_ADDR); // ProcessHeap
+    let _ = vmm.write_u32(PEB_ADDR + 0xB8, 4); // NumberOfProcessors (x64)
+    let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x70, 2); // HEAP_GROWABLE, no debug flags
+    let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x74, 0); // ForceFlags
 
     // Initial CurrentDirectory = "C:\Game\"
     let init_cwd: Vec<u16> = "C:\\Game\\".encode_utf16().collect();
@@ -316,6 +326,7 @@ where
 
     // Handle static TLS directory (DataDirectory[9]) if present
     let mut tls_array_ptr = 0u64;
+    let mut tls_callbacks: Vec<u64> = Vec::new();
     if num_rva > 9 {
         let tls_dir = opt + 112 + 9 * 8;
         let tls_rva = read_le_u32(pe_bytes, tls_dir).unwrap_or(0) as u64;
@@ -339,6 +350,15 @@ where
             }
             let _ = vmm.write_u64(tls_arr_va, tls_block_va);
             tls_array_ptr = tls_arr_va;
+            // AddressOfCallBacks (TLS directory + 24): null-terminated PIMAGE_TLS_CALLBACK array.
+            let callbacks_va = vmm.read_u64(tls_va + 24).unwrap_or(0);
+            if callbacks_va != 0 {
+                for i in 0..64u64 {
+                    let cb = vmm.read_u64(callbacks_va + i * 8).unwrap_or(0);
+                    if cb == 0 { break; }
+                    if vmm.find_region(cb).is_some() { tls_callbacks.push(cb); }
+                }
+            }
         }
     }
 
@@ -352,23 +372,17 @@ where
         tls_array_ptr,
     );
 
-    // Hybrid AOT pass: scan `.text` entry & 16-byte aligned prologue candidates to pre-emit `.wasm` blocks
+    // Conservative AOT entry-block pass. A 16-byte-aligned address is NOT an x86 basic-block
+    // boundary: the old heuristic decoded mid-instruction and cached semantically wrong Wasm.
+    // Additional blocks are discovered only at RIPs the interpreter actually executes.
     let mut aot_blocks_compiled = 0usize;
-    if text_size >= 16 {
+    if text_size >= 2 {
         let mut scan_buf = [0u8; 64];
-        let mut candidate_rips = vec![image_base + entry_rva];
-        let max_scan = text_size.min(65536);
-        let mut off = 0u64;
-        while off + 64 <= max_scan && candidate_rips.len() < 24 {
-            candidate_rips.push(text_base + off);
-            off += 256;
-        }
-        for cand_rip in candidate_rips {
-            if vmm.host_read_bytes(cand_rip, &mut scan_buf).is_ok() {
-                let epoch = vmm.page_write_epoch(cand_rip & !0xFFF);
-                if jit.try_compile_block(cand_rip, epoch, &scan_buf).is_some() {
-                    aot_blocks_compiled += 1;
-                }
+        let cand_rip = image_base + entry_rva;
+        if vmm.host_read_bytes(cand_rip, &mut scan_buf).is_ok() {
+            let epoch = vmm.page_write_epoch(cand_rip & !0xFFF);
+            if jit.try_compile_block(cand_rip, epoch, &scan_buf).is_some() {
+                aot_blocks_compiled += 1;
             }
         }
     }
@@ -382,6 +396,7 @@ where
             text_size,
             import_count: bindings.len(),
             aot_blocks_compiled,
+            tls_callbacks,
         },
         bindings,
     ))

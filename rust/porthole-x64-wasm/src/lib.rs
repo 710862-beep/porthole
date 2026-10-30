@@ -17,7 +17,7 @@ use jit::HybridWasmJit;
 use pe64::{load_pe64_image, init_teb, LoadedPe64Info, MAIN_STACK_BOTTOM, MAIN_STACK_TOP,
            IMPORT_THUNK_BASE, MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
 use vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, PAGE_READWRITE};
-use win32_hle::{HleAction, UpcallStep, Win32Kernel};
+use win32_hle::{HleAction, UpcallState, UpcallStep, Win32Kernel};
 
 /// Extra pseudo-thunk used as the return address of HLE upcalls.
 pub const UPCALL_RETURN_THUNK: u64 = THUNK_BASE + THUNK_REGION_SIZE - THUNK_STRIDE;
@@ -45,6 +45,7 @@ pub struct BrowserX64Emulator {
     status: RunStatus,
     fault_message: String,
     pending_upcall: bool,
+    modal_pending: Option<(u64, String, String, [u64; 10], Vec<String>)>,
     frames_presented_seen: u64,
     console: Vec<u8>,
     /// Instruction-level execution trace (see [`BrowserX64Emulator::enable_trace`]).
@@ -55,6 +56,17 @@ pub struct BrowserX64Emulator {
     hle_trace_only: bool,
     /// Optional substring filters: a trace line is kept only if it contains one of them.
     trace_filter: Vec<String>,
+    /// Phase-1 conformance audit: bounded, drainable JSONL events. Disabled by default so
+    /// production/benchmark execution does not pay for argument/memory snapshots.
+    audit: Vec<String>,
+    audit_max: usize,
+    audit_seq: u64,
+    audit_dropped: u64,
+    jit_enabled: bool,
+    jit_ctx: Vec<u64>,
+    jit_active: Option<jit::CompiledJitArtifact>,
+    jit_shadow: Option<cpu::CpuState>,
+    jit_validate: bool,
 }
 
 #[wasm_bindgen]
@@ -70,6 +82,7 @@ impl BrowserX64Emulator {
             status: RunStatus::Ready,
             fault_message: String::new(),
             pending_upcall: false,
+            modal_pending: None,
             frames_presented_seen: 0,
             console: Vec::new(),
             trace: Vec::new(),
@@ -77,6 +90,16 @@ impl BrowserX64Emulator {
             trace_enabled: false,
             hle_trace_only: false,
             trace_filter: Vec::new(),
+            audit: Vec::new(),
+            audit_max: 0,
+            audit_seq: 0,
+            audit_dropped: 0,
+            jit_enabled: false,
+            // 0..15 GPRs; 16 flag-op kind; 17 width; 18 lhs; 19 rhs; 20 result.
+            jit_ctx: vec![0; 21],
+            jit_active: None,
+            jit_shadow: None,
+            jit_validate: true,
         }
     }
 
@@ -103,6 +126,10 @@ impl BrowserX64Emulator {
     /// Records the guest-visible path of the loaded image for `GetModuleFileNameW(NULL, ...)`.
     pub fn set_exe_path(&mut self, path: &str) {
         self.kernel.set_exe_path(path);
+    }
+
+    pub fn set_environment_variable(&mut self, name: &str, value: &str) -> bool {
+        self.kernel.provision_env(name, value)
     }
 
     /// Maps a PE32+ (`0x8664`) image, resolves imports against the HLE thunk space, initializes
@@ -195,15 +222,25 @@ impl BrowserX64Emulator {
             0,
         );
 
+        // Run loader TLS callbacks before the CRT entry point (al-khaser TLS attach probes).
+        if let Some(first) = self.kernel.begin_tls(info.tls_callbacks.clone(), info.entry_point, MAIN_STACK_TOP - 0x108) {
+            self.cpu.gpr[0] = info.image_base;
+            self.cpu.gpr[1] = 1; // DLL_PROCESS_ATTACH
+            self.cpu.gpr[2] = 0;
+            self.cpu.rip = first;
+            self.pending_upcall = true;
+        }
+
         let summary = format!(
-            "{{\"imageBase\":{},\"entryPoint\":{},\"sizeOfImage\":{},\"textSize\":{},\"imports\":{},\"aotBlocks\":{},\"bindings\":{}}}",
+            "{{\"imageBase\":{},\"entryPoint\":{},\"sizeOfImage\":{},\"textSize\":{},\"imports\":{},\"aotBlocks\":{},\"bindings\":{},\"tlsCallbacks\":{}}}",
             info.image_base,
             info.entry_point,
             info.size_of_image,
             info.text_size,
             info.import_count,
             info.aot_blocks_compiled,
-            thunk_slot_count
+            thunk_slot_count,
+            info.tls_callbacks.len()
         );
         self.loaded = Some(info);
         self.status = RunStatus::Running;
@@ -226,7 +263,7 @@ impl BrowserX64Emulator {
         while executed < max_instructions {
             // --- upcall sentinel: a guest function that the HLE invoked has returned -------------
             if self.cpu.rip == UPCALL_RETURN_THUNK {
-                match self.kernel.finish_upcall(&mut self.vmm) {
+                match self.kernel.finish_upcall(&mut self.vmm, &mut self.cpu) {
                     Some(UpcallStep::Call(target)) => {
                         // The upcalled function's own `ret` already popped the sentinel, so RSP is
                         // back at the interrupted HLE stub's frame. Stage a *new* sentinel one slot
@@ -239,6 +276,7 @@ impl BrowserX64Emulator {
                             target, rsp, ret_slot
                         ));
                         self.cpu.gpr[4] = ret_slot;
+                        if let Some(ptr) = self.kernel.pending_exception_pointers() { self.cpu.gpr[1] = ptr; }
                         self.cpu.rip = target;
                         self.pending_upcall = true;
                         continue;
@@ -257,6 +295,17 @@ impl BrowserX64Emulator {
                         self.cpu.rip = resume_rip;
                         self.pending_upcall = false;
                         continue;
+                    }
+                    Some(UpcallStep::ResumeGuest) => {
+                        self.pending_upcall = false;
+                        continue;
+                    }
+                    Some(UpcallStep::Fault(msg)) => {
+                        self.pending_upcall = false;
+                        self.status = RunStatus::Fault;
+                        self.fault_message = msg;
+                        self.console.extend_from_slice(&self.kernel.drain_stdout());
+                        return format!("fault:{}", self.fault_message);
                     }
                     None => {
                         // No upcall in flight: the process entry point returned.
@@ -280,6 +329,7 @@ impl BrowserX64Emulator {
             {
                 if let Some((kind, slot)) = self.kernel.d3d12.lookup_method(insn_rip) {
                     let args = self.capture_args();
+                    let audit_before = if self.audit_max == 0 { Vec::new() } else { self.audit_snapshots(&args) };
                     let rsp = self.cpu.gpr[4];
                     let result = {
                         let client_sizes = self.kernel.window_sizes();
@@ -299,6 +349,8 @@ impl BrowserX64Emulator {
                         )
                     };
                     self.drain_d3d12_notes();
+                    let api = format!("{}::{}", d3d12_hle::interface_name(kind), d3d12_hle::method_name(kind, slot));
+                    self.record_api_audit(&api, &args, result, insn_rip, &audit_before, result != d3d12_hle::E_NOTIMPL as u64);
                     self.cpu.gpr[0] = result;
                     let ret = self.vmm.read_u64(rsp).unwrap_or(0);
                     self.cpu.gpr[4] = rsp.wrapping_add(8);
@@ -318,7 +370,8 @@ impl BrowserX64Emulator {
                 self.status = RunStatus::Fault;
                 self.fault_message = format!("unregistered COM thunk 0x{insn_rip:x}");
                 self.trace_event(format!("F unregistered COM thunk 0x{insn_rip:x}"));
-                return format!("fault:{}", self.fault_message);
+                self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return format!("fault:{}", self.fault_message);
             }
 
             // --- HLE thunk range ---------------------------------------------------------------
@@ -377,6 +430,7 @@ impl BrowserX64Emulator {
                         // up as an explicit ret_slot=0x... value rather than an unexplained jump.
                         let ret_slot_addr = rsp;
                         let ret_slot_val = self.vmm.read_u64(ret_slot_addr).unwrap_or(0);
+                        let audit_before = if self.audit_max == 0 { Vec::new() } else { self.audit_snapshots(&args) };
                         let action = self.kernel.dispatch(
                             &mut self.vmm,
                             &dll,
@@ -385,6 +439,7 @@ impl BrowserX64Emulator {
                             &args,
                             rsp,
                             insn_rip,
+                            &mut self.cpu,
                         );
                         if !self.kernel.hle_notes.is_empty() {
                             let notes: Vec<String> = self.kernel.hle_notes.drain(..).collect();
@@ -395,6 +450,9 @@ impl BrowserX64Emulator {
                         self.drain_d3d12_notes();
                         match action {
                             HleAction::Return(rax) => {
+                                let api = format!("{dll}!{symbol}");
+                                let implemented = !self.kernel.is_unimplemented(&symbol);
+                                self.record_api_audit(&api, &args, rax, insn_rip, &audit_before, implemented);
                                 self.cpu.gpr[0] = rax;
                                 let ret = self.vmm.read_u64(rsp).unwrap_or(0);
                                 self.cpu.gpr[4] = rsp.wrapping_add(8);
@@ -409,7 +467,18 @@ impl BrowserX64Emulator {
                                 executed += 1;
                                 continue;
                             }
-                            HleAction::Upcall { target, resume_rip, .. } => {
+                            HleAction::Modal { request_json } => {
+                                let api = format!("{dll}!{symbol}");
+                                self.modal_pending = Some((rsp, request_json, api.clone(), args, audit_before));
+                                self.status = RunStatus::Running;
+                                self.trace_event(format!("M 0x{:x} {} modal pending", insn_rip, api));
+                                self.drain_watch();
+                                return "modal".to_string();
+                            }
+                            HleAction::Upcall { target, resume_rip, rax } => {
+                                if matches!(self.kernel.pending_upcall(), Some(UpcallState::Exception { .. })) {
+                                    self.cpu.gpr[1] = rax; // EXCEPTION_POINTERS*
+                                }
                                 // Stage a *real* Win64 call frame 0x30 below the HLE stub's rsp:
                                 // [ret_slot]=sentinel, [ret_slot+8, ret_slot+0x28) = the callee's
                                 // 32-byte register home/shadow space, which the upcalled guest
@@ -438,6 +507,17 @@ impl BrowserX64Emulator {
                                 self.trace_event(format!("E ExitProcess({code}) from {symbol}"));
                                 return format!("exit:{}", code);
                             }
+                            HleAction::HostPageFault(page) => {
+                                // RIP/RSP still point at the import thunk. Critical file APIs
+                                // delay position/handle publication until their output writes
+                                // succeed, so replay after supply_page is idempotent.
+                                self.console.extend_from_slice(&self.kernel.drain_stdout());
+                                self.trace_event(format!(
+                                    "P 0x{:x} {}!{} output page-fault:0x{:x} args={:?}",
+                                    insn_rip, dll, symbol, page, args
+                                ));
+                                return format!("page-fault:{page}");
+                            }
                         }
                     }
                     None => {
@@ -447,12 +527,26 @@ impl BrowserX64Emulator {
                         self.status = RunStatus::Fault;
                         self.fault_message = format!("unmapped thunk 0x{insn_rip:x}");
                         self.trace_event(format!("F unmapped thunk 0x{insn_rip:x} rsp=0x{rsp_before:x}"));
-                        return format!("fault:{}", self.fault_message);
+                        self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return format!("fault:{}", self.fault_message);
                     }
                 }
             }
 
+            // --- compiled Wasm block handoff ---------------------------------------------------
+            // The host owns WebAssembly.Module compilation. When a valid artifact exists at RIP,
+            // yield a distinct status so the JS bridge can execute it with the core's exported
+            // memory, then commit registers atomically. Diagnostics lanes stay interpreted.
+            if self.jit_enabled && !self.trace_enabled && self.jit_active.is_none() && (self.cpu.rflags & 0x100) == 0 {
+                let epoch = self.vmm.page_write_epoch(insn_rip & !0xFFF);
+                if self.jit.get_valid_artifact(insn_rip, epoch).is_some() {
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return "jit".to_string();
+                }
+            }
+
             // --- ordinary guest instruction ----------------------------------------------------
+            let exception_snapshot = if self.kernel.has_exception_handlers() { Some(self.cpu.clone()) } else { None };
             let outcome = self.cpu.step_one(&mut self.vmm);
             match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {
@@ -460,9 +554,39 @@ impl BrowserX64Emulator {
                     if !self.hle_trace_only {
                         self.trace_instruction(insn_rip, rsp_before);
                     }
-                    self.maybe_jit_compile(insn_rip);
+                    if self.jit_enabled { self.maybe_jit_compile(insn_rip); }
+                    // x86 TF: deliver one EXCEPTION_SINGLE_STEP after the armed instruction.
+                    // The VEH handler resumes with TF cleared, matching al-khaser's trap-flag probe.
+                    if (self.cpu.rflags & 0x100) != 0 {
+                        self.cpu.rflags &= !0x100;
+                        if self.kernel.has_exception_handlers() {
+                            let snapshot = self.cpu.clone();
+                            if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0x8000_0004, 0, self.cpu.rip, snapshot.gpr[4], &[]) {
+                                self.cpu = snapshot;
+                                self.stage_exception(action);
+                                continue;
+                            }
+                        }
+                    }
                 }
                 Ok(ExecOutcome::Fault(msg)) => {
+                    if let Some(snapshot) = exception_snapshot.clone() {
+                        let (code, resume_rip, params) = if msg.starts_with("INT3") {
+                            (0x8000_0003u32, insn_rip + 1, vec![])
+                        } else if msg.starts_with("INT 0x2d") {
+                            (0x8000_0003u32, insn_rip + 2, vec![])
+                        } else if msg.starts_with("UD2") {
+                            (0xC000_001Du32, insn_rip, vec![])
+                        } else { (0, insn_rip, vec![]) };
+                        if code != 0 {
+                            if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, code, 0, resume_rip, snapshot.gpr[4], &params) {
+                                self.cpu = snapshot;
+                                self.stage_exception(action);
+                                executed += 1;
+                                continue;
+                            }
+                        }
+                    }
                     if msg.starts_with("INT3") {
                         let ret = self.vmm.read_u64(self.cpu.gpr[4]).unwrap_or(0);
                         if ret == UPCALL_RETURN_THUNK {
@@ -477,6 +601,7 @@ impl BrowserX64Emulator {
                         "F decode/exec fault at 0x{insn_rip:x}: {}",
                         self.fault_message
                     ));
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
                     return format!("fault:{}", self.fault_message);
                 }
                 Err(MemoryTrap::PageFault(addr)) => {
@@ -487,6 +612,14 @@ impl BrowserX64Emulator {
                     return format!("page-fault:{}", addr);
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
+                    if let Some(snapshot) = exception_snapshot {
+                        if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0xC000_0005, 0, insn_rip, snapshot.gpr[4], &[1, addr]) {
+                            self.cpu = snapshot;
+                            self.stage_exception(action);
+                            executed += 1;
+                            continue;
+                        }
+                    }
                     self.status = RunStatus::Fault;
                     self.fault_message = format!(
                         "access violation at 0x{addr:x} (rax=0x{:x} rcx=0x{:x} rdx=0x{:x} rsp=0x{:x} gs=0x{:x}); history: {}",
@@ -500,6 +633,7 @@ impl BrowserX64Emulator {
                         "F access violation 0x{addr:x} at 0x{insn_rip:x} rsp=0x{:x}",
                         self.cpu.gpr[4]
                     ));
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
                     return format!("fault:{}", self.fault_message);
                 }
             }
@@ -519,6 +653,25 @@ impl BrowserX64Emulator {
 
     /// Records up to `max_entries` execution events (instructions, HLE dispatches, upcall
     /// transitions, page faults and stores inside the optional write watch).
+    /// Enables the torture runner's structured API audit. This is diagnostics, not an
+    /// execution mode: it never changes an HLE result or substitutes a test assertion.
+    pub fn enable_api_audit(&mut self, max_entries: u32) {
+        self.audit_max = (max_entries as usize).min(200_000);
+        self.audit.clear();
+        self.audit_dropped = 0;
+    }
+
+    /// Drains JSONL. `dropped` makes ring overflow visible instead of silently losing calls.
+    pub fn take_api_audit(&mut self) -> String {
+        let mut out = std::mem::take(&mut self.audit).join("\n");
+        if self.audit_dropped != 0 {
+            if !out.is_empty() { out.push('\n'); }
+            out.push_str(&format!("{{\"kind\":\"audit-overflow\",\"dropped\":{}}}", self.audit_dropped));
+            self.audit_dropped = 0;
+        }
+        out
+    }
+
     pub fn enable_trace(&mut self, max_entries: u32) {
         self.trace.clear();
         self.trace_max = max_entries as usize;
@@ -655,6 +808,59 @@ impl BrowserX64Emulator {
         out
     }
 
+    fn audit_json_escape(text: &str) -> String {
+        let mut out = String::new();
+        for ch in text.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Reads only committed, resident-or-swapped guest pages; never allocates a page merely
+    /// because an integer argument happens to look like a pointer.
+    fn audit_snapshots(&mut self, args: &[u64; 10]) -> Vec<String> {
+        args.iter().take(6).map(|&addr| {
+            if addr < 0x10000 { return "null".to_string(); }
+            let mut bytes = [0u8; 64];
+            let len = (4096 - (addr & 0xfff)).min(64) as usize;
+            match self.vmm.read_bytes(addr, &mut bytes[..len]) {
+                Ok(()) => format!("\"{}\"", bytes[..len].iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                Err(_) => "null".to_string(),
+            }
+        }).collect()
+    }
+
+    fn record_api_audit(&mut self, api: &str, args: &[u64; 10], result: u64, rip: u64, before: &[String], implemented: bool) {
+        if self.audit_max == 0 { return; }
+        if self.audit.len() >= self.audit_max {
+            self.audit_dropped += 1;
+            return;
+        }
+        self.audit_seq += 1;
+        let after = self.audit_snapshots(args);
+        let caller = self.vmm.read_u64(self.cpu.gpr[4]).unwrap_or(0);
+        let debug = if api.ends_with("!OutputDebugStringA") {
+            self.vmm.read_c_string(args[0], 16384).ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .map(|s| format!(",\"debugString\":\"{}\"", Self::audit_json_escape(&s)))
+                .unwrap_or_default()
+        } else { String::new() };
+        self.audit.push(format!(
+            "{{\"kind\":\"api\",\"seq\":{},\"instruction\":{},\"api\":\"{}\",\"rip\":\"0x{:x}\",\"caller\":\"0x{:x}\",\"args\":[{}],\"return\":\"0x{:x}\",\"lastError\":{},\"implemented\":{},\"before\":[{}],\"after\":[{}]{} }}",
+            self.audit_seq, self.cpu.instructions_executed, Self::audit_json_escape(api), rip, caller,
+            args.iter().map(|a| format!("\"0x{a:x}\"")).collect::<Vec<_>>().join(","),
+            result, self.kernel.last_error, implemented, before.join(","), after.join(","), debug
+        ));
+    }
+
     fn capture_args(&mut self) -> [u64; 10] {
         let mut args = [0u64; 10];
         args[0] = self.cpu.gpr[1]; // RCX
@@ -668,13 +874,26 @@ impl BrowserX64Emulator {
         args
     }
 
+    fn stage_exception(&mut self, action: HleAction) {
+        if let HleAction::Upcall { target, rax, .. } = action {
+            let rsp = self.cpu.gpr[4];
+            let frame = rsp.wrapping_sub(0x30);
+            let _ = self.vmm.write_u64(frame, UPCALL_RETURN_THUNK);
+            self.cpu.gpr[4] = frame;
+            self.cpu.gpr[1] = rax;
+            self.cpu.rip = target;
+            self.pending_upcall = true;
+            self.trace_event(format!("X exception handler=0x{target:x} pointers=0x{rax:x}"));
+        }
+    }
+
     fn maybe_jit_compile(&mut self, insn_rip: u64) {
         let page_base = insn_rip & !0xFFF;
         let should = self
             .cpu
             .icache
             .get(&page_base)
-            .map(|cb| cb.exec_count == 64)
+            .map(|cb| cb.exec_count > 0 && cb.exec_count % 64 == 0)
             .unwrap_or(false);
         if !should {
             return;
@@ -982,10 +1201,142 @@ impl BrowserX64Emulator {
         self.vmm.set_max_resident_pages(pages as usize);
     }
 
+    // -------------------------------------------------------- hybrid JIT host bridge
+
+    /// Returns the pending host modal request JSON, or "" when none.
+    pub fn modal_request(&self) -> String { self.modal_pending.as_ref().map(|(_, j, _, _, _)| j.clone()).unwrap_or_default() }
+    /// Host answers a modal; resumes the guest with the chosen button result.
+    pub fn modal_respond(&mut self, result: u32) -> bool {
+        let Some((rsp, _request, api, args, before)) = self.modal_pending.take() else { return false; };
+        let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+        self.record_api_audit(&api, &args, result as u64, self.cpu.rip, &before, true);
+        self.cpu.gpr[0] = result as u64;
+        self.cpu.gpr[4] = rsp.wrapping_add(8);
+        self.cpu.rip = ret;
+        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(1);
+        true
+    }
+    /// Host-driven virtual mouse input (browser pointer events).
+    pub fn inject_mouse_move(&mut self, x: i32, y: i32) { self.kernel.cursor_x = x; self.kernel.cursor_y = y; }
+    pub fn set_virtual_input_profile(&mut self, on: bool) { self.kernel.virtual_input = on; }
+
+    pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
+    /// When true (default), each JIT commit is shadow-validated against the interpreter.
+    pub fn set_jit_validate(&mut self, on: bool) { self.jit_validate = on; }
+
+    /// JIT context ABI version (number of i64 slots). Hosts/tests use this to reject old
+    /// cores that lack flag-materialization slots instead of silently miscomputing RFLAGS.
+    #[wasm_bindgen]
+    pub fn jit_context_slots(&self) -> u32 { self.jit_ctx.len() as u32 }
+    pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }
+    pub fn jit_pending_meta(&self, index: u32) -> String { self.jit.pending_meta(index as usize).unwrap_or_default() }
+    pub fn jit_pending_wasm(&self, index: u32) -> Vec<u8> { self.jit.pending_wasm(index as usize).unwrap_or_default() }
+    pub fn jit_clear_pending(&mut self) { self.jit.clear_pending(); }
+    /// Discards an entry whose host WebAssembly.compile failed. Without this the next slice
+    /// would hand off the same invalid artifact forever instead of using the interpreter.
+    pub fn jit_invalidate_entry(&mut self, entry_rip: u64) { self.jit.invalidate_entry(entry_rip); }
+    pub fn jit_active_wasm(&self) -> Vec<u8> { self.jit_active.as_ref().map(|a| a.wasm_bytes.clone()).unwrap_or_default() }
+    pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
+
+    /// Copies GPRs into the shared context and arms the artifact at current RIP.
+    pub fn jit_enter_block(&mut self) -> String {
+        let epoch = self.vmm.page_write_epoch(self.cpu.rip & !0xFFF);
+        let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
+        self.jit_ctx[..16].copy_from_slice(&self.cpu.gpr);
+        self.jit_ctx[16] = 0; // no flag-writing op committed yet
+        self.jit_shadow = Some(self.cpu.clone());
+        let meta = format!("{{\"entryRip\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\",\"ctx\":{}}}",
+            art.entry_rip, art.page_epoch, art.byte_len, art.insn_count, art.ends_with_ret, art.code_hash, self.jit_context_ptr());
+        self.jit_active = Some(art);
+        meta
+    }
+
+    /// Atomically commits a completed host-executed Wasm block. On any epoch/entry mismatch the
+    /// block is discarded and the interpreter resumes at the unchanged RIP (safe SMC fallback).
+    pub fn jit_commit_block(&mut self) -> String {
+        let Some(art) = self.jit_active.clone() else { return "fault:no active JIT block".into(); };
+        let epoch = self.vmm.page_write_epoch(art.entry_rip & !0xFFF);
+        if art.entry_rip != self.cpu.rip || art.page_epoch != epoch {
+            self.jit_active.take();
+            self.jit.invalidate_entry(art.entry_rip);
+            return "next".into();
+        }
+        // Safety net: re-execute the pure-GPR block in a shadow interpreter and compare.
+        // A miscompile is invalidated and replayed by the host fallback instead of corrupting
+        // the guest. Once an artifact class is differential-proven it can skip this via
+        // set_jit_validate(false); correctness lanes keep it on.
+        if self.jit_validate {
+            let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
+            let mut ok = true;
+            for _ in 0..art.insn_count {
+                match shadow.step_one(&mut self.vmm) {
+                    Ok(cpu::ExecOutcome::Next) | Ok(cpu::ExecOutcome::Branch(_)) => {}
+                    _ => { ok = false; break; }
+                }
+            }
+            if !ok || shadow.gpr[..] != self.jit_ctx[..16] {
+                self.jit.invalidate_entry(art.entry_rip);
+                return format!("fault:jit-validation:0x{:x}", art.entry_rip);
+            }
+            self.jit_active.take();
+            let base_insns = self.cpu.instructions_executed;
+            self.cpu = shadow;
+            self.cpu.instructions_executed = base_insns + art.insn_count as u64;
+            return "next".into();
+        }
+        // Resolve the return target BEFORE committing registers/instruction count. A swapped
+        // stack page must replay the whole block, not commit it and then execute it twice.
+        let ret_target = if art.ends_with_ret {
+            match self.vmm.read_u64(self.cpu.gpr[4]) {
+                Ok(ret) => Some(ret),
+                Err(MemoryTrap::PageFault(a)) => {
+                    self.jit_active.take();
+                    self.jit.invalidate_entry(art.entry_rip);
+                    return format!("page-fault:{a}");
+                }
+                Err(MemoryTrap::AccessViolation(a)) => {
+                    self.jit_active.take();
+                    self.jit.invalidate_entry(art.entry_rip);
+                    self.status = RunStatus::Fault;
+                    self.fault_message = format!("JIT ret read access violation at 0x{a:x}");
+                    return format!("fault:{}", self.fault_message);
+                }
+            }
+        } else { None };
+        self.jit_active.take();
+        self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
+        if self.jit_ctx[16] != 0 {
+            self.cpu.apply_jit_flags(self.jit_ctx[16], self.jit_ctx[17], self.jit_ctx[18], self.jit_ctx[19]);
+        }
+        if let Some(ret) = ret_target {
+            self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(8);
+            self.cpu.rip = ret;
+        } else {
+            self.cpu.rip = art.entry_rip.wrapping_add(art.byte_len as u64);
+        }
+        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(art.insn_count as u64);
+        self.kernel.instructions = self.cpu.instructions_executed;
+        "next".into()
+    }
+
+    /// Drops a trapped active block without applying its register writes; the interpreter will
+    /// re-execute from the original RIP and reproduce the precise fault/page-fault.
+    pub fn jit_abort_block(&mut self) { if let Some(art) = self.jit_active.take() { self.jit.invalidate_entry(art.entry_rip); } }
+
+    /// Imports a persisted artifact only after re-hashing the live guest bytes and epoch.
+    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, code_hash: u64, wasm: &[u8]) -> bool {
+        if byte_len == 0 || byte_len > 4096 || insn_count == 0 || insn_count > 4096 { return false; }
+        let mut live = vec![0u8; byte_len as usize];
+        if self.vmm.host_read_bytes(entry_rip, &mut live).is_err() { return false; }
+        if self.vmm.page_write_epoch(entry_rip & !0xFFF) != page_epoch { return false; }
+        if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm) { return false; }
+        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, wasm.to_vec())
+    }
+
     /// Instantaneous counters consumed by the browser telemetry panel.
     pub fn telemetry_json(&self) -> String {
         format!(
-            "{{\"instructions\":{},\"rip\":{},\"residentPages\":{},\"swappedPages\":{},\"residentLimit\":{},\"pagesEvicted\":{},\"dirtyQueued\":{},\"icacheHits\":{},\"icacheMisses\":{},\"jitArtifacts\":{},\"jitEmitted\":{},\"frames\":{},\"status\":\"{}\"}}",
+            "{{\"instructions\":{},\"rip\":{},\"residentPages\":{},\"swappedPages\":{},\"residentLimit\":{},\"pagesEvicted\":{},\"dirtyQueued\":{},\"icacheHits\":{},\"icacheMisses\":{},\"jitArtifacts\":{},\"jitEmitted\":{},\"jitEnabled\":{},\"frames\":{},\"status\":\"{}\"}}",
             self.cpu.instructions_executed,
             self.cpu.rip,
             self.vmm.resident_page_count(),
@@ -997,6 +1348,7 @@ impl BrowserX64Emulator {
             self.cpu.icache_misses,
             self.jit.artifact_count(),
             self.jit.modules_emitted,
+            self.jit_enabled,
             self.kernel.d3d12.frames_presented,
             self.status_text().replace('"', "'")
         )
@@ -1013,5 +1365,44 @@ mod tests {
         assert_eq!(emu.run_slice(16), "halt");
         assert_eq!(emu.resident_pages(), 0);
         assert!(emu.telemetry_json().contains("\"instructions\":0"));
+    }
+
+    #[test]
+    fn jit_return_page_fault_does_not_commit_instruction_count_or_registers() {
+        let mut emu = BrowserX64Emulator::new(2);
+        let code = 0x8_0000_0000u64;
+        let stack = 0x8_0001_0000u64;
+        let scratch = 0x8_0002_0000u64;
+        emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
+        emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        emu.vmm.map_region(scratch, 70 * 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        // mov rax,0x88; ret — a real GPR-writing block (nop/ret alone emits no JitOps).
+        let block = [0x48, 0xB8, 0x88, 0, 0, 0, 0, 0, 0, 0, 0xC3];
+        emu.vmm.host_write_bytes(code, &block).unwrap();
+        emu.vmm.host_write_bytes(stack, &0x1234u64.to_le_bytes()).unwrap();
+        // The VMM's minimum resident budget is 64 pages; touch enough unpinned pages to
+        // evict the stack while the pinned code page remains resident.
+        for i in 0..70u64 {
+            emu.vmm.host_write_bytes(scratch + i * 0x1000, &[1]).unwrap();
+        }
+        let saved = emu.vmm.drain_evicted_dirty_pages();
+        let old = saved.iter().find(|p| p.page_base == stack).expect("stack evicted");
+        let epoch = emu.vmm.page_write_epoch(code);
+        emu.jit.try_compile_block(code, epoch, &block).unwrap();
+        emu.cpu.rip = code;
+        emu.cpu.gpr[4] = stack;
+        emu.cpu.gpr[0] = 0x77;
+        emu.set_jit_validate(false); // exercise the ret-before-commit ordering path directly
+        assert!(!emu.jit_enter_block().is_empty());
+        emu.jit_ctx[0] = 0x88;
+        let before = emu.cpu.instructions_executed;
+        assert_eq!(emu.jit_commit_block(), format!("page-fault:{stack}"));
+        assert_eq!(emu.cpu.instructions_executed, before);
+        assert_eq!(emu.cpu.gpr[0], 0x77);
+        assert_eq!(emu.cpu.rip, code);
+        assert!(emu.jit_active.is_none());
+        assert!(emu.jit.get_valid_artifact(code, epoch).is_none());
+        emu.vmm.supply_faulted_page(stack, &old.data);
+        assert_eq!(emu.vmm.read_u64(stack).unwrap(), 0x1234);
     }
 }

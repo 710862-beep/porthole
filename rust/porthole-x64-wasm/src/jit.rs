@@ -83,7 +83,13 @@ impl HybridWasmJit {
         page_epoch: u32,
         bytes: &[u8],
     ) -> Option<CompiledJitArtifact> {
-        let (ops, byte_len, insn_count, ends_with_ret) = Self::decode_pure_gpr_block(bytes)?;
+        let (ops, mut byte_len, insn_count, ends_with_ret) = Self::decode_pure_gpr_block(bytes)?;
+        let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
+        if byte_len > page_remain {
+            // Never cache a block whose code epoch is only validated on its first page.
+            byte_len = page_remain;
+            return None;
+        }
         if ops.is_empty() {
             return None;
         }
@@ -103,6 +109,28 @@ impl HybridWasmJit {
         self.pending_export_rips.push(entry_rip);
         self.modules_emitted += 1;
         Some(artifact)
+    }
+
+    /// Treat OPFS as untrusted storage: a cached module is accepted only if it is exactly
+    /// what the current compiler emits for the live, epoch-checked guest bytes.
+    pub fn validate_cached_artifact(
+        entry_rip: u64,
+        page_epoch: u32,
+        byte_len: u32,
+        insn_count: u32,
+        ends_with_ret: bool,
+        code_hash: u64,
+        live: &[u8],
+        wasm: &[u8],
+    ) -> bool {
+        if live.len() != byte_len as usize { return false; }
+        if Self::fnv1a_64(live) != code_hash { return false; }
+        let Some((ops, len, count, ret)) = Self::decode_pure_gpr_block(live) else { return false; };
+        if len != byte_len as usize || count != insn_count || ret != ends_with_ret { return false; }
+        let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
+        if len > page_remain { return false; }
+        let _ = page_epoch; // epoch equality is checked by the caller against the live VMM
+        Self::emit_wasm_module(&ops, count).as_slice() == wasm
     }
 
     pub fn import_cached_artifact(
@@ -145,6 +173,20 @@ impl HybridWasmJit {
         out
     }
 
+    pub fn pending_count(&self) -> usize { self.pending_export_rips.len() }
+    pub fn pending_meta(&self, index: usize) -> Option<String> {
+        let rip = *self.pending_export_rips.get(index)?;
+        let a = self.artifacts.get(&rip)?;
+        Some(format!("{{\"entryRip\":{},\"pageBase\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\"}}",
+            a.entry_rip, a.page_base, a.page_epoch, a.byte_len, a.insn_count, a.ends_with_ret, a.code_hash))
+    }
+    pub fn pending_wasm(&self, index: usize) -> Option<Vec<u8>> {
+        let rip = *self.pending_export_rips.get(index)?;
+        self.artifacts.get(&rip).map(|a| a.wasm_bytes.clone())
+    }
+    pub fn clear_pending(&mut self) { self.pending_export_rips.clear(); }
+    pub fn invalidate_entry(&mut self, rip: u64) { if self.artifacts.remove(&rip).is_some() { self.invalidations += 1; } }
+
     pub fn artifact_count(&self) -> usize {
         self.artifacts.len()
     }
@@ -175,7 +217,8 @@ impl HybridWasmJit {
             pc += 1;
 
             match op {
-                0x90 => {
+                // 0x90 is XCHG rAX, r8 when REX.B=1; only REX.W/empty REX is a true NOP.
+                0x90 if (rex & !0x08) == 0 => {
                     insns += 1;
                 }
                 0xC3 if rex == 0 => {
@@ -427,8 +470,42 @@ impl HybridWasmJit {
 
     /// Emits a complete, valid WebAssembly binary module exporting:
     /// `(func (export "run_block") (param $ctx i32) (result i64))`
-    /// where `$ctx` points to `[u64; 16]` (`RAX..R15`) in `(import "env" "mem" (memory 1))`,
+    /// where `$ctx` points to `[u64; 21]` (GPRs + final-flag metadata) in `(import "env" "mem" (memory 1))`,
     /// updates the register file in place, and returns `(i64.const insn_count)`.
+    /// (kind, width, result-reg, lhs-reg, rhs-reg?, rhs-imm) for the final flag writer.
+    fn flag_operands(op: &JitOp) -> Option<(u64, u64, u8, u8, Option<u8>, i64)> {
+        match *op {
+            JitOp::AddReg64 { dst, src } => Some((1, 8, dst, dst, Some(src), 0)),
+            JitOp::SubReg64 { dst, src } => Some((4, 8, dst, dst, Some(src), 0)),
+            JitOp::AndReg64 { dst, src } => Some((3, 8, dst, dst, Some(src), 0)),
+            JitOp::OrReg64 { dst, src } => Some((2, 8, dst, dst, Some(src), 0)),
+            JitOp::XorReg64 { dst, src } => Some((5, 8, dst, dst, Some(src), 0)),
+            JitOp::ImulReg64 { dst, src } => Some((6, 8, dst, dst, Some(src), 0)),
+            JitOp::AddImm64 { dst, imm } => Some((1, 8, dst, dst, None, imm)),
+            JitOp::SubImm64 { dst, imm } => Some((4, 8, dst, dst, None, imm)),
+            JitOp::AndImm64 { dst, imm } => Some((3, 8, dst, dst, None, imm)),
+            JitOp::OrImm64 { dst, imm } => Some((2, 8, dst, dst, None, imm)),
+            JitOp::XorImm64 { dst, imm } => Some((5, 8, dst, dst, None, imm)),
+            JitOp::ImulImm64 { dst, src, imm } => Some((6, 8, dst, src, None, imm)),
+            JitOp::ShlImm64 { dst, count } => Some((7, 8, dst, dst, None, count as i64)),
+            JitOp::ShrImm64 { dst, count } => Some((8, 8, dst, dst, None, count as i64)),
+            JitOp::SarImm64 { dst, count } => Some((9, 8, dst, dst, None, count as i64)),
+            _ => None,
+        }
+    }
+
+    fn emit_ctx_store_local(body: &mut Vec<u8>, offset: u32, local: u8) {
+        body.extend_from_slice(&[0x20, 0x00, 0x20, local, 0x37, 0x03]);
+        Self::push_u32_leb(body, offset);
+    }
+
+    fn emit_ctx_store_const(body: &mut Vec<u8>, offset: u32, value: i64) {
+        body.extend_from_slice(&[0x20, 0x00, 0x42]);
+        Self::push_i64_sleb(body, value);
+        body.extend_from_slice(&[0x37, 0x03]);
+        Self::push_u32_leb(body, offset);
+    }
+
     fn emit_wasm_module(ops: &[JitOp], insn_count: u32) -> Vec<u8> {
         let mut wasm = Vec::with_capacity(256);
         wasm.extend_from_slice(b"\0asm\x01\0\0\0");
@@ -519,7 +596,23 @@ impl HybridWasmJit {
             }
         }
 
-        for &op in ops {
+        let last_flag_idx = ops.iter().enumerate().rev()
+            .find(|(_, op)| Self::flag_operands(op).is_some())
+            .map(|(i, _)| i);
+        for (op_idx, &op) in ops.iter().enumerate() {
+            let flag_meta = if last_flag_idx == Some(op_idx) { Self::flag_operands(&op) } else { None };
+            if let Some((kind, width, _dst, lhs, rhs_reg, rhs_imm)) = flag_meta {
+                // Store the pre-operation operands. Only the final flag writer is materialized;
+                // supported JIT ops never consume flags internally.
+                Self::emit_ctx_store_const(&mut body, 16 * 8, kind as i64);
+                Self::emit_ctx_store_const(&mut body, 17 * 8, width as i64);
+                Self::emit_ctx_store_local(&mut body, 18 * 8, lhs + 1);
+                if let Some(reg) = rhs_reg {
+                    Self::emit_ctx_store_local(&mut body, 19 * 8, reg + 1);
+                } else {
+                    Self::emit_ctx_store_const(&mut body, 19 * 8, rhs_imm);
+                }
+            }
             match op {
                 JitOp::MovImm64 { dst, imm } => {
                     body.push(0x42); // i64.const
@@ -641,6 +734,9 @@ impl HybridWasmJit {
                     body.push(0x21);
                     body.push(dst + 1);
                 }
+            }
+            if let Some((_kind, _width, dst, _lhs, _rhs_reg, _rhs_imm)) = flag_meta {
+                Self::emit_ctx_store_local(&mut body, 20 * 8, dst + 1);
             }
         }
 
