@@ -109,6 +109,7 @@ export function buildGameFixtures({ outDir = 'tests/assets/game' } = {}) {
       source: spec.source,
       sourceSha256: sha256(fs.readFileSync(spec.source)),
       description: spec.description,
+      commandLine: spec.commandLine ?? null,
       expect: spec.expect,
       imports: [...imports].sort(),
     });
