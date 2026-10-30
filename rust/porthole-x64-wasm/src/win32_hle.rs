@@ -2374,7 +2374,7 @@ impl Win32Kernel {
                     "{{\"api\":\"{}\",\"hwnd\":\"0x{:x}\",\"text\":{},\"caption\":{},\"type\":{}}}",
                     symbol, a0, Self::json_escape(&text), Self::json_escape(&caption), kind
                 );
-                HleAction::Modal { request_json: request }
+                return HleAction::Modal { request_json: request };
             }
             "GetSystemMetrics" => match a0 as u32 {
                 0 => 1920, 1 => 1080,           // SM_CXSCREEN / SM_CYSCREEN

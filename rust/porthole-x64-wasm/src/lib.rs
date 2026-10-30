@@ -454,7 +454,6 @@ impl BrowserX64Emulator {
                             }
                             HleAction::Modal { request_json } => {
                                 let api = format!("{dll}!{symbol}");
-                                self.record_api_audit(&api, &args, 0, insn_rip, &audit_before, true);
                                 self.modal_pending = Some((rsp, request_json, api, args.to_vec(), audit_before));
                                 self.status = RunStatus::Running;
                                 self.trace_event(format!("M 0x{:x} {} modal pending", insn_rip, api));

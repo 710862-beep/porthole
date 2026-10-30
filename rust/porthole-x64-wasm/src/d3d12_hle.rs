@@ -252,7 +252,7 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
 
         (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
         | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
-        | (ComKind::D3d12Fence, 7) | (ComKind::D3d12QueryHeap, 7) | (ComKind::D3d12CommandSignature, 7) => "GetDevice",
+        | (ComKind::D3d12Fence, 7) => "GetDevice",
         (ComKind::D3d12CommandQueue, 7) => "GetDevice",
         (ComKind::D3d12CommandQueue, 8) => "UpdateTileMappings",
         (ComKind::D3d12CommandQueue, 9) => "CopyTileMappings",
@@ -1720,7 +1720,7 @@ impl D3d12Subsystem {
             // ID3D12DeviceChild::GetDevice (slot 7) for resources/lists/allocators/PSOs/etc.
             (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
             | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
-            | (ComKind::D3d12Fence, 7) | (ComKind::D3d12QueryHeap, 7) | (ComKind::D3d12CommandSignature, 7) => {
+            | (ComKind::D3d12Fence, 7) => {
                 let out = args[2];
                 if args[1] == 0 || out == 0 { return E_POINTER as u64; }
                 let parent = self.objects.get(&this).map(|o| o.parent_device).unwrap_or(0);
