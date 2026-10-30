@@ -25,14 +25,15 @@ static void porthole_assert_emit(const char *file, int line, const char *expr, i
     va_start(ap, fmt);
     vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
-    if ((data->todo_level && actual) || (!data->todo_level && !actual)) {
+    if (!actual || (data->todo_level && actual)) {
         porthole_json_string(expr_json, sizeof(expr_json), expr);
         porthole_json_string(msg_json, sizeof(msg_json), message);
         porthole_json_string(file_json, sizeof(file_json), data->current_file ? data->current_file : file);
+        const char *kind = data->todo_level ? (actual ? "todo-success" : "todo-failure") : "assertion";
         snprintf(json, sizeof(json),
-            "{\"kind\":\"assertion\",\"expression\":%s,\"expected\":%s,\"actual\":%s,\"message\":%s,"
+            "{\"kind\":\"%s\",\"expression\":%s,\"expected\":true,\"actual\":%s,\"message\":%s,"
             "\"file\":%s,\"line\":%d,\"todo\":%d,\"flaky\":%u}",
-            expr_json, data->todo_level ? "false" : "true", actual ? "true" : "false",
+            kind, expr_json, actual ? "true" : "false",
             msg_json, file_json, line, data->todo_level, data->flaky_level);
         snprintf(debug, sizeof(debug), "PORTHOLE_ASSERT %s", json);
         OutputDebugStringA(debug);

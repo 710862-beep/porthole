@@ -192,6 +192,10 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   if (summary) {
     item.testsExecuted = Number(summary[1]);
     item.failures = Number(summary[4]);
+    item.todoSuccesses = item.assertions.filter(a => a.kind === 'todo-success').length;
+    // Wine counts a todo_wine success as a failure (bug fixed upstream). Porthole targets
+    // Windows semantics, so a todo-success is Windows-correct and not a compatibility failure.
+    item.effectiveFailures = Math.max(0, item.failures - item.todoSuccesses);
     item.skipped = Number(summary[5]);
   }
   const unhandled = UNHANDLED.exec(item.console);
@@ -206,9 +210,9 @@ async function runOne(binding, manifestEntry, options, testName = null) {
     } else if (item.testsExecuted === 0) {
       item.status = 'FAIL';
       item.error = 'Zero Wine assertions executed.';
-    } else if (item.failures !== 0 || item.exitCode !== 0 || item.auditOverflow.length) {
+    } else if ((item.effectiveFailures ?? item.failures) !== 0 || item.exitCode !== 0 || item.auditOverflow.length) {
       item.status = 'FAIL';
-      item.error = `${item.failures} falhas, exit ${item.exitCode}`;
+      item.error = `${item.effectiveFailures ?? item.failures} falhas (${item.failures} Wine, ${item.todoSuccesses || 0} todo-success), exit ${item.exitCode}`;
     } else {
       item.status = 'PASS';
     }
