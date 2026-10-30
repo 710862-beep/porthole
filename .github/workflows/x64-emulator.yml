@@ -94,6 +94,48 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  tier-a-independent-7zip:
+    name: GATE 1 Tier A — unmodified 7-Zip x64 PE archive round-trip
+    needs: wasm-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: vendor/porthole-x64-wasm
+      - name: Acquire and hash the pinned third-party 7za.exe
+        run: node scripts/fetch-7za.mjs
+      - name: Execute 7za archive create/extract in the Wasm core and byte-compare
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          node tests/third-party/run-7za.mjs 2>&1 | tee artifacts/7za-run.log
+      - name: Publish the Tier A guest trace through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/7za-tier-a-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/7za-tier-a-report.txt porthole-x64-tier-a-7zip
+          else
+            echo "::error::Tier A guest report missing"
+          fi
+      - name: Upload Tier A evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porthole-x64-tier-a-7zip
+          path: |
+            artifacts/7za-tier-a-report.json
+            artifacts/7za-tier-a-report.txt
+            artifacts/7za-run.log
+          if-no-files-found: warn
+          retention-days: 14
+
   wine64-conformance:
     name: Real Wine 64-bit conformance inside the Wasm emulator
     needs: wasm-build

@@ -3448,4 +3448,3 @@ impl Win32Kernel {
 
     fn run_all_pending_threads(&mut self, _vmm: &mut VirtualMemoryManager) {}
 }
-

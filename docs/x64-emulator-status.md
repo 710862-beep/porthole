@@ -1,27 +1,117 @@
-# x86-64 emulator — measured status (2026-10-29)
+# x86-64 emulator — measured status (2026-10-30)
 
-This file records **measured** evidence only. Nothing below is a projection.
+This file records **measured** evidence only. New acceptance claims separate AUTHORING, EXECUTION,
+RENDERING, and GAMEPLAY. A synthetic guest, a host-authored pixel, or a successful `Present` call is
+not a real-game render or gameplay result. Historical fixture results below are explicitly not
+qualifying evidence for the current milestone.
 
-## What is real and verified in CI
+## GATE 1 — independent binary, Tier A (attempted; execution blocked before guest entry)
 
-| Gate | Command | Result |
+### Pinned third-party executable
+
+| Field | Measured value |
+| --- | --- |
+| Product | 7-Zip Standalone Console `7za.exe`, x64, version **21.07** (embedded `FileVersion` and `ProductVersion`; copyright 2021-12-26) |
+| Package URL | `https://registry.npmjs.org/7zip-bin/-/7zip-bin-5.2.0.tgz` |
+| Package SHA-256 | `04f9738ee00be8be53f5d06254a9e6e4b5117b17f8b74058477d870e62764a7d` |
+| Executable path in package | `package/win/x64/7za.exe` |
+| Executable size / SHA-256 | 1,231,360 bytes / `b0cfdeaf429f5cc53f85123dd8f5a5feb92c19d31aa34df257edf9a26be05f95` |
+| PE identity | PE32+ / AMD64 `0x8664`; Windows console subsystem |
+| Acquisition | `node scripts/fetch-7za.mjs`; archive and executable hashes checked before writing ignored `tests/assets/third-party/7za.exe` |
+| Acquisition runner/device | Node v22.22.3 / Linux 6.1.158+ x64; Intel Xeon Processor @ 2.60GHz; 4,131,278,848 bytes RAM (Arena sandbox, not Chrome or the target Chromebook) |
+
+The byte-identical executable was independently identified by `objdump -p` and embedded version
+strings. Its **complete import table** is:
+
+```text
+OLEAUT32.dll: ordinals #7, #9, #10, #2, #6, #4
+USER32.dll:   CharUpperW, CharPrevExA
+ADVAPI32.dll: OpenProcessToken, SystemFunction036, GetFileSecurityW, SetFileSecurityW,
+              RegOpenKeyExW, RegQueryValueExW, AdjustTokenPrivileges, LookupPrivilegeValueW,
+              RegCloseKey
+msvcrt.dll:   _c_exit, _XcptFilter, _onexit, __dllonexit, ??1type_info@@UEAA@XZ,
+              ?terminate@@YAXXZ, __C_specific_handler, _beginthreadex, exit, _isatty,
+              realloc, memset, strlen, wcsstr, wcscmp, _exit, memmove, fflush, fputc,
+              fputs, _iob, fgetc, fclose, free, _CxxThrowException, malloc, memcmp,
+              _purecall, __CxxFrameHandler, memcpy, _cexit, __getmainargs, __initenv,
+              _initterm, __setusermatherr, _commode, _fmode, __set_app_type, strcmp
+KERNEL32.dll: SetThreadAffinityMask, CreateEventW, SetEvent, ResetEvent, CreateSemaphoreW,
+              ReleaseSemaphore, InitializeCriticalSection, GetVersionExW, SetFileTime,
+              ResumeThread, WaitForSingleObject, VirtualFree, VirtualAlloc, GetOEMCP,
+              LocalFileTimeToFileTime, GetConsoleMode, SetConsoleMode, SetFileApisToOEM,
+              GetCommandLineW, GetConsoleScreenBufferInfo, SetConsoleCtrlHandler,
+              GetProcessTimes, QueryPerformanceFrequency, QueryPerformanceCounter,
+              DeleteCriticalSection, SetProcessAffinityMask, OpenEventW, UnmapViewOfFile,
+              MapViewOfFile, OpenFileMappingW, WaitForMultipleObjects, LeaveCriticalSection,
+              EnterCriticalSection, GetStdHandle, GetSystemTimeAsFileTime, FileTimeToDosDateTime,
+              DosDateTimeToFileTime, IsProcessorFeaturePresent, GlobalMemoryStatusEx,
+              GetSystemInfo, GetProcessAffinityMask, FileTimeToLocalFileTime,
+              FileTimeToSystemTime, CompareFileTime, GetCurrentProcess, GetDiskFreeSpaceW,
+              SetEndOfFile, WriteFile, ReadFile, GetLastError, MultiByteToWideChar,
+              WideCharToMultiByte, FreeLibrary, LoadLibraryW, GetModuleFileNameW, LocalFree,
+              FormatMessageW, CloseHandle, CreateFileW, SetFileAttributesW, RemoveDirectoryW,
+              MoveFileW, GetProcAddress, GetModuleHandleW, CreateDirectoryW, DeleteFileW,
+              SetCurrentDirectoryW, GetCurrentDirectoryW, GetTempPathW, SetLastError,
+              GetCurrentProcessId, GetTickCount, GetCurrentThreadId, GetFileInformationByHandle,
+              FindClose, FindFirstFileW, FindNextFileW, GetModuleHandleA, GetFileAttributesW,
+              GetLogicalDriveStringsW, DeviceIoControl, GetFileSize, SetFilePointer
+```
+
+### Execution attempt and actual failure log
+
+The first required run is gated before guest entry in this checkout. The acquisition and PE
+inspection succeeded, but the local wasm-bindgen output is absent and this environment has no
+`cargo` executable to rebuild it. `node tests/third-party/run-7za.mjs` produced:
+
+```text
+[7za] NOT_RUN: Wasm artifacts missing: /home/user/porthole/vendor/porthole-x64-wasm/porthole_x64_wasm.js,
+/home/user/porthole/vendor/porthole-x64-wasm/porthole_x64_wasm_bg.wasm
+```
+
+The build attempt independently returned `/bin/bash: cargo: command not found` (exit 127). This is
+**not** a guest crash, not an API blocker, and not a pass: zero guest instructions ran. I will not
+invent a first missing API or report exit 0. The fail-closed runner
+`tests/third-party/run-7za.mjs` is ready to issue `7za a` + `7za e` against a deterministic 1 MiB
+input and compare bytes once the Wasm artifacts are available; its current report is
+`artifacts/7za-tier-a-report.json` (`NOT_RUN`). No archive round-trip has yet been measured. The
+`tier-a-independent-7zip` CI job is wired to consume the Wasm build artifact, publish the guest log,
+and retain the JSON/text reports; it has not been executed from this sandbox session.
+
+### Gate order
+
+Gate 1 Tier A is still open and must be completed first. **Gate 2 has not been started**: no
+Chocolate Doom executable or Freedoom IWAD was acquired or run. D3D12 work is explicitly deferred.
+When the renderer gate is reached, Chocolate Doom's SDL2/OpenGL/WGL path is the target; DXBC is not
+DXIL, and SM6 shader support will require `dxil-spirv` or an equivalent translator as a separate,
+later work item.
+
+## Historical CI measurements (not current milestone acceptance)
+
+These earlier checks were run under Node in CI; the old reports did not retain individual fixture
+PE hashes or a host/device model. They remain useful regression history, but are not GATE 1–4 PASS
+claims under the new identity, runner, and device reporting rules.
+
+| Check | Command | Historical result |
 | --- | --- | --- |
 | Rust core unit tests | `cargo test --all-targets` (rust 1.81, ubuntu-24.04) | **PASS** — VMM sparse VA + LRU eviction/page-fault roundtrip, hybrid Wasm JIT emitter (`\0asm` module, epoch invalidation), emulator construction |
 | Wasm build | `cargo build --release --target wasm32-unknown-unknown` + `wasm-bindgen --target web` | **PASS** — `porthole_x64_wasm.js` + `porthole_x64_wasm_bg.wasm` produced and uploaded |
 | Wine 64-bit fixture build | `node scripts/build-wine64-tests.mjs` (zig 0.13.0, pinned Wine `0738d528`) | **PASS** — 4 unmodified upstream tests compiled to PE32+ (`0x8664`) |
 | Wine 64-bit conformance inside the Wasm emulator | `node tests/wine64/run-wine64.mjs` | **PARTIAL — 5 of 7 subtest groups pass** (`uitools`, `wsprintf`, `atom`, `drive`, `power`); `environ` (35 failures) and `directory` (23 failures) still fail |
-| **Real PE32+ startup fixtures inside the Wasm emulator** | `node scripts/build-game-fixtures.mjs && node tests/game/run-game.mjs` | **PASS — 3 of 4 pass, 1 deliberately stops at a named stage**: three executables run to `ExitProcess(0)`, the D3D12 one reaches `Present` and produces a 1280×720 RGBA frame, and the fourth proves the failure-report format |
+| Authored PE32+ startup fixtures (historical; not independent/game evidence) | `node scripts/build-game-fixtures.mjs && node tests/game/run-game.mjs` | Historical Node/Wasm fixture exits were recorded; they do not qualify as Gate 1, real rendering, or gameplay. The reported RGBA buffer was host-authored and is excluded as a frame. |
 
-The game fixtures are built from `tests/game/*.c` by `scripts/build-game-fixtures.mjs` (zig
-`x86_64-windows-gnu`) and executed by `tests/game/run-game.mjs` against **the same Wasm module the
-browser loads** — not the native tracer.
+These are self-authored test fixtures built from `tests/game/*.c` by
+`scripts/build-game-fixtures.mjs` (zig `x86_64-windows-gnu`) and executed by
+`tests/game/run-game.mjs` under Node against the Wasm module. They are AUTHORING/EXECUTION evidence
+only. They are neither an independent executable nor a game, and their host-generated buffer is
+not RENDERING or GAMEPLAY evidence.
 
-## Loading real Windows code (not Wine tests)
+## Historical authored-fixture execution (not independent-binary evidence)
 
-Four PE32+ x86-64 executables, compiled from C in this repository, mounted on the virtual
-`C:\Game` volume and executed by the emulator's PE64 loader. They are rebuilt from source on every
-run (zig embeds a build-id, so a byte hash is only stable for one build — the source hash in
-`tests/assets/game/MANIFEST.json` is the stable identity):
+Four authored PE32+ x86-64 test executables, compiled from C in this repository, were mounted on
+the virtual `C:\Game` volume and executed by the emulator's PE64 loader. They are rebuilt from
+source on every run (zig embeds a build-id). The old fixture report did not retain per-binary
+SHA-256s or a specific CI device, so its outcomes are not acceptance PASSes under the current
+reporting policy. They establish only AUTHORING and fixture EXECUTION, not game compatibility.
 
 | Image | Bytes | What it does |
 | --- | --- | --- |
@@ -30,17 +120,21 @@ run (zig embeds a build-id, so a byte hash is only stable for one build — the 
 | `doom_d3d12_blocked.exe` | 160 768 | the same image code, launched with `/blockstage:13`, so the *failure report* is measured as well |
 | `doom_d3d12_startup.exe` | 160 768 | 25-stage D3D12 boot: window → `CreateDXGIFactory2` → `EnumAdapters1` → `D3D12CreateDevice` → `CheckFeatureSupport` → queue → allocator → command list → fence → RTV heap → `D3D12SerializeRootSignature`+`CreateRootSignature` → PSO → `CreateSwapChainForHwnd` → `QueryInterface(IDXGISwapChain3)` → back buffers → RTVs → barriers → `ClearRenderTargetView` → `DrawInstanced` → `Close` → `ExecuteCommandLists` → `Present` |
 
-Measured in `run 40994645347` (`gh api repos/710862-beep/porthole/check-runs/123865450546 -q .output.summary`):
+Historical execution data from check run `40994645347` (Node/Wasm; per-image hashes and exact
+CI device were not retained, so these are recorded measurements, not current acceptance PASSes):
 
 ```
-hello_world.exe          PASS  exit=0   instructions=566    slices=1  page_faults=0  imports=54
-game_startup.exe         PASS  exit=0   instructions=46382  slices=1  page_faults=0  imports=60
-doom_d3d12_startup.exe   PASS  exit=0   instructions=2523   slices=1  page_faults=0  imports=57
-    frame: 1280x720 bytes=3686400 nonZero=1843200 sha256=5d9d754bb9731380… pixel0=[0,255,0,255]
-    last stage: 25 IDXGISwapChain::Present(1,0)   →  DOOM_STARTUP_OK stages=25
-doom_d3d12_blocked.exe   STAGE_BLOCKED  exit=13  instructions=1928  slices=1  page_faults=0
-[game] PASS: 3/4 pass · 1 blocked at a named stage · 0 faults
+hello_world.exe          exit=0         instructions=566    slices=1  page_faults=0  imports=54
+game_startup.exe         exit=0         instructions=46382  slices=1  page_faults=0  imports=60
+doom_d3d12_startup.exe   exit=0         instructions=2523   slices=1  page_faults=0  imports=57
+    host buffer: 1280x720 bytes=3686400 nonZero=1843200 sha256=5d9d754bb9731380… pixel0=[0,255,0,255]
+    last fixture stage: 25 IDXGISwapChain::Present(1,0) → DOOM_STARTUP_OK stages=25
+doom_d3d12_blocked.exe   named-fixture-stop exit=13 instructions=1928 slices=1 page_faults=0
 ```
+
+The buffer above was filled by the host HLE with a constant green clear. It is explicitly **not a
+rendered frame** and does not count toward GATE 2. The fixture name is historical and does not
+identify or contain DOOM.
 
 `game_startup.exe`'s guest console, verbatim from the check-run summary:
 
@@ -77,30 +171,17 @@ ID3D12GraphicsCommandList::SetPipelineState=1  ID3D12GraphicsCommandList::DrawIn
 IDXGISwapChain3::GetCurrentBackBufferIndex=1
 ```
 
-### The milestone, stated accurately
+### Historical COM alias finding (synthetic fixture only)
 
-The target sentence for this round was *"the emulator loaded DOOM 2016's structure and crashed at
-`D3D12CreateDevice` because `IDXGIFactory::CreateSwapChain` is not implemented."*
+The earlier fixture trace did expose a real implementation defect: a COM thunk VA aliased the
+Win32 import-thunk VA, and binding an import overwrote a COM method mapping. The trace showed
+`kernel32!VirtualProtect` where the fixture expected `IDXGIFactory1::EnumAdapters1`; the COM call
+never reached its HLE. The address-space separation fix remains valid engineering work.
 
-That is **not** what the measurements show, and the difference mattered:
-
-* `IDXGIFactory::CreateSwapChain` (slot 10) and `CreateSwapChainForHwnd` (slot 15) were **already
-  implemented**. The failure was not a missing D3D12 feature.
-* What actually happened is recorded in the trace below: the guest's call to
-  `factory->lpVtbl->EnumAdapters1` executed `kernel32!VirtualProtect` instead, returned `1`, left
-  the adapter pointer `NULL`, and the program then took an `access violation at 0x0`. The COM call
-  never reached the D3D12 HLE at all — the trace contained **no** `H d3d12` line for it.
-* With that fixed, the same fixture runs the entire 25-stage boot sequence and presents a frame.
-
-So the honest quotable result is:
-
-> The emulator loads and executes (synthetic, DOOM-2016-shaped) PE32+ D3D12 code from the virtual
-> `C:\Game` volume and reaches `IDXGISwapChain::Present` with a rendered 1280×720 RGBA frame —
-> 2 523 guest instructions, 0 page faults, 31 distinct COM calls, exit code 0 — after fixing a
-> COM-stub/Win32-import address-space alias that had been masquerading as a missing D3D12 feature.
-
-(This is a *shape* match, not the real game: no DOOM 2016 binary or data is involved. See
-"Blockers" for what a real title would hit next.)
+The authored fixture subsequently traversed its scripted 25 D3D12 stages, but its reported green
+buffer came from host HLE code. That result proves neither DOOM loading nor D3D12 rendering, and
+must not be described as a presented frame or game milestone. The D3D12 work is deferred by the
+current request; the target rendering route is the independent Chocolate Doom SDL2/OpenGL path.
 
 ## Resolved: the COM-vtable / import-thunk alias (2026-10-29)
 
@@ -181,10 +262,10 @@ The runner classifies an exit as:
 | `GUEST_FAULT` | an access violation / decode fault inside the guest — always a defect |
 | `FAIL` / `TIMEOUT` | wrong exit code, missing marker, or a slice/time budget exhausted |
 
-Everything a run produces is published as a check run (`porthole-x64-game`) and as a JSON report
-(`artifacts/game-report.json`): instruction count, exit code, page faults, Win32 histogram, COM
-histogram, unimplemented Win32 symbols, unimplemented COM methods, the failing stage, and the
-presented frame's size/non-zero bytes/sha256.
+The historical runner published fixture output as a check run (`porthole-x64-game`) and JSON
+report (`artifacts/game-report.json`): instruction count, exit code, page faults, Win32/COM
+histograms, unimplemented APIs, stage, and a host-produced buffer's byte count/hash. That buffer is
+not presented/rendered evidence and is excluded from GATE 2.
 
 ## COM slot coverage (hand-written arms per interface)
 
@@ -200,7 +281,9 @@ presented frame's size/non-zero bytes/sha256.
 | `ID3D12Fence` | 3 | 11 | none for a first frame |
 | `IDXGIAdapter1` | 3 | 16 | `CheckInterfaceSupport` 9, `GetDesc2` 11 |
 
-## Blockers — what the next real title will hit
+## Deferred D3D12 notes — not this milestone
+
+These are historical implementation gaps and are deliberately not being worked in this cycle. The next renderer gate targets Chocolate Doom's actual SDL2/OpenGL/WGL calls, not a synthetic D3D12 path.
 
 Ordered by what stops the earliest frame. Each item is a measured hole, not a guess: the D3D12
 fixture above is *just* enough to present a clear colour, and the list is what it does **not**
@@ -231,7 +314,7 @@ exercise.
    `last_error=120` (`ERROR_CALL_NOT_IMPLEMENTED`) and the fixture silently never blocked. The
    fixture now parses its own command line, and `msvcrt strstr/atoi` belong on the Win32 gap list.
 
-### Prioritized D3D12/COM API list for the first real frame
+### Deferred D3D12/COM work list (not to be started before requested SDL2/OpenGL gates)
 
 Extending the HLE in this order gives the shortest path from "clear colour" to "a triangle from
 real shaders":
@@ -290,13 +373,25 @@ Because log/artifact downloads are blocked in this sandbox, each run publishes i
 check-run `output.summary` (`porthole-x64-trace:*`, `porthole-x64-game`) and reads it back with
 `gh api repos/<owner>/<repo>/commits/<sha>/check-runs/<id> -q .output.summary`.
 
-## Remaining work (in order)
+## Remaining gates (strict order)
 
-1. `directory`: a wildcard in a *non-final* component must fail with `ERROR_PATH_NOT_FOUND` while a
-   wildcard in the final component is `ERROR_INVALID_NAME` (directory.c:234-249).
-2. `environ`: `GetEnvironmentVariableA/W` buffer-size reporting and `ExpandEnvironmentStrings`
-   over-reporting rules (35 failures).
-3. D3D12: work down the prioritized list above, starting with committed/placed resources and
-   descriptor writes, so the "green triangle" becomes a shader-driven triangle.
-4. Wire `Present` to a canvas in `js/x64-d3d12-renderer.js` and confirm the same 1280×720 frame
-   appears in the browser path, not just in the Node harness.
+1. **GATE 1 / Tier A:** rebuild/provision the Wasm artifacts, run the pinned 7-Zip 21.07 x64 PE
+   under the Wasm core, create and extract a real 7z archive, then byte-compare. Publish the first
+   guest API blocker if it stops; do not convert this environment-level NOT_RUN into a guest PASS.
+2. **GATE 2 / Tier B:** acquire the official redistributable x64 Chocolate Doom binary and
+   Freedoom IWAD, capture their hashes/imports, then implement the SDL2 + OpenGL/WGL calls that
+   executable actually uses. Only guest-originated draw output that responds to guest input and
+   matches a reference render can count. No D3D12 work in this gate.
+3. **GATE 3:** force evictions with an LRU smaller than the guest working set; instrument guest VA,
+   resident/NVMe bytes, faults, read/write MiB, and p50/p99 latency; demonstrate trap/suspend/resume
+   across asynchronous File System Access I/O and a byte-identical 1 GiB deterministic round-trip.
+4. **GATE 4:** gather actual locked-Chromebook Chrome evidence (enterprise picker policy, WebGPU or
+   WebGL2 tier, Wasm features, DPR, JS heap, physical RAM, sustained instructions/sec, screen capture,
+   and trace). Node or a simulated browser is not acceptable.
+5. **GATE 5:** use the pinned Wine source to fix `directory` wildcard-parent ordering
+   (`ERROR_PATH_NOT_FOUND`) and `environ` buffer-size/`ERROR_MORE_DATA` semantics; target 7/7 under
+   the existing fail-closed harness.
+
+D3D12, DXBC/DXIL translation, and any other graphics backend are later work. DXBC is not DXIL;
+Shader Model 6 requires `dxil-spirv` or an equivalent translator before WebGPU can execute those
+shaders.

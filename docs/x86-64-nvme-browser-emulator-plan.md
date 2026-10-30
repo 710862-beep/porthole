@@ -1,7 +1,7 @@
 # Pure-Browser x86-64 Windows Emulator Plan (NVMe-Backed Virtual Memory + WebGPU + Wine Conformance Suite)
 
-> **Session Date:** 2026-10-29  
-> **Active Branch:** `arena/e737e676-porthole`  
+> **Session Date:** 2026-10-29
+> **Active Branch:** `arena/e737e676-porthole`
 > **Target Environment:** Locked Chromebook / Pure Browser (Chrome + File System Access API + WebAssembly + WebGPU/WebGL2/Software Rasterizer + Web Audio API)
 
 ---
