@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod cpu_simd;
 pub mod d3d12_hle;
 pub mod jit;
+pub mod sdl_hle;
 pub mod pe64;
 pub mod vmm;
 pub mod win32_fmt;
@@ -99,12 +100,18 @@ impl BrowserX64Emulator {
         self.kernel.set_command_line(line);
     }
 
+    /// Records the guest-visible path of the loaded image for `GetModuleFileNameW(NULL, ...)`.
+    pub fn set_exe_path(&mut self, path: &str) {
+        self.kernel.set_exe_path(path);
+    }
+
     /// Maps a PE32+ (`0x8664`) image, resolves imports against the HLE thunk space, initializes
     /// PEB/TEB/stack, and runs the AOT block compiler over `.text`.
     pub fn load_pe(&mut self, bytes: &[u8]) -> Result<String, JsValue> {
         self.kernel.init_runtime_tables();
         self.kernel.init_heaps(&mut self.vmm);
         self.kernel.d3d12 = d3d12_hle::D3d12Subsystem::new();
+        self.kernel.sdl = sdl_hle::SdlState::new();
 
         // Reserve the whole HLE thunk region as executable before COM/D3D12 setup allocates
         // vtable slots inside it.
@@ -118,6 +125,15 @@ impl BrowserX64Emulator {
         );
         self.kernel.d3d12.init_memory(&mut self.vmm);
 
+        // Data imports (`_fmode`, `_iob`, ...) must be bound to writable variable cells, not
+        // code thunks: the guest dereferences the IAT slot. Binding them to thunks made real
+        // MSVC CRT startup (7za.exe) write through a thunk address and fault at insn 29.
+        let data_cells: std::collections::HashMap<String, u64> = self
+            .kernel
+            .init_data_imports(&mut self.vmm)
+            .into_iter()
+            .collect();
+
         let vmm = &mut self.vmm;
         let jit = &mut self.jit;
 
@@ -128,6 +144,11 @@ impl BrowserX64Emulator {
         let mut thunk_slots: BTreeMap<(String, String, u16), u64> = BTreeMap::new();
         let mut next_import_thunk = IMPORT_THUNK_BASE;
         let (info, bindings) = load_pe64_image(bytes, vmm, jit, |dll: &str, symbol: &str, ordinal: u16| {
+            if dll == "msvcrt.dll" || dll == "ucrtbase.dll" {
+                if let Some(&cell) = data_cells.get(symbol) {
+                    return cell;
+                }
+            }
             let key = (dll.to_string(), symbol.to_string(), ordinal);
             if let Some(&slot) = thunk_slots.get(&key) {
                 return slot;
@@ -223,13 +244,16 @@ impl BrowserX64Emulator {
                         continue;
                     }
                     Some(UpcallStep::Resume(resume_rip)) => {
-                        // Re-enter the API stub with the stack untouched: this time its handler
-                        // returns a plain value and the driver pops the guest's real return
-                        // address from [rsp] as usual.
+                        // Re-enter the API stub at its original frame: the last constructor's
+                        // `ret` left rsp at (stub_rsp - 0x28) because upcalls are staged with a
+                        // full 0x30-byte frame (sentinel + 0x20 home space + alignment), so add
+                        // the frame bias back before the handler's plain Return pops the guest's
+                        // real return address from [rsp].
                         self.trace_event(format!(
                             "R sentinel->resume 0x{:x} rsp=0x{:x}",
                             resume_rip, self.cpu.gpr[4]
                         ));
+                        self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(0x28);
                         self.cpu.rip = resume_rip;
                         self.pending_upcall = false;
                         continue;
@@ -302,6 +326,52 @@ impl BrowserX64Emulator {
                 match self.kernel.lookup_import_thunk(insn_rip) {
                     Some((dll, symbol, ordinal)) => {
                         let args = self.capture_args();
+                        // Floating-point CRT imports take/return values in XMM0, which the
+                        // kernel's integer-only argument capture cannot see. Resolve them here
+                        // where CPU state is available; everything else goes through the kernel.
+                        let float_result: Option<f64> = match symbol.as_str() {
+                            "sqrtf" => {
+                                let x = self.cpu.get_xmm(0);
+                                let v = f32::from_le_bytes([x[0], x[1], x[2], x[3]]);
+                                Some((v.sqrt()) as f64)
+                            }
+                            "sqrt" => {
+                                let x = self.cpu.get_xmm(0);
+                                let v = f64::from_le_bytes(x[0..8].try_into().unwrap());
+                                Some(v.sqrt())
+                            }
+                            "atof" | "_atof_l" => {
+                                let s = self
+                                    .vmm
+                                    .read_c_string(args[0], 4096)
+                                    .unwrap_or_default();
+                                let text = String::from_utf8_lossy(&s);
+                                Some(text.trim().parse::<f64>().unwrap_or(0.0))
+                            }
+                            _ => None,
+                        };
+                        if let Some(val) = float_result {
+                            self.kernel.note_hle_call(&symbol);
+                            let rsp = self.cpu.gpr[4];
+                            let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+                            let mut out = [0u8; 16];
+                            if symbol == "sqrtf" {
+                                out[0..4].copy_from_slice(&(val as f32).to_le_bytes());
+                            } else {
+                                out[0..8].copy_from_slice(&val.to_le_bytes());
+                            }
+                            self.cpu.set_xmm_vex_zero_upper(0, &out);
+                            self.cpu.gpr[4] = rsp.wrapping_add(8);
+                            self.cpu.rip = ret;
+                            self.cpu.instructions_executed =
+                                self.cpu.instructions_executed.wrapping_add(1);
+                            self.trace_event(format!(
+                                "H 0x{:x} {}!{} (xmm) -> {} ret=0x{:x}",
+                                insn_rip, dll, symbol, val, ret
+                            ));
+                            executed += 1;
+                            continue;
+                        }
                         let rsp = self.cpu.gpr[4];
                         // Snapshot the return address *before* the call, so a corrupted slot shows
                         // up as an explicit ret_slot=0x... value rather than an unexplained jump.
@@ -340,7 +410,17 @@ impl BrowserX64Emulator {
                                 continue;
                             }
                             HleAction::Upcall { target, resume_rip, .. } => {
-                                let ret_slot = rsp.wrapping_sub(8);
+                                // Stage a *real* Win64 call frame 0x30 below the HLE stub's rsp:
+                                // [ret_slot]=sentinel, [ret_slot+8, ret_slot+0x28) = the callee's
+                                // 32-byte register home/shadow space, which the upcalled guest
+                                // function is entitled to write. Staging the sentinel at rsp-8
+                                // (previous behaviour) put that home space on top of the HLE
+                                // caller's own return-address slot at [rsp] — 7-Zip's CRT
+                                // constructors legitimately store into it and destroyed
+                                // _initterm's return address (Tier A fault at insn 96173,
+                                // ret=0x0). rsp-0x30 also preserves the ABI entry alignment
+                                // (rsp % 16 == 8). The matching +0x28 is added back on Resume.
+                                let ret_slot = rsp.wrapping_sub(0x30);
                                 let _ = self.vmm.write_u64(ret_slot, UPCALL_RETURN_THUNK);
                                 self.cpu.gpr[4] = ret_slot;
                                 self.cpu.rip = target;
@@ -745,6 +825,93 @@ impl BrowserX64Emulator {
         let delta = total.saturating_sub(self.frames_presented_seen);
         self.frames_presented_seen = total;
         delta
+    }
+
+    /// Total frames the GUEST presented through the SDL path (Gate 2 accounting). This counter
+    /// advances only inside `SDL_RenderPresent`/`SDL_UpdateWindowSurface` on guest-issued draws;
+    /// there is no host-side increment and no host-authored pixels behind it.
+    pub fn presented_frames(&self) -> u64 {
+        self.kernel.sdl.presented_frames
+    }
+
+    /// Checksum of the last guest-presented SDL frame: FNV-1a/64 over `w|h|RGBA8` bytes,
+    /// formatted `fnv1a64:<16 hex>`. Empty until the guest presents a frame. The algorithm is
+    /// deliberately trivial so a reference renderer (same binary on real Wine/Windows) can
+    /// reproduce it byte-for-byte for the Gate 2 comparison.
+    pub fn frame_checksum(&self) -> String {
+        if self.kernel.sdl.presented_frames == 0 || self.kernel.sdl.last_frame_rgba.is_empty() {
+            return String::new();
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for b in self.kernel.sdl.last_frame_w.to_le_bytes() {
+            mix(b);
+        }
+        for b in self.kernel.sdl.last_frame_h.to_le_bytes() {
+            mix(b);
+        }
+        for &b in &self.kernel.sdl.last_frame_rgba {
+            mix(b);
+        }
+        format!("fnv1a64:{h:016x}")
+    }
+
+    /// Last guest-presented SDL frame (tight RGBA8) without consuming it.
+    pub fn guest_frame_rgba(&self) -> Vec<u8> {
+        self.kernel.sdl.last_frame_rgba.clone()
+    }
+
+    pub fn guest_frame_width(&self) -> u32 {
+        self.kernel.sdl.last_frame_w
+    }
+
+    pub fn guest_frame_height(&self) -> u32 {
+        self.kernel.sdl.last_frame_h
+    }
+
+    /// Measurement tap: the guest's native-resolution SDL frame (tight RGBA8) as written into
+    /// its streaming texture, before any host scaling. Exists so the Gate 2 Wine reference can
+    /// compare byte-for-byte against the same binary's own screenshots (320x200 for Doom).
+    /// Not a presented frame; see presented_frames()/guest_frame_rgba() for that claim.
+    pub fn guest_native_frame_rgba(&self) -> Vec<u8> {
+        self.kernel.sdl.native_frame_rgba.clone()
+    }
+
+    pub fn guest_native_frame_width(&self) -> u32 {
+        self.kernel.sdl.native_frame_w
+    }
+
+    pub fn guest_native_frame_height(&self) -> u32 {
+        self.kernel.sdl.native_frame_h
+    }
+
+    pub fn guest_native_frames(&self) -> u64 {
+        self.kernel.sdl.native_frames
+    }
+
+    /// FNV-1a/64 over `w|h|RGBA8` of the native-frame tap (same algorithm as frame_checksum).
+    pub fn native_frame_checksum(&self) -> String {
+        if self.kernel.sdl.native_frames == 0 || self.kernel.sdl.native_frame_rgba.is_empty() {
+            return String::new();
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for b in self.kernel.sdl.native_frame_w.to_le_bytes() {
+            mix(b);
+        }
+        for b in self.kernel.sdl.native_frame_h.to_le_bytes() {
+            mix(b);
+        }
+        for &b in &self.kernel.sdl.native_frame_rgba {
+            mix(b);
+        }
+        format!("fnv1a64:{h:016x}")
     }
 
     /// Returns the last presented swapchain frame as tightly packed RGBA8 (width/height are

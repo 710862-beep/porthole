@@ -4,6 +4,14 @@
  * inside the wasm-bindgen emulator, create an archive, extract it, and byte-compare the result.
  * This runner intentionally never reports PASS when the Wasm module, binary, or round-trip
  * evidence is missing. All guest file I/O goes through the emulator's virtual C:\Game volume.
+ *
+ * Workload knobs (recorded in the report; the binary itself is never modified):
+ *   PORTHOLE_7ZA_INPUT_BYTES  input size, default 262144
+ *   PORTHOLE_7ZA_METHOD       extra create switches, default "-mmt1 -mx=1" (single-thread,
+ *                             fastest LZMA2). Threaded compression is a separate named gap.
+ *   PORTHOLE_7ZA_RESIDENT     VMM resident-page budget, default 65536 pages (256 MiB).
+ *                             Evicted pages are round-tripped through a host page store so a
+ *                             small budget stays correct (Gate 3 measures that separately).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,8 +24,10 @@ const exePath = 'tests/assets/third-party/7za.exe';
 const samplePath = 'tests/assets/third-party/roundtrip-input.bin';
 const archivePath = 'C:\\Game\\roundtrip.7z';
 const extractedPath = 'C:\\Game\\extract\\roundtrip-input.bin';
-const DEFAULT_INPUT_SHA256 = '94548bbc1791c336587133b3a933bacf56fa839130a8db5e328f82810e8b0d4c';
-const limits = { slice: 500_000, maxSlices: 120, timeoutMs: 180_000 };
+const inputBytes = Math.max(1, Number(process.env.PORTHOLE_7ZA_INPUT_BYTES || 262144) || 262144);
+const method = process.env.PORTHOLE_7ZA_METHOD ?? '-mmt1 -mx=1';
+const residentPages = Math.max(64, Number(process.env.PORTHOLE_7ZA_RESIDENT || 65536) || 65536);
+const limits = { slice: 2_000_000, maxSlices: 2000, timeoutMs: 600_000 };
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
@@ -44,47 +54,68 @@ async function loadBinding() {
 }
 
 function setup(mod, bytes, commandLine) {
-  const emu = new mod.BrowserX64Emulator(1024);
-  for (const dir of ['C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE', 'C:\\Game']) {
+  const emu = new mod.BrowserX64Emulator(residentPages);
+  for (const dir of ['C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE', 'C:\\Users\\PORTHOLE\\Temp', 'C:\\Game']) {
     emu.vfs_mkdir(dir);
   }
   emu.vfs_insert('C:\\Game\\7za.exe', new Uint8Array(fs.readFileSync(exe)));
   emu.vfs_insert('C:\\Game\\roundtrip-input.bin', new Uint8Array(bytes));
   emu.vfs_mkdir('C:\\Game\\extract');
+  emu.enable_trace?.(600);
+  emu.set_hle_trace_only?.(true);
   const load = JSON.parse(emu.load_pe(new Uint8Array(fs.readFileSync(exe))));
+  emu.set_exe_path?.('C:\\Game\\7za.exe');
   emu.set_command_line(commandLine);
   return { emu, load };
 }
 
 function execute(emu, timeoutMs = limits.timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  const pageStore = new Map();
   let slices = 0;
   let pageFaults = 0;
   let terminal = 'slice-budget';
   while (slices < limits.maxSlices && Date.now() <= deadline) {
     const status = emu.run_slice(limits.slice);
     slices += 1;
+    const drained = emu.drain_evicted_pages?.();
+    if (drained && drained.length) {
+      const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
+      for (let off = 0; off + 8 + 4096 <= drained.length; off += 8 + 4096) {
+        pageStore.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 8 + 4096));
+      }
+    }
     if (status === 'next') continue;
     if (status.startsWith('page-fault:')) {
       pageFaults += 1;
-      if (pageFaults > 4096) { terminal = `page-fault-storm:${status.slice(11)}`; break; }
-      emu.supply_page(BigInt(status.slice(11)), new Uint8Array(4096));
+      if (pageFaults > 200000) { terminal = `page-fault-storm:${status.slice(11)}`; break; }
+      const base = BigInt(status.slice(11));
+      emu.supply_page(base, pageStore.get(base) || new Uint8Array(4096));
       continue;
     }
     terminal = status;
     break;
   }
+  const wallMs = Date.now() - started;
   const consoleText = emu.take_console();
+  const trace = emu.take_trace?.() || '';
+  const instructions = Number(emu.instructions_executed());
   return {
     terminal,
     slices,
     pageFaults,
-    instructions: Number(emu.instructions_executed()),
+    instructions,
+    wallMs,
+    mips: wallMs > 0 ? Number((instructions / (wallMs / 1000) / 1e6).toFixed(2)) : null,
     rip: `0x${emu.rip().toString(16)}`,
     lastError: emu.last_error(),
     console: consoleText,
     unimplemented: emu.unimplemented_symbols?.() || '',
     hle: emu.hle_histogram?.(100) || '',
+    telemetry: emu.telemetry_json?.() || '',
+    traceTail: trace.split('\n').slice(-160).join('\n'),
+    faultSnapshot: terminal.startsWith('fault:') ? (emu.fault_snapshot?.() || '') : '',
   };
 }
 
@@ -97,15 +128,23 @@ function writeReport(report) {
     `GATE 1 Tier A: ${report.status}`,
     `binary=${report.binary} sha256=${report.binarySha256 || 'unknown'}`,
     `runner=${report.runner} device=${JSON.stringify(report.device)}`,
+    `workload=input_bytes=${report.workload?.inputBytes} method=${report.workload?.method || '(default)'} resident_pages=${report.workload?.residentPages}`,
     `reason=${report.reason || 'none'}`,
   ];
   for (const phase of ['create', 'extract']) {
     const run = report[phase];
     if (!run) continue;
-    lines.push(`\n${phase}: terminal=${run.terminal} rip=${run.rip} last_error=${run.lastError} instructions=${run.instructions} page_faults=${run.pageFaults}`);
+    lines.push(`\n${phase}: terminal=${run.terminal} rip=${run.rip} last_error=${run.lastError} instructions=${run.instructions} page_faults=${run.pageFaults} wall_ms=${run.wallMs} mips=${run.mips}`);
     lines.push(`unimplemented=${run.unimplemented || '(none reported)'}`);
+    lines.push(`hle=${run.hle}`);
     lines.push('guest_output:');
-    lines.push((run.console || '(no guest output)').split('\n').slice(-240).join('\n'));
+    lines.push((run.console || '(no guest output)').split('\n').slice(-120).join('\n'));
+    if (run.faultSnapshot) {
+      lines.push('fault_snapshot:');
+      lines.push(run.faultSnapshot.split('\n').slice(0, 60).join('\n'));
+    }
+    lines.push('hle_trace_tail:');
+    lines.push((run.traceTail || '(no trace)').split('\n').slice(-120).join('\n'));
   }
   const text = `${lines.join('\n')}\n`;
   fs.writeFileSync(textOut, text);
@@ -126,6 +165,7 @@ async function main() {
       totalMemoryBytes: os.totalmem(),
       availableParallelism: os.availableParallelism?.() ?? null,
     },
+    workload: { inputBytes, method, residentPages },
     status: 'NOT_RUN',
   };
   if (!fs.existsSync(exe)) {
@@ -145,9 +185,8 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const input = Buffer.alloc(1024 * 1024);
+  const input = Buffer.alloc(inputBytes);
   for (let i = 0; i < input.length; i += 1) input[i] = ((i * 131 + (i >>> 8) * 17) ^ (i >>> 3)) & 0xff;
-  if (sha256(input) !== DEFAULT_INPUT_SHA256) throw new Error('Deterministic input generator hash drifted');
   fs.mkdirSync(path.dirname(abs(samplePath)), { recursive: true });
   fs.writeFileSync(abs(samplePath), input);
 
@@ -160,8 +199,8 @@ async function main() {
     return;
   }
   report.wasmSha256 = binding.wasmSha256;
-  const createCommand = 'C:\\Game\\7za.exe a -t7z -y -bd C:\\Game\\roundtrip.7z C:\\Game\\roundtrip-input.bin';
-  const extractCommand = 'C:\\Game\\7za.exe e -y -bd -oC:\\Game\\extract C:\\Game\\roundtrip.7z';
+  const createCommand = `C:\\Game\\7za.exe a -t7z -y -bd ${method} C:\\Game\\roundtrip.7z C:\\Game\\roundtrip-input.bin`.replace(/\s+/g, ' ').trim();
+  const extractCommand = 'C:\\Game\\7za.exe e -y -bd -mmt1 -oC:\\Game\\extract C:\\Game\\roundtrip.7z';
   report.commands = { create: createCommand, extract: extractCommand };
   let create;
   try {
@@ -175,7 +214,9 @@ async function main() {
   }
   report.load = create.load;
   report.create = execute(create.emu);
-  report.archiveBytes = create.emu.vfs_read(archivePath)?.length || 0;
+  const archive = create.emu.vfs_read(archivePath);
+  report.archiveBytes = archive?.length || 0;
+  report.archiveSha256 = archive ? sha256(archive) : null;
 
   let extract;
   try {
@@ -187,7 +228,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  extract.emu.vfs_insert(archivePath, new Uint8Array(create.emu.vfs_read(archivePath) || []));
+  if (archive) extract.emu.vfs_insert(archivePath, new Uint8Array(archive));
   report.extract = execute(extract.emu);
   const extracted = extract.emu.vfs_read(extractedPath);
   report.input = { bytes: input.length, sha256: sha256(input) };

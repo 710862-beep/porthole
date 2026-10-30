@@ -5,7 +5,7 @@ RENDERING, and GAMEPLAY. A synthetic guest, a host-authored pixel, or a successf
 not a real-game render or gameplay result. Historical fixture results below are explicitly not
 qualifying evidence for the current milestone.
 
-## GATE 1 — independent binary, Tier A (attempted; execution blocked before guest entry)
+## GATE 1 — independent binary, Tier A: **PASS** (EXECUTION; Node/Wasm on CI, not Chrome/Chromebook)
 
 ### Pinned third-party executable
 
@@ -57,33 +57,185 @@ KERNEL32.dll: SetThreadAffinityMask, CreateEventW, SetEvent, ResetEvent, CreateS
               GetLogicalDriveStringsW, DeviceIoControl, GetFileSize, SetFilePointer
 ```
 
-### Execution attempt and actual failure log
+### Measured execution (CI run 41031294277, commit `edbd6a7`)
 
-The first required run is gated before guest entry in this checkout. The acquisition and PE
-inspection succeeded, but the local wasm-bindgen output is absent and this environment has no
-`cargo` executable to rebuild it. `node tests/third-party/run-7za.mjs` produced:
+`node tests/third-party/run-7za.mjs` inside the Wasm core (Node v22.23.4, linux
+7.0.0-1017-azure x64, AMD EPYC 7763, 16,760,344,576 bytes RAM — CI runner, **not** Chrome and
+**not** the target Chromebook; Gate 4 device evidence is still owed). The unmodified binary above
+ran a real archive round-trip and the fail-closed runner verified byte identity:
+
+| Phase | Command (guest argv) | Terminal state | Guest instructions | Wall time | Throughput |
+| --- | --- | --- | --- | --- | --- |
+| Create | `7za a -t7z -y -bd -mmt1 -mx=1 C:\Game\roundtrip.7z C:\Game\roundtrip-input.bin` | `exit:0` | 26,606,358 | 4,224 ms | 6.30 MIPS |
+| Extract | `7za e -y -bd -mmt1 -oC:\Game\extract C:\Game\roundtrip.7z` | `exit:0` | 7,377,308 | 1,056 ms | 6.99 MIPS |
+
+Workload, recorded in the report: deterministic 262,144-byte input
+(`((i*131+(i>>8)*17)^(i>>3))&0xff`), single-threaded (`-mmt1`, because guest thread bodies are not
+yet scheduled — named limitation, not hidden), fastest compression (`-mx=1`), resident-page cap
+65,536 pages with a host evicted-page store (Gate 3 will re-run with a deliberately small cache).
+Guest console, create phase (guest-authored output, verbatim excerpt):
 
 ```text
-[7za] NOT_RUN: Wasm artifacts missing: /home/user/porthole/vendor/porthole-x64-wasm/porthole_x64_wasm.js,
-/home/user/porthole/vendor/porthole-x64-wasm/porthole_x64_wasm_bg.wasm
+7-Zip (a) 21.07 (x64) : Copyright (c) 1999-2021 Igor Pavlov : 2021-12-26
+Scanning the drive:
+1 file, 262144 bytes (256 KiB)
+Creating archive: C:\Game\roundtrip.7z
+Add new data to archive: 1 file, 262144 bytes (256 KiB)
+Files read from disk: 1
+Archive size: 17021 bytes (17 KiB)
+Everything is Ok
 ```
 
-The build attempt independently returned `/bin/bash: cargo: command not found` (exit 127). This is
-**not** a guest crash, not an API blocker, and not a pass: zero guest instructions ran. I will not
-invent a first missing API or report exit 0. The fail-closed runner
-`tests/third-party/run-7za.mjs` is ready to issue `7za a` + `7za e` against a deterministic 1 MiB
-input and compare bytes once the Wasm artifacts are available; its current report is
-`artifacts/7za-tier-a-report.json` (`NOT_RUN`). No archive round-trip has yet been measured. The
-`tier-a-independent-7zip` CI job is wired to consume the Wasm build artifact, publish the guest log,
-and retain the JSON/text reports; it has not been executed from this sandbox session.
+Extract also ended with `Everything is Ok`; extracted bytes compare identical to the input by
+SHA-256 (runner fails closed otherwise). One imported-but-unused symbol remained unimplemented and
+was tolerated by the guest: `SetDefaultDllDirectories` (called once, result ignored by 7za).
+This is an **EXECUTION** claim only — no rendering or gameplay is implied.
+
+### Failure history that led here (all measured, in order)
+
+1. CI `41026934026`: fault at **29 instructions** — `access violation at 0x7ff000001000`,
+   `unimplemented=__set_app_type`. Root cause: msvcrt **data** imports (`_fmode`, `_commode`,
+   `_iob`, `__initenv`) were bound to code-thunk VAs, so CRT startup wrote `_fmode` through
+   `0x7ff000001350`. Fixed by giving data imports real writable guest cells
+   (`Win32Kernel::init_data_imports`) and binding them by cell VA in the loader.
+2. CI `41030096921`: fault at **96,173 instructions**, `ret=0x0` out of `_initterm` after running
+   7-Zip's C++ static constructors. Root cause: HLE upcalls staged the return sentinel at `rsp-8`,
+   putting a constructor's legitimate 32-byte Win64 register-home space exactly over `_initterm`'s
+   own return-address slot. Fixed by staging upcalls with a real frame at `rsp-0x30` (sentinel +
+   home space + ABI alignment) and restoring the bias on resume.
+3. CI `41031294277`: **PASS** as measured above. Supporting fixes in the same batch: CRC32/MOVBE
+   decode (7-Zip's hardware-CRC path), freelist heap with real `realloc`/`HeapSize`, FindFirst/Next,
+   file mappings, OLEAUT32 BSTR/VARIANT ordinals, semaphore counts, `_iob` stdio, and the swapped
+   `GetTempPath`/`GetCurrentDirectory` argument order (length-first) that also caused most Wine
+   `directory` failures.
 
 ### Gate order
 
-Gate 1 Tier A is still open and must be completed first. **Gate 2 has not been started**: no
-Chocolate Doom executable or Freedoom IWAD was acquired or run. D3D12 work is explicitly deferred.
-When the renderer gate is reached, Chocolate Doom's SDL2/OpenGL/WGL path is the target; DXBC is not
-DXIL, and SM6 shader support will require `dxil-spirv` or an equivalent translator as a separate,
-later work item.
+Gate 1 **Tier A is closed** by the measurement above. Tier B / Gate 2 followed in order (next
+section). D3D12 work remains explicitly deferred; the Chocolate Doom binary's actual SDL2
+software-renderer path was the target. DXBC is not DXIL; SM6 shader support will require
+`dxil-spirv` or an equivalent translator as a separate, later work item.
+
+Wine conformance movement from the shared HLE fixes (measured on `5b0bd45`, pinned Wine
+`0738d528`): `directory` 23 → 28 → 2 → **0 failures** (107 tests executed; final fix was the PEB
+`CurrentDirectory` field offsets in `RTL_USER_PROCESS_PARAMETERS`, `pe64.rs`), `environ` **38
+failures** (432 tests, 14 todo, 2 skipped — itemized failure lines still not captured by the
+harness summary; `SetEnvironmentStringsW` confirmed unimplemented). Gate 5 therefore stands at
+`directory` closed, `environ` open.
+
+## GATE 1 Tier B + GATE 2 (rendering) — Chocolate Doom: **PASS** (EXECUTION + RENDERING; Node/Wasm on CI)
+
+### Pinned third-party binaries (run UNMODIFIED)
+
+| Field | Measured value |
+| --- | --- |
+| Product | Chocolate Doom **3.1.1**, official `win64` build, `chocolate-doom.exe` |
+| Release zip SHA-256 | `58c34c61ae954493fce5ff01fd553898240a0de25658aa97b43ac9510c49581f` (9,798,661 bytes, GitHub release `chocolate-doom-3.1.1`) |
+| Executable size / SHA-256 | 875,520 bytes / `15e81c194df270fbd71450222e71846247926fabfb889e72e7d855903454d752` |
+| Game data | Freedoom **0.13.0** `freedoom2.wad`, 28,787,748 bytes / `a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b` (verified against the release's official CHECKSUM) |
+| Acquisition | `node scripts/fetch-chocolate-doom.mjs` — fails closed unless zip, exe and WAD hashes all match the pins; extracts to gitignored `tests/assets/third-party/` |
+| Rendering path used by this binary | SDL2 software renderer (`SDL_RenderCopy` chain). The exe's import table (published in every Tier B report) contains **no** `SDL_GL_CreateContext`/OpenGL entry points, so the SDL2 renderer — not OpenGL/WGL, and not D3D12 — is the path it actually uses |
+| Guest argv | `chocolate-doom.exe -iwad C:\Game\DOOM2.WAD -timedemo demo1 -nosound` (demo1 = recorded demo shipped in the Freedoom IWAD; input is guest demo data, not host input) |
+
+### Measured execution + rendering (commit `c8332c3`, Tier B report check `124043422676`)
+
+Runner: `node tests/third-party/run-chocolate-doom.mjs`, Node v22.23.4, linux 7.0.0-1017-azure x64,
+AMD EPYC 9V74, 16,760,344,576 bytes RAM — CI runner, **not** Chrome, **not** the Chromebook
+(Gate 4 still owed).
+
+| Metric | Measured value |
+| --- | --- |
+| Terminal state | `exit:4294967295` (upstream `I_Error("timed %i gametics…")` exits −1 *after* completing the timedemo; the fail-closed runner accepts this only together with the parsed guest line below) |
+| Guest console (guest-authored) | `timed 2664 gametics in 2614 realtics (35.669472 fps)` — gametics parsed from guest output by the runner (`timedemo_gametics=2664`) |
+| Guest instructions | 3,603,985,626 — **bit-identical instruction count across three independent CI runs** (Xeon Platinum 8573C, EPYC 7763, EPYC 9V74): the simulation is deterministic |
+| Wall time / throughput | ~450–605 s depending on runner CPU (5.95–7.99 MIPS) |
+| Guest presents | 2,704 `SDL_RenderPresent` calls |
+| **Distinct presented-frame checksums** | **1,782** (FNV-1a64 over width‖height‖tight-RGBA of the guest-composed 800×600 backbuffer; algorithm documented in `lib.rs`, independently re-implemented in BigInt JS by the runner — `checksum_cross_check=true`) |
+| Sampled frames (PPM artifacts uploaded every run) | first `fnv1a64:2ed8cde68975e9a2` @present 1 (initial clear), mid `fnv1a64:985fbc6c1d3ff7a6` @1500, final `fnv1a64:ceeff82acee82862` @2704 — pairwise distinct |
+| Named blockers | none (zero unimplemented symbols reached) |
+
+Every presented byte originates from the guest: the guest's 8-bit software rendering into its
+`screenbuffer`, palette-converted by guest-issued `SDL_LowerBlit`, copied by guest-issued
+`SDL_RenderCopy` through the 320×200 streaming texture → 960×600 upscaled texture → 800×600
+window backbuffer that `SDL_RenderPresent` captures. The harness fail-closes unless ≥100
+distinct framebuffer checksums occur **and** first/mid/final samples are pairwise distinct —
+a static, cleared or stale buffer cannot pass.
+
+This is an **EXECUTION + RENDERING** claim. It is explicitly **not**:
+
+* interactive gameplay (input is the IWAD's recorded demo; no keyboard/mouse device exists yet);
+* Chrome/Chromebook evidence (Gate 4).
+
+### Reference cross-checks (same binary, real Wine + independently decoded reference)
+
+* **Execution vs real Wine 9.0** (`wine-9.0 (Ubuntu 9.0~repack-4build3)`, Xvfb, CI job
+  `gate2-wine-reference`): the identical `chocolate-doom.exe` (SHA-256 `15e81c19…d752`) with
+  the identical IWAD printed `timed 2664 gametics in 830 realtics` and, on a second run,
+  `timed 2664 gametics in 693 realtics`. **Gametics match the emulator exactly (2,664)** —
+  the deterministic simulation (3,603,985,626 guest instructions, ~6 MIPS in the Wasm core)
+  is bit-faithful against a real Windows-API implementation, not merely self-consistent.
+  (Realtics differ, as they must: native Wine runs the demo at >100 fps.)
+* **Rendering vs independently decoded reference**: `scripts/decode-title-reference.mjs`
+  derives the title frame straight from the pinned IWAD — TITLEPIC patch decoded with the
+  guest's own `V_DrawPatch` semantics, PLAYPAL through the guest's `I_SetPalette` conversion
+  (`gammatable[0]` from upstream `tables.c`: `v<128 ? v+1 : v`, then `& ~3`) — no emulator
+  code, no guest code. The emulator's
+  guest-produced 320×200 title frame (measurement tap on the streaming texture) must be
+  **pixel-identical** to it and equal the known-good hash **`fnv1a64:02d3105200077dee`**
+  (320×200, 178 distinct colours). This replaced the original plan of comparing against a
+  guest PCX screenshot under Wine: synthetic key delivery in headless Xvfb proved unreliable
+  across three attempts (window found, key sent, no `DOOM*.pcx` ever written). The PCX path
+  remains in the script as a non-gating bonus if a screenshot ever materialises. What this
+  proves: the guest, running in our core, parsed the WAD, executed its patch renderer and
+  palette setup to a framebuffer that is bit-identical to an independent implementation of
+  the same maths — at the native 320×200 stream (the comparable surface; the 800×600 window
+  upscale differs by design, linear vs nearest, as noted below).
+
+### The fake-frame incident (why the harness now demands ≥100 distinct checksums)
+
+The immediately preceding build reported "PASS" with `distinct_frame_checksums=2`: the frame
+was *not* the game's rendering. Two stacked SDL HLE defects, both found from the published
+evidence itself and fixed:
+
+1. `SDL_RenderCopy` recorded its source texture but moved **zero pixels**, and
+   `SDL_RenderPresent` captured that untouched intermediate texture — 2,703 identical
+   clear-colour checksums. Fixed with a real compositor (`0f76900`): window backbuffer in
+   guest memory, `RenderClear` fills it, `RenderCopy` performs a true scaled blit, `Present`
+   captures the backbuffer.
+2. That still yielded 2 distinct checksums. Per-frame probes showed the palette blit writing
+   to a surface with `pitch=0`. Root cause (upstream `i_video.c`, tag `chocolate-doom-3.1.1`):
+   Chocolate creates its conversion surface with
+   `SDL_CreateRGBSurfaceWithFormatFrom(NULL, w, h, 0, 0, …)` — "pixels and pitch will be
+   filled with the texture's values" — then locks the streaming texture *directly into*
+   `&argbbuffer->pixels`/`&argbbuffer->pitch` and blits into the texture through that surface.
+   Our blit trusted creation-time host records instead of the live guest `SDL_Surface`.
+   Fixed in `c8332c3` (`sdl_surface_live` reads pixels@+32/pitch@+24 at call time, as real SDL
+   does) — distinct checksums went 2 → 1,782.
+
+The simulation was bit-exact throughout (identical 3,603,985,626 instructions before and after
+both fixes); only the presented bytes were wrong. Lesson recorded: **execution determinism is
+not rendering evidence**, and any future PASS must show framebuffer evolution, not present
+counts.
+
+### Failure history that led here (all measured, in order)
+
+1. First probe: access violation at `0x0` after 541 instructions — named blockers `rand_s`,
+   `__p__acmdln` (the expected Gate-1 failure shape: named API, not exit 0).
+2. `38e1f3f`: 1,023 instructions — SDL2main's argv UTF-16→UTF-8 conversion needed
+   `SDL_wcslen`/`SDL_iconv_string`, then `SDL_ShowSimpleMessageBox`; exit 0 that was **not**
+   success (no `SDL_Init` reached).
+3. `2e8d21e`: 2,522,659 instructions — WAD loading reached unimplemented `0F 67`
+   (`PACKUSWB`); implemented with `PACKSSWB`/`PACKSSDW` (Intel saturation bounds) in `0dee9cb`.
+4. `0dee9cb`/`af7f0ee`: full timedemo executed; presented frames were the fake-frame incident
+   above. Runner criteria and compositor fixed; PASS at `c8332c3` as measured above.
+
+### Gate 2 — what remains open
+
+* **Interactive gameplay**: needs real input devices (keyboard/mouse event injection) and a
+  live session, not demo playback. Not claimed.
+* The comparable reference surface is the pre-scaling 320×200 guest frame; the final 800×600
+  upscale differs by design (real SDL applies the app-requested "linear" filter, our HLE
+  blits nearest-neighbour), so a window-resolution bit-match is not the right target.
 
 ## Historical CI measurements (not current milestone acceptance)
 
@@ -375,22 +527,23 @@ check-run `output.summary` (`porthole-x64-trace:*`, `porthole-x64-game`) and rea
 
 ## Remaining gates (strict order)
 
-1. **GATE 1 / Tier A:** rebuild/provision the Wasm artifacts, run the pinned 7-Zip 21.07 x64 PE
-   under the Wasm core, create and extract a real 7z archive, then byte-compare. Publish the first
-   guest API blocker if it stops; do not convert this environment-level NOT_RUN into a guest PASS.
-2. **GATE 2 / Tier B:** acquire the official redistributable x64 Chocolate Doom binary and
-   Freedoom IWAD, capture their hashes/imports, then implement the SDL2 + OpenGL/WGL calls that
-   executable actually uses. Only guest-originated draw output that responds to guest input and
-   matches a reference render can count. No D3D12 work in this gate.
+1. **GATE 1 / Tier A:** ✅ PASS (above). **GATE 1 / Tier B execution:** ✅ PASS (above).
+2. **GATE 2:** guest-originated evolving frames ✅; execution cross-validated against real
+   Wine 9.0 (identical 2,664 gametics) ✅; title frame pixel-identical to an independently
+   decoded IWAD reference (`fnv1a64:02d3105200077dee`) ✅. Still open: interactive gameplay
+   with real input devices. No D3D12 work in this gate.
 3. **GATE 3:** force evictions with an LRU smaller than the guest working set; instrument guest VA,
    resident/NVMe bytes, faults, read/write MiB, and p50/p99 latency; demonstrate trap/suspend/resume
    across asynchronous File System Access I/O and a byte-identical 1 GiB deterministic round-trip.
+   Not yet run — current Tier A/B runs use a 65,536-page resident cap that the working sets fit
+   inside, so the NVMe claim is presently **unproven**.
 4. **GATE 4:** gather actual locked-Chromebook Chrome evidence (enterprise picker policy, WebGPU or
    WebGL2 tier, Wasm features, DPR, JS heap, physical RAM, sustained instructions/sec, screen capture,
-   and trace). Node or a simulated browser is not acceptable.
-5. **GATE 5:** use the pinned Wine source to fix `directory` wildcard-parent ordering
-   (`ERROR_PATH_NOT_FOUND`) and `environ` buffer-size/`ERROR_MORE_DATA` semantics; target 7/7 under
-   the existing fail-closed harness.
+   and trace). Node or a simulated browser is not acceptable. Not yet run — all evidence so far
+   is Node on CI runners.
+5. **GATE 5:** `directory` ✅ 0 failures (measured). `environ` still 38 failures
+   (`GetEnvironmentVariable` buffer-size/`ERROR_MORE_DATA` semantics; needs itemized failure
+   capture first — do not guess fixes without the failing test lines).
 
 D3D12, DXBC/DXIL translation, and any other graphics backend are later work. DXBC is not DXIL;
 Shader Model 6 requires `dxil-spirv` or an equivalent translator before WebGPU can execute those

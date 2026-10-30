@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>Porthole · Gate 4 Chromebook probe</title>
+<style>
+  body { margin:0; background:#0b1220; color:#dce7f5; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; padding:18px; }
+  h1 { font-size:18px; margin:0 0 4px; } h1 span { color:#5eead4; }
+  p.sub { color:#8ba3c0; font-size:13px; margin:0 0 14px; }
+  button { background:#12314f; color:#dce7f5; border:1px solid #24507e; border-radius:6px; padding:8px 12px; font-size:14px; margin:4px 6px 4px 0; cursor:pointer; }
+  button:hover { background:#184069; } button:disabled { opacity:.5; cursor:wait; }
+  pre { background:#060b14; border:1px solid #1d2c44; border-radius:8px; padding:12px; overflow:auto; font-size:12px; line-height:1.45; }
+  .warn { color:#fbbf24; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>Porthole · <span>Gate 4</span> device probe</h1>
+<p class="sub">Run on the LOCKED Chromebook in real Chrome. Automatic checks run on load.
+Then press the two buttons (they need a user gesture), copy/download the JSON, and bring it back.
+Also screenshot this page and <b>chrome://policy</b> (search “FileSystem”).</p>
+
+<button id="btnPicker">1 · Try showDirectoryPicker()…</button>
+<button id="btnMem">2 · Probe max WebAssembly.Memory (run LAST — may kill the tab)</button>
+<button id="btnCopy">Copy JSON</button>
+<button id="btnDl">Download JSON</button>
+<p class="warn">Button 2 grows memory in 256&nbsp;MiB steps up to 2&nbsp;GiB. On a low-RAM device the tab may be killed — copy the JSON first.</p>
+<pre id="out">probing…</pre>
+
+<script>
+"use strict";
+const R = { probe: "porthole-gate4", version: 1, when: new Date().toISOString() };
+const out = document.getElementById("out");
+const render = () => { out.textContent = JSON.stringify(R, null, 2); };
+const errStr = (e) => e ? `${e.name || "Error"}: ${e.message || String(e)}` : "unknown error";
+
+// ---------- identity / device ----------
+R.userAgent = navigator.userAgent;
+R.platformLegacy = navigator.platform || null;
+R.hardwareConcurrency = navigator.hardwareConcurrency ?? null;
+R.deviceMemoryGiB = navigator.deviceMemory ?? null; // Chrome: approx RAM bucket
+R.devicePixelRatio = window.devicePixelRatio;
+R.screen = { width: screen.width, height: screen.height, availWidth: screen.availWidth,
+             availHeight: screen.availHeight, colorDepth: screen.colorDepth };
+R.viewport = { innerWidth, innerHeight };
+R.crossOriginIsolated = window.crossOriginIsolated;
+R.sharedArrayBuffer = typeof SharedArrayBuffer !== "undefined";
+if (performance.memory) {
+  R.jsHeap = { usedJSHeapSize: performance.memory.usedJSHeapSize,
+               totalJSHeapSize: performance.memory.totalJSHeapSize,
+               jsHeapSizeLimit: performance.memory.jsHeapSizeLimit };
+}
+(async () => {
+  try {
+    R.userAgentData = await navigator.userAgentData?.getHighEntropyValues(
+      ["model", "platform", "platformVersion", "architecture", "bitness", "fullVersionList"]);
+  } catch (e) { R.userAgentData = null; R.userAgentDataError = errStr(e); }
+  render();
+})();
+
+// ---------- File System Access / OPFS ----------
+R.fileSystem = {
+  showDirectoryPicker: typeof window.showDirectoryPicker === "function",
+  showOpenFilePicker: typeof window.showOpenFilePicker === "function",
+  showSaveFilePicker: typeof window.showSaveFilePicker === "function",
+  opfsGetDirectory: typeof navigator.storage?.getDirectory === "function",
+  storageEstimate: typeof navigator.storage?.estimate === "function",
+};
+(async () => {
+  try { R.fileSystem.estimate = await navigator.storage.estimate(); }
+  catch (e) { R.fileSystem.estimateError = errStr(e); }
+  // OPFS smoke test: write 4 MiB, read back, verify, time it, delete.
+  try {
+    const t0 = performance.now();
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle("gate4-probe.bin", { create: true });
+    R.fileSystem.syncAccessHandleOnMainThread = typeof fh.createSyncAccessHandle;
+    const w = await fh.createWritable();
+    const data = new Uint8Array(4 * 1024 * 1024);
+    for (let i = 0; i < data.length; i++) data[i] = (i * 31 + (i >> 8)) & 0xff;
+    await w.write(data); await w.close();
+    const f = await fh.getFile();
+    const back = new Uint8Array(await f.arrayBuffer());
+    let ok = back.length === data.length;
+    for (let i = 0; ok && i < data.length; i += 4093) ok = back[i] === data[i];
+    R.fileSystem.opfsSmoke4MiB = { ok, ms: Math.round(performance.now() - t0), size: f.size };
+    await root.removeEntry("gate4-probe.bin");
+  } catch (e) { R.fileSystem.opfsSmoke4MiB = { ok: false, error: errStr(e) }; }
+  render();
+})();
+document.getElementById("btnPicker").onclick = async () => {
+  try {
+    const dir = await window.showDirectoryPicker({ mode: "readwrite" });
+    R.fileSystem.pickerAttempt = { ok: true, dirName: dir.name, kind: dir.kind };
+  } catch (e) {
+    // THIS string is the enterprise-policy evidence — copy it verbatim.
+    R.fileSystem.pickerAttempt = { ok: false, errorName: e?.name || null, error: errStr(e) };
+  }
+  render();
+};
+
+// ---------- GPU: WebGPU then WebGL2 ----------
+(async () => {
+  const g = { navigatorGpu: !!navigator.gpu };
+  if (navigator.gpu) {
+    try {
+      const a = await navigator.gpu.requestAdapter();
+      if (!a) { g.adapter = null; }
+      else {
+        g.adapter = { features: [...a.features].slice(0, 64),
+                      limits: { maxBufferSize: a.limits.maxBufferSize,
+                                maxTextureDimension2D: a.limits.maxTextureDimension2D,
+                                maxComputeWorkgroupStorageSize: a.limits.maxComputeWorkgroupStorageSize } };
+        try { g.adapter.info = { vendor: a.info.vendor, architecture: a.info.architecture,
+                                 device: a.info.device, description: a.info.description }; } catch {}
+        try { const d = await a.requestDevice(); g.deviceOk = !!d; d?.destroy?.(); }
+        catch (e) { g.deviceOk = false; g.deviceError = errStr(e); }
+      }
+    } catch (e) { g.adapterError = errStr(e); }
+  }
+  R.webgpu = g;
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl2");
+    if (!gl) { R.webgl2 = { ok: false }; }
+    else {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      R.webgl2 = { ok: true,
+        renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+        vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+        version: gl.getParameter(gl.VERSION),
+        maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) };
+    }
+  } catch (e) { R.webgl2 = { ok: false, error: errStr(e) }; }
+  render();
+})();
+
+// ---------- WebAssembly feature probes (validate = supported, no instantiation) ----------
+const V = (bytes) => { try { return WebAssembly.validate(new Uint8Array(bytes)); } catch { return false; } };
+R.wasm = {
+  // (module (func (result v128) i32.const 0 i8x16.splat)) style SIMD probe
+  simd: V([0,97,115,109,1,0,0,0, 1,5,1,96,0,1,123, 3,2,1,0, 10,10,1,8,0,65,0,253,15,253,98,11]),
+  // (module (memory 1 1 shared))
+  threadsSharedMemory: V([0,97,115,109,1,0,0,0, 5,4,1,3,1,1]),
+  // (module (memory i64 1))
+  memory64: V([0,97,115,109,1,0,0,0, 5,3,1,4,1]),
+  // (module (memory 1) (func i32.const 0 i32.const 0 i32.const 0 memory.copy))
+  bulkMemory: V([0,97,115,109,1,0,0,0, 1,4,1,96,0,0, 3,2,1,0, 5,3,1,0,1, 10,14,1,12,0,65,0,65,0,65,0,252,10,0,0,11]),
+  // (module (func (result i32) i32.const 0 i32.extend8_s))
+  signExtension: V([0,97,115,109,1,0,0,0, 1,5,1,96,0,1,127, 3,2,1,0, 10,7,1,5,0,65,0,192,11]),
+};
+try {
+  const m = new WebAssembly.Memory({ initial: 1, maximum: 65536 });
+  R.wasm.memoryConstruct4GiBMax = true; R.wasm.memoryInitialBytes = m.buffer.byteLength;
+} catch (e) { R.wasm.memoryConstruct4GiBMax = false; R.wasm.memoryError = errStr(e); }
+render();
+document.getElementById("btnMem").onclick = async (ev) => {
+  ev.target.disabled = true;
+  const t0 = performance.now();
+  try {
+    const m = new WebAssembly.Memory({ initial: 1, maximum: 65536 });
+    let mib = 0;
+    // Grow in 256 MiB steps (= 4096 pages) up to a 2048 MiB safety cap.
+    while (mib < 2048) { m.grow(4096); mib = m.buffer.byteLength / 1048576; }
+    R.wasm.memoryGrowProbe = { ok: true, achievedMiB: mib, cappedAtMiB: 2048, ms: Math.round(performance.now() - t0) };
+  } catch (e) {
+    R.wasm.memoryGrowProbe = { ok: false, error: errStr(e), ms: Math.round(performance.now() - t0),
+                               note: "achieved size unknown after throw — rerun with smaller step if needed" };
+  }
+  render();
+};
+
+// ---------- sustained CPU proxy (tight wasm loop; real IPS comes from x64.html) ----------
+(async () => {
+  try {
+    // (func (export "f") (param i32) (result i32) loop i32 arithmetic) — compiled from bytes.
+    const bytes = new Uint8Array([
+      0,97,115,109,1,0,0,0, 1,6,1,96,1,127,1,127, 3,2,1,0, 7,5,1,1,102,0,0,
+      10,23,1,21,1,1,127, 3,64, 32,1,65,1,106,33,1, 32,0,65,1,107,33,0, 32,0,12,0,11, 32,1,11 ]);
+    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const f = instance.exports.f;
+    const t0 = performance.now();
+    const sink = f(50_000_000);
+    const ms = performance.now() - t0;
+    R.cpuProxy = { wasmLoopIterations: 50_000_000, ms: Math.round(ms),
+                   iterationsPerSec: Math.round(50_000_000 / (ms / 1000)), sink,
+                   note: "proxy only — Gate 4 record ALSO needs sustained x64 instructions/sec from x64.html (7za run, instructions/wall time)" };
+  } catch (e) { R.cpuProxy = { error: errStr(e) }; }
+  render();
+})();
+
+document.getElementById("btnCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText(JSON.stringify(R, null, 2)); } catch {}
+};
+document.getElementById("btnDl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(R, null, 2)], { type: "application/json" }));
+  a.download = "gate4-probe.json"; a.click(); URL.revokeObjectURL(a.href);
+};
+render();
+</script>
+</body>
+</html>

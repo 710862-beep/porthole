@@ -304,10 +304,15 @@ where
         let _ = vmm.write_u16(CURDIR_BUF_ADDR + (i as u64) * 2, ch);
     }
     let _ = vmm.write_u16(CURDIR_BUF_ADDR + (init_cwd.len() as u64) * 2, 0);
-    let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x28, (init_cwd.len() * 2) as u16); // DosPath.Length
-    let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x2A, 520); // DosPath.MaximumLength
-    let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x30, CURDIR_BUF_ADDR); // DosPath.Buffer
-    let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x38, CURDIR_HANDLE); // CurrentDirectory.Handle
+    // RTL_USER_PROCESS_PARAMETERS (x64): StandardInput @0x20, StandardOutput @0x28,
+    // StandardError @0x30, CurrentDirectory (CURDIR) @0x38 = { DosPath UNICODE_STRING
+    // @0x38 (Length @0x38, MaximumLength @0x3A, Buffer @0x40), Handle @0x48 }.
+    // The previous offsets (0x28/0x30/0x38) wrote the CURDIR over the standard-handle
+    // slots, so PEB readers (Wine directory.c TEST_GRANTED_ACCESS) saw Handle=garbage.
+    let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x38, (init_cwd.len() * 2) as u16); // DosPath.Length
+    let _ = vmm.write_u16(PROC_PARAMS_ADDR + 0x3A, 520); // DosPath.MaximumLength
+    let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x40, CURDIR_BUF_ADDR); // DosPath.Buffer
+    let _ = vmm.write_u64(PROC_PARAMS_ADDR + 0x48, CURDIR_HANDLE); // CurrentDirectory.Handle
 
     // Handle static TLS directory (DataDirectory[9]) if present
     let mut tls_array_ptr = 0u64;

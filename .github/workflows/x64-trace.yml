@@ -6,7 +6,7 @@ name: x86-64 guest trace (fault diagnostics)
 
 on:
   push:
-    branches: [arena/e737e676-porthole]
+    branches: [arena/e737e676-porthole, arena/0213f8bc-porthole]
   workflow_dispatch:
 
 permissions:
@@ -61,7 +61,7 @@ jobs:
             echo "##### fixture=$f subtest=${sub:-none}" > "$out"
             if [ -f "tests/assets/wine64/$f.exe" ]; then
               ./rust/porthole-x64-wasm/target/release/xtrace "tests/assets/wine64/$f.exe" \
-                --budget 60000 --slice 4000 --trace 260 \
+                --budget 4000000 --slice 200000 --trace 260 \
                 --watch 0x430000:0x4300d0 --watch 0x300000000:0x300000120 \
                 --peek 0x430040 --peek 0x430048 --peek 0x300000020 \
                 ${sub:+--args "$f.exe $sub"} "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
@@ -116,6 +116,78 @@ jobs:
           GAME_EXTRA_ARGS=' /blockstage:13' \
             run_game tests/assets/game/doom_d3d12_blocked.exe blocked --hle-only --trace 200
           wc -l trace.log
+      - name: GATE 1 Tier A native trace — unmodified 7za.exe (same Rust core, no wasm)
+        run: |
+          mkdir -p artifacts
+          node scripts/fetch-7za.mjs 2>&1 | tee -a trace.log
+          python3 - <<'PY'
+          n = 262144
+          data = bytes((((i * 131 + (i >> 8) * 17) ^ (i >> 3)) & 0xFF) for i in range(n))
+          open("tests/assets/third-party/roundtrip-input.bin", "wb").write(data)
+          print("roundtrip-input.bin", len(data))
+          PY
+          {
+            echo "##### tier-a native xtrace: 7za a (create)"
+            ./rust/porthole-x64-wasm/target/release/xtrace tests/assets/third-party/7za.exe \
+              --budget 400000000 --slice 2000000 --trace 6000 --hle-only \
+              --watch 0x21ffe60:0x21ffea8 \
+              --resident 65536 \
+              --mkdir 'C:\Windows' --mkdir 'C:\Windows\System32' --mkdir 'C:\Users' \
+              --mkdir 'C:\Users\PORTHOLE' --mkdir 'C:\Users\PORTHOLE\Temp' --mkdir 'C:\Game' \
+              --mkdir 'C:\Game\extract' \
+              --put 'C:\Game\7za.exe=tests/assets/third-party/7za.exe' \
+              --put 'C:\Game\roundtrip-input.bin=tests/assets/third-party/roundtrip-input.bin' \
+              --exe-path 'C:\Game\7za.exe' \
+              --args 'C:\Game\7za.exe a -t7z -y -bd -mmt1 -mx=1 C:\Game\roundtrip.7z C:\Game\roundtrip-input.bin' \
+              --get 'C:\Game\roundtrip.7z=artifacts/native-roundtrip.7z' \
+              2>&1 || echo "xtrace exit=$?"
+          } > trace-tier-a-create.log 2>&1
+          {
+            echo "##### tier-a native xtrace: 7za e (extract)"
+            if [ -f artifacts/native-roundtrip.7z ]; then
+              ./rust/porthole-x64-wasm/target/release/xtrace tests/assets/third-party/7za.exe \
+                --budget 400000000 --slice 2000000 --trace 6000 --hle-only --no-watch \
+                --resident 65536 \
+                --mkdir 'C:\Windows' --mkdir 'C:\Windows\System32' --mkdir 'C:\Users' \
+                --mkdir 'C:\Users\PORTHOLE' --mkdir 'C:\Users\PORTHOLE\Temp' --mkdir 'C:\Game' \
+                --mkdir 'C:\Game\extract' \
+                --put 'C:\Game\7za.exe=tests/assets/third-party/7za.exe' \
+                --put 'C:\Game\roundtrip.7z=artifacts/native-roundtrip.7z' \
+                --exe-path 'C:\Game\7za.exe' \
+                --args 'C:\Game\7za.exe e -y -bd -mmt1 -oC:\Game\extract C:\Game\roundtrip.7z' \
+                --get 'C:\Game\extract\roundtrip-input.bin=artifacts/native-extracted.bin' \
+                2>&1 || echo "xtrace exit=$?"
+              if [ -f artifacts/native-extracted.bin ]; then
+                sha256sum tests/assets/third-party/roundtrip-input.bin artifacts/native-extracted.bin
+                cmp tests/assets/third-party/roundtrip-input.bin artifacts/native-extracted.bin \
+                  && echo "TIER-A NATIVE BYTE-COMPARE: IDENTICAL" || echo "TIER-A NATIVE BYTE-COMPARE: DIFFER"
+              else
+                echo "TIER-A NATIVE BYTE-COMPARE: extracted file missing"
+              fi
+            else
+              echo "native-roundtrip.7z missing (create phase produced no archive)"
+            fi
+          } > trace-tier-a-extract.log 2>&1
+          cat trace-tier-a-create.log trace-tier-a-extract.log >> trace.log
+      - name: GATE 1 Tier B native trace — unmodified chocolate-doom.exe + Freedoom IWAD (probe)
+        run: |
+          node scripts/fetch-chocolate-doom.mjs 2>&1 | tee -a trace.log
+          {
+            echo "##### tier-b native xtrace: chocolate-doom -timedemo demo1 -nodraw -nosound"
+            ./rust/porthole-x64-wasm/target/release/xtrace tests/assets/third-party/chocolate-doom.exe \
+              --budget 60000000 --slice 2000000 --trace 4000 --hle-only --no-watch \
+              --resident 65536 \
+              --mkdir 'C:\Windows' --mkdir 'C:\Windows\System32' --mkdir 'C:\Users' \
+              --mkdir 'C:\Users\PORTHOLE' --mkdir 'C:\Users\PORTHOLE\Temp' \
+              --mkdir 'C:\Users\PORTHOLE\AppData' --mkdir 'C:\Users\PORTHOLE\AppData\Roaming' \
+              --mkdir 'C:\Game' \
+              --put 'C:\Game\chocolate-doom.exe=tests/assets/third-party/chocolate-doom.exe' \
+              --put 'C:\Game\DOOM2.WAD=tests/assets/third-party/freedoom2.wad' \
+              --exe-path 'C:\Game\chocolate-doom.exe' \
+              --args 'C:\Game\chocolate-doom.exe -iwad C:\Game\DOOM2.WAD -timedemo demo1 -nodraw -nosound' \
+              2>&1 || echo "xtrace exit=$?"
+          } > trace-tier-b.log 2>&1
+          cat trace-tier-b.log >> trace.log
       - name: Publish each fixture trace through the Checks API
         if: always()
         env:

@@ -2,7 +2,7 @@ name: x86-64 emulator (Wasm core + real Wine64 conformance)
 
 on:
   push:
-    branches: [arena/e737e676-porthole]
+    branches: [arena/e737e676-porthole, arena/0213f8bc-porthole]
   workflow_dispatch:
 
 permissions:
@@ -133,6 +133,114 @@ jobs:
             artifacts/7za-tier-a-report.json
             artifacts/7za-tier-a-report.txt
             artifacts/7za-run.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  # GATE 1 Tier B / GATE 2: unmodified Chocolate Doom 3.1.1 (official win64 exe, SHA-256
+  # pinned by scripts/fetch-chocolate-doom.mjs) executing a Freedoom demo1 timedemo in the
+  # Wasm core. FAIL-CLOSED since the first genuine PASS (2,664 gametics, 1,782 distinct
+  # guest-presented framebuffer checksums — see docs/x64-emulator-status.md): a red job here
+  # is a real regression. The runner report (published below) carries the evidence.
+  tier-b-chocolate-doom:
+    name: GATE 1 Tier B / GATE 2 probe — unmodified Chocolate Doom x64 + Freedoom IWAD
+    needs: wasm-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: vendor/porthole-x64-wasm
+      - name: Acquire and hash pinned Chocolate Doom 3.1.1 win64 + Freedoom 0.13.0
+        run: node scripts/fetch-chocolate-doom.mjs
+      - name: Execute unmodified chocolate-doom.exe timedemo probe in the Wasm core
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
+      - name: Publish the Tier B guest report through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/chocolate-doom-tier-b-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-tier-b-report.txt porthole-x64-tier-b-chocolate-doom
+          else
+            echo "::error::Tier B guest report missing"
+          fi
+      - name: Upload Tier B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porthole-x64-tier-b-chocolate-doom
+          path: |
+            artifacts/chocolate-doom-tier-b-report.json
+            artifacts/chocolate-doom-tier-b-report.txt
+            artifacts/chocolate-doom-run.log
+            artifacts/tier-b-pin.json
+            artifacts/chocolate-doom-frame-first.ppm
+            artifacts/chocolate-doom-frame-mid.ppm
+            artifacts/chocolate-doom-frame-final.ppm
+          if-no-files-found: warn
+          retention-days: 14
+
+  # GATE 2 reference: the SAME pinned chocolate-doom.exe under real Wine on Linux.
+  # Fail-closed cross-check of the emulator's claims: identical timedemo gametics (2664)
+  # and a pixel-identical 320x200 title frame (guest-written PCX under Wine vs the
+  # emulator's native-frame tap). See scripts/run-wine-reference.sh.
+  gate2-wine-reference:
+    name: GATE 2 Wine reference — same chocolate-doom.exe under real Wine
+    needs: wasm-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: vendor/porthole-x64-wasm
+      - name: Acquire and hash pinned Chocolate Doom 3.1.1 win64 + Freedoom 0.13.0
+        run: node scripts/fetch-chocolate-doom.mjs
+      - name: Install Wine + Xvfb + xdotool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wine wine64 xvfb xdotool openbox > /tmp/apt-wine.log 2>&1 || (tail -30 /tmp/apt-wine.log; exit 1)
+          ls -l /usr/bin/wine* 2>/dev/null || true
+          ls /usr/lib/wine/ 2>/dev/null || true
+          command -v wine64 || command -v wine || test -x /usr/lib/wine/wine64
+      - name: Run Gate 2 Wine reference cross-check
+        run: bash scripts/run-wine-reference.sh
+      - name: Publish the Wine reference report through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/wine-reference-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/wine-reference-report.txt porthole-x64-wine-reference
+          else
+            echo "::error::Wine reference report missing"
+          fi
+      - name: Upload Wine reference evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porthole-x64-wine-reference
+          path: |
+            artifacts/wine-reference-report.txt
+            artifacts/wine-timedemo.log
+            artifacts/wine-title.log
+            artifacts/wine-title-guest.pcx
+            artifacts/emu-title-probe.log
+            artifacts/chocolate-doom-title-probe.json
+            artifacts/chocolate-doom-title-native.ppm
+            artifacts/title-reference-decoded.ppm
+            artifacts/tier-b-pin.json
           if-no-files-found: warn
           retention-days: 14
 
