@@ -101,6 +101,7 @@
           if (commit !== 'next') return commit;
         } catch (error) {
           this.stats.traps += 1;
+          this.stats.lastTrap = String(error && error.message || error);
           this.emu.jit_abort_block();
           // Precise fallback: re-execute the faulting block in the interpreter. If it faults,
           // the core reports the guest exception; if it succeeds, the compiled artifact was bad.

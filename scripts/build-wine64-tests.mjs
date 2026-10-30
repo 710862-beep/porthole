@@ -241,6 +241,18 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
     },
   ];
 
+  // MinGW lacks libd3d10_1.a; generate a real import library from the upstream Wine export spec.
+  if (toolchain === 'mingw') {
+    const specFile = 'vendor/wine-source/dlls/d3d10_1/d3d10_1.spec';
+    if (fs.existsSync(specFile)) {
+      const names = [...fs.readFileSync(specFile, 'utf8').matchAll(/^@ stdcall (\w+)\(/gm)].map(m => m[1]);
+      const defPath = path.join(outDir, 'd3d10_1.def');
+      fs.writeFileSync(defPath, `LIBRARY d3d10_1.dll\nEXPORTS\n${names.join('\n')}\n`);
+      const dlltool = spawnSync('x86_64-w64-mingw32-dlltool', ['-d', defPath, '-l', path.join(outDir, 'libd3d10_1.a')], { encoding: 'utf8' });
+      if (dlltool.status !== 0) throw new Error(`dlltool failed: ${dlltool.stderr || dlltool.error}`);
+    }
+  }
+
   const built = [];
   const selectedSpecs = only ? specs.filter(s => only.some(n => s.name.includes(n))) : specs;
   if (!selectedSpecs.length) throw new Error(`No Wine specs match ${only}`);
@@ -268,7 +280,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       '-Ddebugstr_an=wine_dbgstr_an', '-Ddebugstr_wn=wine_dbgstr_wn', '-Ddebugstr_guid=wine_dbgstr_guid',
       '-include', 'windows.h', `-I${incDir}`, ...(toolchain === 'mingw' ? ['-idirafter', 'vendor/wine-source/include'] : []),
       '-Wno-format', '-Wno-int-conversion', '-Wno-incompatible-pointer-types', '-Wno-macro-redefined',
-      ...spec.cflags, ...spec.sources, testlistPath, ...spec.libs, ...objects,
+      ...spec.cflags, ...spec.sources, testlistPath, `-L${outDir}`, ...spec.libs, ...objects,
       '-Wl,--subsystem,console', '-o', exePath,
     ];
     const run = spawnSync(toolchain === 'zig' ? zig : cc, args, { encoding: 'utf8', timeout: 900000, maxBuffer: 32 * 1024 * 1024 });

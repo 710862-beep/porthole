@@ -9,7 +9,7 @@ function run(cmd,args,cwd=pin.path){const r=spawnSync(cmd,args,{cwd,stdio:'inher
 run(process.env.PYTHON||'python3',['external/fetch_sources.py']);
 const build=path.resolve('tests/assets/vk-cts-build');
 const target=process.platform==='win32'?'default':'vulkan_headless';
-run('cmake',['-S',pin.path,'-B',build,`-DDEQP_TARGET=${target}`,'-DSELECTED_BUILD_TARGETS=deqp-vk','-DCMAKE_BUILD_TYPE=Release',...(process.platform==='win32'?['-G','Visual Studio 17 2022','-A','x64']:['-G','Ninja'])]);
+run('cmake',['-S','.','-B',build,`-DDEQP_TARGET=${target}`,'-DSELECTED_BUILD_TARGETS=deqp-vk','-DCMAKE_BUILD_TYPE=Release',...(process.platform==='win32'?['-G','Visual Studio 17 2022','-A','x64']:['-G','Ninja'])]);
 run('cmake',['--build',build,'--target','deqp-vk','--config','Release','--parallel','4']);
 const exe=path.join(build,'external/vulkancts/modules/vulkan',process.platform==='win32'?'Release/deqp-vk.exe':'deqp-vk');
 if(!fs.existsSync(exe))throw Error(`Missing ${exe}`);

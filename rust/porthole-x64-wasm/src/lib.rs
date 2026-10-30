@@ -1227,7 +1227,7 @@ impl BrowserX64Emulator {
 
     /// Drops a trapped active block without applying its register writes; the interpreter will
     /// re-execute from the original RIP and reproduce the precise fault/page-fault.
-    pub fn jit_abort_block(&mut self) { self.jit_active = None; }
+    pub fn jit_abort_block(&mut self) { if let Some(art) = self.jit_active.take() { self.jit.invalidate_entry(art.entry_rip); } }
 
     /// Imports a persisted artifact only after re-hashing the live guest bytes and epoch.
     pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, code_hash: u64, wasm: &[u8]) -> bool {

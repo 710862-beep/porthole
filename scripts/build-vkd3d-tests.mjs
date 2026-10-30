@@ -5,7 +5,6 @@ import { spawnSync } from 'node:child_process';
 import { checkoutRecursive as checkout } from './fetch-torture-sources.mjs';
 const pins = JSON.parse(fs.readFileSync('tests/torture/pins.json','utf8')).suites['vkd3d-proton'];
 checkout(pins.repository, pins.revision, pins.path);
-checkout(pins.repository, pins.revision, pins.path);
 function run(cmd,args) { const r=spawnSync(cmd,args,{cwd:pins.path,stdio:'inherit',timeout:1800000}); if(r.status!==0) throw Error(`${cmd} failed: ${r.status} ${r.error||''}`); }
 const build = path.resolve('tests/assets/vkd3d-proton-build');
 fs.mkdirSync(build, { recursive: true });
@@ -14,7 +13,7 @@ const widl = process.env.PORTHOLE_WIDL || ['widl', '/usr/lib/wine/widl', '/usr/l
 if (widl) cross = cross.replace("[binaries]", `[binaries]\nwidl = '${widl}'`);
 const crossPath = path.join(build, 'porthole-win64.txt');
 fs.writeFileSync(crossPath, cross);
-run(process.env.PORTHOLE_MESON||'meson',['setup',build,'--cross-file',crossPath,'-Denable_tests=true','-Denable_extras=false','--buildtype=release']);
+run(process.env.PORTHOLE_MESON||'meson',['setup',build,'--cross-file',crossPath,'-Denable_tests=true','-Denable_extras=false','--buildtype=release','-Dc_args=-D_WIN32_WINNT=0x0A00 -DPATHCCH_NONE=0','-Dcpp_args=-D_WIN32_WINNT=0x0A00 -DPATHCCH_NONE=0']);
 run(process.env.PORTHOLE_MESON||'meson',['compile','-C',build,'tests/d3d12']);
 const exe=path.join(build,'tests/d3d12.exe');
 if(!fs.existsSync(exe)) throw Error(`Missing ${exe}`);

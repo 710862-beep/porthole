@@ -232,6 +232,17 @@ async function main() {
     process.exit(2);
   }
   const { mod } = binding;
+  {
+    const dv = new DataView(wadBytes.buffer, wadBytes.byteOffset, wadBytes.byteLength);
+    const numLumps = dv.getInt32(4, true), dirOfs = dv.getInt32(8, true);
+    let hasPNAMES = false;
+    for (let i = 0; i < numLumps; i++) {
+      const off = dirOfs + i * 16 + 8;
+      const name = Buffer.from(wadBytes.slice(off, off + 8)).toString('latin1').replace(/\0+$/, '');
+      if (name === 'PNAMES') hasPNAMES = true;
+    }
+    report.wad = { numLumps, dirOfs, hasPNAMES };
+  }
   report.wasmSha256 = binding.wasmSha256;
 
   const emu = new mod.BrowserX64Emulator(residentPages);
