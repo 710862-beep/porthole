@@ -222,14 +222,9 @@ impl BrowserX64Emulator {
             0,
         );
 
-        // Run loader TLS callbacks before the CRT entry point (al-khaser TLS attach probes).
-        if let Some(first) = self.kernel.begin_tls(info.tls_callbacks.clone(), info.entry_point, MAIN_STACK_TOP - 0x108) {
-            self.cpu.gpr[0] = info.image_base;
-            self.cpu.gpr[1] = 1; // DLL_PROCESS_ATTACH
-            self.cpu.gpr[2] = 0;
-            self.cpu.rip = first;
-            self.pending_upcall = true;
-        }
+        // TLS callbacks are parsed and reported, but execution is deferred until the loader
+        // can deliver them with the same CRT/TEB initialization order Windows uses. Running
+        // them before the CRT entry regressed CTS startup (null dereference at insn 17).
 
         let summary = format!(
             "{{\"imageBase\":{},\"entryPoint\":{},\"sizeOfImage\":{},\"textSize\":{},\"imports\":{},\"aotBlocks\":{},\"bindings\":{},\"tlsCallbacks\":{}}}",
@@ -1259,7 +1254,7 @@ impl BrowserX64Emulator {
         if art.entry_rip != self.cpu.rip || art.page_epoch != epoch {
             self.jit_active.take();
             self.jit.invalidate_entry(art.entry_rip);
-            return "next".into();
+            return "fault:jit-stale".into();
         }
         // Safety net: re-execute the pure-GPR block in a shadow interpreter and compare.
         // A miscompile is invalidated and replayed by the host fallback instead of corrupting
@@ -1275,6 +1270,8 @@ impl BrowserX64Emulator {
                 }
             }
             if !ok || shadow.gpr[..] != self.jit_ctx[..16] {
+                self.jit_active.take();
+                self.jit_shadow.take();
                 self.jit.invalidate_entry(art.entry_rip);
                 return format!("fault:jit-validation:0x{:x}", art.entry_rip);
             }

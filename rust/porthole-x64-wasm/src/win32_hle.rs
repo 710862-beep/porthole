@@ -1582,8 +1582,9 @@ impl Win32Kernel {
                 )
             }
             ("d3d12.dll", "D3D12EnableExperimentalFeatures") => {
-                // No experimental features are enabled; the call itself succeeds.
-                return HleAction::Return(0);
+                // No experimental feature UUIDs are implemented. An empty request is a no-op;
+                // any requested feature must fail rather than claim unsupported support.
+                return HleAction::Return(if a0 == 0 { 0 } else { 0x8000_4002 }); // E_NOINTERFACE
             }
             ("d3d12.dll", "D3D12CreateRootSignatureDeserializer")
             | ("d3d12.dll", "D3D12CreateVersionedRootSignatureDeserializer") => {
@@ -6641,7 +6642,11 @@ impl Win32Kernel {
             // CRT constructor tables must never call into the HLE thunk region (including the
             // upcall sentinel): those are API stubs, not guest constructors.
             let in_hle = fn_ptr >= THUNK_BASE && fn_ptr < THUNK_BASE + crate::pe64::THUNK_REGION_SIZE;
-            if fn_ptr != 0 && !in_hle && Self::is_executable(vmm, fn_ptr) {
+            // Registered import thunks are legitimate CRT initializer targets (UCRT may place
+            // imported setup routines in .CRT$XI*). Only synthetic non-import thunks such as
+            // the upcall sentinel/exit stubs must never be treated as constructors.
+            let synthetic_hle = in_hle && self.lookup_import_thunk(fn_ptr).is_none();
+            if fn_ptr != 0 && !synthetic_hle && Self::is_executable(vmm, fn_ptr) {
                 return Some((p, fn_ptr));
             }
             p += 8;
