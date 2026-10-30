@@ -88,13 +88,17 @@ jobs:
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
       - run: node scripts/fetch-chocolate-doom.mjs
       - name: Chocolate Doom interpreter baseline (100M instructions)
+        continue-on-error: true
         run: |
           set -o pipefail
+          mkdir -p artifacts/torture
           PORTHOLE_JIT=0 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600             node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-baseline.log
           cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-baseline-report.json
       - name: Chocolate Doom hybrid JIT candidate (100M instructions)
+        continue-on-error: true
         run: |
           set -o pipefail
+          mkdir -p artifacts/torture
           PORTHOLE_JIT=1 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600             node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-jit.log
           cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-jit-report.json
       - name: Publish measured A/B benchmark

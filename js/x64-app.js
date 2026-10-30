@@ -49,9 +49,9 @@ async function loadWasm() {
     throw new Error('Artefato Wasm ausente ou sem o binding BrowserX64Emulator. Rode o workflow x64-emulator.');
   }
   state.module = mod;
-  state.emulator = new mod.BrowserX64Emulator(2048);
+  state.emulator = new mod.BrowserX64Emulator(8192);
   state.jit = new Porthole.X64JitHost(state.emulator, mod, { enabled: true });
-  log('Núcleo x86-64 Wasm inicializado (cache LRU de 2048 páginas = 8 MB; JIT híbrido ativo).');
+  log('Núcleo x86-64 Wasm inicializado (cache LRU de 8192 páginas = 32 MB; JIT híbrido ativo).');
 }
 
 function initAudio() {
@@ -190,6 +190,7 @@ async function mountNvme() {
       log('File System Access API indisponível: selecione uma pasta manualmente nas flags do navegador ou use Chrome/Edge em contexto seguro.');
     } else {
       await state.vfs.pickDirectory();
+      if (state.jit) state.jit.cache = state.vfs;
       log(`NVMe montado em "${state.vfs.root.name}". C:\\Game, .porthole_vmem e .porthole_jit_cache prontos.`);
     }
     $('load-exe').disabled = false;
@@ -230,7 +231,7 @@ async function loadExecutable() {
     }
     const info = JSON.parse(emu.load_pe(target.bytes));
     for (const m of cached) {
-      try { await state.jit.importCached(m.meta, m.bytes); } catch { /* stale artifact rejected by core */ }
+      try { await state.jit.importCached(m.meta, m.wasmBytes); } catch { /* stale artifact rejected by core */ }
     }
     log(`PE32+ mapeado: ${target.path} base=0x${info.imageBase.toString(16)} entry=0x${info.entryPoint.toString(16)} imports=${info.imports} AOT=${info.aotBlocks}`);
     $('run').disabled = false;

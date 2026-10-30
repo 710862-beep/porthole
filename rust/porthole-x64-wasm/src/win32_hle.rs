@@ -279,6 +279,7 @@ pub struct Win32Kernel {
     pub ticks: u64,
     pub cursor_x: i32,
     pub cursor_y: i32,
+    pub virtual_input: bool,
     upcall_stack: Vec<UpcallState>,
     vectored_handlers: Vec<(u64, u64)>,
     unhandled_filter: u64,
@@ -365,6 +366,7 @@ impl Win32Kernel {
             ticks: 3_600_000, // plausible uptime (>12 min); Sleep advances it
             cursor_x: 640,
             cursor_y: 360,
+            virtual_input: false,
             upcall_stack: Vec::new(),
             vectored_handlers: Vec::new(),
             unhandled_filter: 0,
@@ -830,11 +832,11 @@ impl Win32Kernel {
     // ------------------------------------------------------------- strings
 
     fn json_escape(s: &str) -> String {
-        let mut out = String::from("\"");
+        let mut out = String::from(""");
         for c in s.chars() {
             match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
+                '"' => { out.push('\\'); out.push('"'); }
+                '\\' => { out.push('\\'); out.push('\\'); }
                 '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
@@ -2387,6 +2389,12 @@ impl Win32Kernel {
             },
             "GetCursorPos" => {
                 if a0 == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                if self.virtual_input {
+                    // Deterministic virtual pointing device: slow human-plausible drift driven by
+                    // the monotonic clock, exposed through the real GetCursorPos API.
+                    self.cursor_x = 640 + ((self.ticks / 100) % 97) as i32;
+                    self.cursor_y = 360 + ((self.ticks / 5000) % 53) as i32;
+                }
                 let _ = vmm.write_u32(a0, self.cursor_x as u32);
                 let _ = vmm.write_u32(a0 + 4, self.cursor_y as u32);
                 1

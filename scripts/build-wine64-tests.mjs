@@ -222,7 +222,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       name: 'comdlg32_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',
       sources: ['filedlg.c', 'finddlg.c', 'fontdlg.c', 'itemdlg.c', 'printdlg.c'].map(f => `vendor/wine-source/dlls/comdlg32/tests/${f}`),
       resources: ['vendor/wine-source/dlls/comdlg32/tests/rsrc.rc'], subtests: ['filedlg', 'finddlg', 'fontdlg', 'itemdlg', 'printdlg'], cflags: ['-O1', '-DCOBJMACROS='],
-      libs: ['-luuid', '-lshell32', '-lole32', '-lcomdlg32', '-lwinspool', '-luser32', '-lgdi32', '-lkernel32'],
+      libs: ['-luuid', '-lshell32', '-lole32', '-lcomdlg32', '-lwinspool', '-lntdll', '-luser32', '-lgdi32', '-lkernel32'],
     },
     {
       name: 'user32_dialog_test.exe', origin: 'upstream-wine-unmodified', license: 'LGPL-2.1-or-later',

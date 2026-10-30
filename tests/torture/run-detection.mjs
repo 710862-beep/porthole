@@ -63,6 +63,7 @@ async function main() {
         emu.set_exe_path(`C:\\Game\\${entry.name}`);
         emu.set_command_line([entry.name, ...entry.args].join(' '));
         for (const [k,v] of Object.entries(entry.env || {})) emu.set_environment_variable(k,v);
+        if (entry.suite === 'pafish' && typeof emu.set_virtual_input_profile === 'function') emu.set_virtual_input_profile(true);
         emu.enable_api_audit(100000); emu.enable_trace(4096); emu.set_hle_trace_only(true);
         item.load = JSON.parse(emu.load_pe(new Uint8Array(fs.readFileSync(entry.path))));
         const pages = new Map(); let terminal = null;

@@ -1179,6 +1179,7 @@ impl BrowserX64Emulator {
     }
     /// Host-driven virtual mouse input (browser pointer events).
     pub fn inject_mouse_move(&mut self, x: i32, y: i32) { self.kernel.cursor_x = x; self.kernel.cursor_y = y; }
+    pub fn set_virtual_input_profile(&mut self, on: bool) { self.kernel.virtual_input = on; }
 
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
     pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }

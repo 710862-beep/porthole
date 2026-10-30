@@ -13,6 +13,7 @@
       this.memory = options.memory || binding.memory || binding.__wasm?.memory;
       this.cache = options.cache || null;
       this.modules = new Map();
+      this.instances = new Map();
       this.stats = { compiled: 0, executedBlocks: 0, executedInstructions: 0, traps: 0, cacheHits: 0, cacheMisses: 0, saved: 0, loaded: 0, fallbackInstructions: 0 };
       this.enabled = options.enabled !== false;
       if (typeof this.emu.set_jit_enabled === 'function') this.emu.set_jit_enabled(this.enabled);
@@ -45,6 +46,24 @@
       this.emu.jit_clear_pending();
     }
 
+    async importCached(meta, wasmBytes) {
+      if (!meta || !WebAssembly.validate(wasmBytes)) return false;
+      const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, BigInt('0x' + meta.codeHash), wasmBytes);
+      if (!ok) return false;
+      this.stats.loaded += 1;
+      if (!this.modules.has(meta.codeHash)) this.modules.set(meta.codeHash, await WebAssembly.compile(wasmBytes));
+      return true;
+    }
+
+    async instanceFor(meta, mod) {
+      let inst = this.instances.get(meta.codeHash);
+      if (inst) return inst;
+      if (!this.memory) throw new Error('Wasm memory export unavailable');
+      inst = await WebAssembly.instantiate(mod, { env: { mem: this.memory } });
+      this.instances.set(meta.codeHash, inst);
+      return inst;
+    }
+
     async moduleFor(meta) {
       let mod = this.modules.get(meta.codeHash);
       if (mod) { this.stats.cacheHits += 1; return mod; }
@@ -72,7 +91,7 @@
         try {
           const mod = await this.moduleFor(meta);
           if (!this.memory) throw new Error('Wasm memory export unavailable');
-          const instance = await WebAssembly.instantiate(mod, { env: { mem: this.memory } });
+          const instance = await this.instanceFor(meta, mod);
           const executed = instance.exports.run_block(meta.ctx >>> 0);
           if (Number(executed) !== meta.insnCount) throw new Error('JIT instruction count mismatch');
           const commit = this.emu.jit_commit_block();
