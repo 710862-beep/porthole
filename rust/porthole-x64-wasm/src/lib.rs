@@ -294,7 +294,7 @@ impl BrowserX64Emulator {
             {
                 if let Some((kind, slot)) = self.kernel.d3d12.lookup_method(insn_rip) {
                     let args = self.capture_args();
-                    let audit_before = self.audit_snapshots(&args);
+                    let audit_before = if self.audit_max == 0 { Vec::new() } else { self.audit_snapshots(&args) };
                     let rsp = self.cpu.gpr[4];
                     let result = {
                         let client_sizes = self.kernel.window_sizes();
@@ -394,7 +394,7 @@ impl BrowserX64Emulator {
                         // up as an explicit ret_slot=0x... value rather than an unexplained jump.
                         let ret_slot_addr = rsp;
                         let ret_slot_val = self.vmm.read_u64(ret_slot_addr).unwrap_or(0);
-                        let audit_before = self.audit_snapshots(&args);
+                        let audit_before = if self.audit_max == 0 { Vec::new() } else { self.audit_snapshots(&args) };
                         let action = self.kernel.dispatch(
                             &mut self.vmm,
                             &dll,
@@ -717,7 +717,7 @@ impl BrowserX64Emulator {
         args.iter().take(6).map(|&addr| {
             if addr < 0x10000 { return "null".to_string(); }
             let mut bytes = [0u8; 64];
-            let len = (4096 - (addr & 0xfff)) as usize;
+            let len = (4096 - (addr & 0xfff)).min(64) as usize;
             match self.vmm.read_bytes(addr, &mut bytes[..len]) {
                 Ok(()) => format!("\"{}\"", bytes[..len].iter().map(|b| format!("{b:02x}")).collect::<String>()),
                 Err(_) => "null".to_string(),

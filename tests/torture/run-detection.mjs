@@ -3,6 +3,7 @@
  * BAD/traced findings are failures. A fault/timeout is incomplete, never a pass. */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadEmulator } from '../wine64/run-wine64.mjs';
 
 function args(argv) {
@@ -102,4 +103,4 @@ async function main() {
   fs.mkdirSync(path.dirname(o.report), { recursive: true }); fs.writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
   process.exitCode = report.status === 'PASS' ? 0 : report.status === 'NOT_RUN' ? 2 : 1;
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

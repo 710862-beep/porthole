@@ -256,7 +256,9 @@ async function main() {
 
   for (const [entry, testName] of worklist) {
     process.stdout.write(`[wine64] ${entry.name}${testName ? ` ${testName}` : ''} ... `);
-    const item = await runOne(binding, entry, options, testName);
+    let item;
+    try { item = await runOne(binding, entry, options, testName); }
+    catch (e) { item = { name: `${entry.name}${testName ? ` ${testName}` : ''}`, status: 'BACKEND_ERROR', error: e.stack || String(e), durationMs: 0, instructions: 0 }; }
     report.tests.push(item);
     console.log(`${item.status}${item.error ? ` (${item.error})` : ''} · ${item.instructions} instr · ${item.durationMs} ms` + (item.failures != null ? ` · ${item.failures} falhas` : ''));
     if (item.status === 'FAIL') {
@@ -291,7 +293,7 @@ async function main() {
   process.exitCode = report.status === 'PASS' ? 0 : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await main();
 }
 

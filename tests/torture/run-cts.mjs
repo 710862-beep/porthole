@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import fs from 'node:fs';import path from 'node:path';import {loadEmulator} from '../wine64/run-wine64.mjs';
+import fs from 'node:fs';import path from 'node:path';
+import { fileURLToPath } from 'node:url';import {loadEmulator} from '../wine64/run-wine64.mjs';
 const reportPath=process.argv.includes('--report')?process.argv[process.argv.indexOf('--report')+1]:'artifacts/torture/cts-report.json';
 const m=JSON.parse(fs.readFileSync('tests/assets/torture/MANIFEST.json','utf8'));const e=m.binaries.find(b=>b.suite==='vk-gl-cts');const b=await loadEmulator(process.env.PORTHOLE_X64_WASM_DIR||'vendor/porthole-x64-wasm');
 const r={version:1,kind:'dEQP-VK',status:'NOT_RUN',tests:[]};

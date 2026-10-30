@@ -20,10 +20,10 @@ for ptr in pointers:
  assert len(data)==ptr['bytes'] and hashlib.sha256(data).hexdigest()==ptr['sha256']
  m=json.loads(data);assert m['sourceSha']==meta['head_sha'] and str(m['runId'])==run
  for f in m['files']:
-  p=Path(f['path']);assert not p.is_absolute() and '..' not in p.parts and p.parts[:2]==('artifacts','torture')
+  p=Path(f['path'].replace('\\','/'));assert not p.is_absolute() and '..' not in p.parts and p.parts[:2]==('artifacts','torture')
   b=api(f"repos/{repo}/git/blobs/{f['blob']}");data=base64.b64decode(b['content'])
   assert len(data)==f['bytes'] and hashlib.sha256(data).hexdigest()==f['sha256']
   assert hashlib.sha1(f'blob {len(data)}\0'.encode()+data).hexdigest()==f['blob']
-  out=root/p;out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data);print('VERIFIED',out,len(data))
+  out=root/ptr['job']/p;out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data);print('VERIFIED',out,len(data))
 (root/'run.json').write_text(json.dumps(meta,indent=2)+'\n')
 if not seen:raise SystemExit('No torture transfer manifests found')

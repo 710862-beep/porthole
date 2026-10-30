@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadEmulator } from '../wine64/run-wine64.mjs';
 const reportPath=process.argv.includes('--report')?process.argv[process.argv.indexOf('--report')+1]:'artifacts/torture/vkd3d-report.json';
 const manifest=JSON.parse(fs.readFileSync('tests/assets/torture/MANIFEST.json','utf8'));
