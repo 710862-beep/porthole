@@ -236,7 +236,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       license: 'LGPL-2.1-or-later',
       sources: ['tests/wine64/porthole_x64_plan_test.c'],
       subtests: ['x64_plan'],
-      cflags: ['-O1', '-fno-vectorize', '-fno-slp-vectorize'],
+      cflags: ['-O1', '-fno-tree-vectorize', '-fno-tree-slp-vectorize'],
       libs: ['-ld3d12', '-ldxgi', '-luser32', '-lgdi32', '-lkernel32', '-luuid'],
     },
   ];

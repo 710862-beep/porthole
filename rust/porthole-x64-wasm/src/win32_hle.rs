@@ -1515,6 +1515,12 @@ impl Win32Kernel {
 
         // Resolve well-known d3d12/dxgi entry points first.
         match (dll, symbol) {
+            ("d3d12.dll", "D3D12GetInterface") => {
+                // CLSID-based D3D12 interface retrieval (debug/device removal). No debug
+                // controller is exposed; return E_NOINTERFACE and null the output pointer.
+                if a2 != 0 { let _ = vmm.write_u64(a2, 0); }
+                return HleAction::Return(0x8000_4002);
+            }
             ("dxcore.dll", "DXCoreCreateAdapterFactory") => {
                 return HleAction::Return(self.d3d12.dxcore_create_adapter_factory(vmm, args[0], args[1]));
             }
@@ -2394,6 +2400,13 @@ impl Win32Kernel {
             }
             "NtSystemDebugControl" => 0xC000_0354, // STATUS_DEBUGGER_INACTIVE
             "NtYieldExecution" => 0,
+            "WudfIsAnyDebuggerPresent" | "WudfIsKernelDebuggerPresent" | "WudfIsUserDebuggerPresent" => 0,
+            "EnumProcessModulesEx" | "K32EnumProcessModulesEx" => {
+                // List the main executable module; required byte count is one HMODULE.
+                if a2 >= 8 && a1 != 0 { let _ = vmm.write_u64(a1, self.image_base()); }
+                if a3 != 0 { let _ = vmm.write_u32(a3, 8); }
+                1
+            }
             "NtQuerySystemInformation" => {
                 if a0 == 0x23 { // SystemKernelDebuggerInformation
                     if a1 != 0 {
@@ -5127,6 +5140,16 @@ impl Win32Kernel {
         }
         if key == "dxcore.dll" {
             let va = 0x7FFE_1000_9000;
+            self.modules.insert(key, va);
+            return va;
+        }
+        if key == "psapi.dll" {
+            let va = 0x7FFE_1000_A000;
+            self.modules.insert(key, va);
+            return va;
+        }
+        if key == "wudfplatform.dll" {
+            let va = 0x7FFE_1000_B000;
             self.modules.insert(key, va);
             return va;
         }
