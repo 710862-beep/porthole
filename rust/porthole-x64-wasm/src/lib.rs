@@ -279,6 +279,7 @@ impl BrowserX64Emulator {
                                 self.trace_event(note);
                             }
                         }
+                        self.drain_d3d12_notes();
                         match action {
                             HleAction::Return(rax) => {
                                 self.cpu.gpr[0] = rax;
@@ -337,6 +338,7 @@ impl BrowserX64Emulator {
                                     },
                                 )
                             };
+                            self.drain_d3d12_notes();
                             self.cpu.gpr[0] = result;
                             let ret = self.vmm.read_u64(rsp).unwrap_or(0);
                             self.cpu.gpr[4] = rsp.wrapping_add(8);
@@ -597,6 +599,27 @@ impl BrowserX64Emulator {
 
     /// Arms a data breakpoint over `[lo, hi)`; every guest/HLE store into that window is emitted
     /// into the execution trace as a `W` line with the value written and the writing RIP.
+    /// Moves the D3D12 HLE's COM-call notes into the trace ring buffer.
+    fn drain_d3d12_notes(&mut self) {
+        if self.kernel.d3d12.notes.is_empty() {
+            return;
+        }
+        let notes: Vec<String> = self.kernel.d3d12.notes.drain(..).collect();
+        for note in notes {
+            self.trace_event(note);
+        }
+    }
+
+    /// `Interface::Method=count` histogram of the COM calls the guest made.
+    pub fn com_histogram(&self, top: usize) -> String {
+        self.kernel.d3d12.com_histogram(top)
+    }
+
+    /// COM methods that reached the default arm and answered `E_NOTIMPL`.
+    pub fn unimplemented_methods(&self) -> String {
+        self.kernel.d3d12.unimplemented_methods()
+    }
+
     /// `symbol=count` histogram of the APIs the guest actually called.
     pub fn hle_histogram(&self, top: usize) -> String {
         self.kernel.hle_histogram(top)

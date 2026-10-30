@@ -38,6 +38,10 @@ jobs:
           node scripts/fetch-wine-source.mjs
           node scripts/build-wine64-tests.mjs 2>&1 | tee -a trace.log
           ls -l tests/assets/wine64
+      - name: Build the real-game startup fixtures (PE32+ x86_64)
+        run: |
+          node scripts/build-game-fixtures.mjs 2>&1 | tee -a trace.log
+          ls -l tests/assets/game
       - name: Build xtrace
         working-directory: rust/porthole-x64-wasm
         run: cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
@@ -61,6 +65,23 @@ jobs:
             fi
             cat "$out" >> trace.log
           }
+          # run_game <path.exe> [tag] [extra xtrace flags...]
+          run_game() {
+            img="$1"; tag=""
+            shift 1
+            if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then tag="$1"; shift; fi
+            base="$(basename "$img" .exe)"
+            out="trace-game$base${tag:+-$tag}.log"
+            echo "##### game=$img" > "$out"
+            if [ -f "$img" ]; then
+              ./rust/porthole-x64-wasm/target/release/xtrace "$img" \
+                --budget 4000000 --slice 200000 --trace 400 --no-watch \
+                --args "C:\\Game\\$(basename "$img")" "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
+            else
+              echo "fixture missing" >> "$out"
+            fi
+            cat "$out" >> trace.log
+          }
           run user32_test wsprintf
           run user32_test uitools
           run kernel32_test atom
@@ -77,6 +98,12 @@ jobs:
           run kernel32_test atom hle --hle-only --no-watch --budget 3000000 --trace 300
           run kernel32_test directory hle --hle-only --no-watch --budget 400000 --trace 300 \
             --hle-match "K ,CreateDirectory,SetCurrentDirectory,GetCurrentDirectory"
+          # ---- real-game-shaped PE32+ fixtures ------------------------------------------
+          # Full API view first (no instruction tracing), then a filtered HLE view.
+          run_game tests/assets/game/hello_world.exe
+          run_game tests/assets/game/game_startup.exe
+          run_game tests/assets/game/doom_d3d12_startup.exe
+          run_game tests/assets/game/doom_d3d12_startup.exe hle --hle-only --trace 400
           wc -l trace.log
       - name: Publish each fixture trace through the Checks API
         if: always()

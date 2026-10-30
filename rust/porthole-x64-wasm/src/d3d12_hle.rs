@@ -10,6 +10,7 @@ pub const S_OK: u32 = 0x0000_0000;
 pub const DXGI_STATUS_OCCLUDED: u32 = 0x087A_0001;
 pub const E_NOINTERFACE: u32 = 0x8000_4002;
 pub const E_POINTER: u32 = 0x8000_4003;
+pub const E_NOTIMPL: u32 = 0x8000_4001;
 pub const E_FAIL: u32 = 0x8000_4005;
 pub const E_ACCESSDENIED: u32 = 0x8007_0005;
 pub const E_INVALIDARG: u32 = 0x8007_0057;
@@ -108,6 +109,250 @@ pub enum GpuCommand {
     },
 }
 
+
+/// Human-readable name of a COM vtable slot, so a crash log can say
+/// `IDXGIFactory4::CreateSwapChainForHwnd` instead of `slot 15`.
+///
+/// Slot numbers follow the real interface layouts: IUnknown occupies 0..=2, then each interface
+/// level appends its own methods (IDXGIObject, IDXGIFactory, IDXGIFactory1, ... / ID3D12Object,
+/// ID3D12DeviceChild, ...). Only the slots this HLE implements or is asked about are spelled out;
+/// anything else reports `UnknownMethod` so a missing entry is visible rather than guessed.
+pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
+    match slot {
+        0 => return "QueryInterface",
+        1 => return "AddRef",
+        2 => return "Release",
+        _ => {}
+    }
+    match (kind, slot) {
+        (ComKind::DxgiFactory, 3) => "SetPrivateData",
+        (ComKind::DxgiFactory, 4) => "SetPrivateDataInterface",
+        (ComKind::DxgiFactory, 5) => "GetPrivateData",
+        (ComKind::DxgiFactory, 6) => "GetParent",
+        (ComKind::DxgiFactory, 7) => "EnumAdapters",
+        (ComKind::DxgiFactory, 8) => "MakeWindowAssociation",
+        (ComKind::DxgiFactory, 9) => "GetWindowAssociation",
+        (ComKind::DxgiFactory, 10) => "CreateSwapChain",
+        (ComKind::DxgiFactory, 11) => "CreateSoftwareAdapter",
+        (ComKind::DxgiFactory, 12) => "EnumAdapters1",
+        (ComKind::DxgiFactory, 13) => "IsCurrent",
+        (ComKind::DxgiFactory, 14) => "IsWindowedStereoEnabled",
+        (ComKind::DxgiFactory, 15) => "CreateSwapChainForHwnd",
+        (ComKind::DxgiFactory, 16) => "CreateSwapChainForCoreWindow",
+        (ComKind::DxgiFactory, 17) => "GetSharedResourceAdapterLuid",
+        (ComKind::DxgiFactory, 24) => "CreateSwapChainForComposition",
+        (ComKind::DxgiFactory, 25) => "GetCreationFlags",
+        (ComKind::DxgiFactory, 26) => "EnumAdapterByLuid",
+        (ComKind::DxgiFactory, 27) => "EnumWarpAdapter",
+
+        (ComKind::DxgiAdapter, 7) => "EnumOutputs",
+        (ComKind::DxgiAdapter, 8) => "GetDesc",
+        (ComKind::DxgiAdapter, 9) => "CheckInterfaceSupport",
+        (ComKind::DxgiAdapter, 10) => "GetDesc1",
+        (ComKind::DxgiAdapter, 11) => "GetDesc2",
+
+        (ComKind::DxgiOutput, 7) => "GetDesc",
+        (ComKind::DxgiOutput, 8) => "GetDisplayModeList",
+        (ComKind::DxgiOutput, 9) => "FindClosestMatchingMode",
+        (ComKind::DxgiOutput, 10) => "WaitForVBlank",
+        (ComKind::DxgiOutput, 18) => "GetFrameStatistics",
+
+        (ComKind::DxgiSwapChain, 3) => "SetPrivateData",
+        (ComKind::DxgiSwapChain, 4) => "SetPrivateDataInterface",
+        (ComKind::DxgiSwapChain, 5) => "GetPrivateData",
+        (ComKind::DxgiSwapChain, 6) => "GetParent",
+        (ComKind::DxgiSwapChain, 7) => "GetDevice",
+        (ComKind::DxgiSwapChain, 8) => "Present",
+        (ComKind::DxgiSwapChain, 9) => "GetBuffer",
+        (ComKind::DxgiSwapChain, 10) => "SetFullscreenState",
+        (ComKind::DxgiSwapChain, 11) => "GetFullscreenState",
+        (ComKind::DxgiSwapChain, 12) => "GetDesc",
+        (ComKind::DxgiSwapChain, 13) => "ResizeBuffers",
+        (ComKind::DxgiSwapChain, 14) => "ResizeTarget",
+        (ComKind::DxgiSwapChain, 15) => "GetContainingOutput",
+        (ComKind::DxgiSwapChain, 16) => "GetFrameStatistics",
+        (ComKind::DxgiSwapChain, 17) => "GetLastPresentCount",
+        (ComKind::DxgiSwapChain, 18) => "GetDesc1",
+        (ComKind::DxgiSwapChain, 20) => "GetHwnd",
+        (ComKind::DxgiSwapChain, 22) => "Present1",
+        (ComKind::DxgiSwapChain, 25) => "SetBackgroundColor",
+        (ComKind::DxgiSwapChain, 26) => "GetBackgroundColor",
+        (ComKind::DxgiSwapChain, 27) => "SetRotation",
+        (ComKind::DxgiSwapChain, 28) => "GetRotation",
+        (ComKind::DxgiSwapChain, 29) => "SetSourceSize",
+        (ComKind::DxgiSwapChain, 30) => "GetSourceSize",
+        (ComKind::DxgiSwapChain, 31) => "SetMaximumFrameLatency",
+        (ComKind::DxgiSwapChain, 32) => "GetMaximumFrameLatency",
+        (ComKind::DxgiSwapChain, 33) => "GetFrameLatencyWaitableObject",
+        (ComKind::DxgiSwapChain, 36) => "GetCurrentBackBufferIndex",
+        (ComKind::DxgiSwapChain, 37) => "CheckColorSpaceSupport",
+        (ComKind::DxgiSwapChain, 38) => "SetColorSpace1",
+        (ComKind::DxgiSwapChain, 39) => "ResizeBuffers1",
+
+        (ComKind::D3dBlob, 3) => "GetBufferPointer",
+        (ComKind::D3dBlob, 4) => "GetBufferSize",
+
+        (ComKind::D3d12Device, 3) => "SetPrivateData",
+        (ComKind::D3d12Device, 4) => "SetPrivateDataInterface",
+        (ComKind::D3d12Device, 5) => "SetName",
+        (ComKind::D3d12Device, 6) => "GetNodeCount",
+        (ComKind::D3d12Device, 7) => "CreateCommandQueue",
+        (ComKind::D3d12Device, 8) => "CreateCommandAllocator",
+        (ComKind::D3d12Device, 9) => "CreateGraphicsPipelineState",
+        (ComKind::D3d12Device, 10) => "CreateComputePipelineState",
+        (ComKind::D3d12Device, 11) => "CreateCommandList",
+        (ComKind::D3d12Device, 12) => "CheckFeatureSupport",
+        (ComKind::D3d12Device, 13) => "CreateDescriptorHeap",
+        (ComKind::D3d12Device, 14) => "GetDescriptorHandleIncrementSize",
+        (ComKind::D3d12Device, 15) => "CreateRootSignature",
+        (ComKind::D3d12Device, 16) => "CreateConstantBufferView",
+        (ComKind::D3d12Device, 17) => "CreateShaderResourceView",
+        (ComKind::D3d12Device, 18) => "CreateUnorderedAccessView",
+        (ComKind::D3d12Device, 19) => "CreateRenderTargetView",
+        (ComKind::D3d12Device, 20) => "CreateDepthStencilView",
+        (ComKind::D3d12Device, 21) => "CreateSampler",
+        (ComKind::D3d12Device, 22) => "CopyDescriptors",
+        (ComKind::D3d12Device, 23) => "CopyDescriptorsSimple",
+        (ComKind::D3d12Device, 24) => "GetResourceAllocationInfo",
+        (ComKind::D3d12Device, 25) => "GetCustomHeapProperties",
+        (ComKind::D3d12Device, 26) => "CreateCommittedResource",
+        (ComKind::D3d12Device, 27) => "CreateHeap",
+        (ComKind::D3d12Device, 28) => "CreatePlacedResource",
+        (ComKind::D3d12Device, 29) => "CreateReservedResource",
+        (ComKind::D3d12Device, 30) => "CreateSharedHandle",
+        (ComKind::D3d12Device, 31) => "OpenSharedHandle",
+        (ComKind::D3d12Device, 32) => "OpenSharedHandleByName",
+        (ComKind::D3d12Device, 33) => "MakeResident",
+        (ComKind::D3d12Device, 34) => "Evict",
+        (ComKind::D3d12Device, 35) => "CreateFence",
+        (ComKind::D3d12Device, 36) => "GetDeviceRemovedReason",
+        (ComKind::D3d12Device, 37) => "GetCopyableFootprints",
+        (ComKind::D3d12Device, 38) => "CreateQueryHeap",
+        (ComKind::D3d12Device, 39) => "SetStablePowerState",
+        (ComKind::D3d12Device, 40) => "CreateCommandSignature",
+        (ComKind::D3d12Device, 41) => "GetResourceTiling",
+        (ComKind::D3d12Device, 42) => "GetAdapterLuid",
+        (ComKind::D3d12Device, 43) => "CreatePipelineLibrary",
+
+        (ComKind::D3d12CommandQueue, 7) => "UpdateTileMappings",
+        (ComKind::D3d12CommandQueue, 8) => "CopyTileMappings",
+        (ComKind::D3d12CommandQueue, 9) => "ExecuteCommandLists",
+        (ComKind::D3d12CommandQueue, 10) => "SetMarker",
+        (ComKind::D3d12CommandQueue, 11) => "BeginEvent",
+        (ComKind::D3d12CommandQueue, 12) => "EndEvent",
+        (ComKind::D3d12CommandQueue, 13) => "Signal",
+        (ComKind::D3d12CommandQueue, 14) => "Wait",
+        (ComKind::D3d12CommandQueue, 15) => "GetTimestampFrequency",
+        (ComKind::D3d12CommandQueue, 16) => "GetClockCalibration",
+        (ComKind::D3d12CommandQueue, 17) => "GetDesc",
+
+        (ComKind::D3d12CommandAllocator, 7) => "Reset",
+
+        (ComKind::D3d12CommandList, 3) => "SetPrivateData",
+        (ComKind::D3d12CommandList, 4) => "SetPrivateDataInterface",
+        (ComKind::D3d12CommandList, 5) => "SetName",
+        (ComKind::D3d12CommandList, 6) => "GetDevice",
+        (ComKind::D3d12CommandList, 7) => "GetType",
+        (ComKind::D3d12CommandList, 8) => "ExecuteBundle",
+        (ComKind::D3d12CommandList, 9) => "Close",
+        (ComKind::D3d12CommandList, 10) => "Reset",
+        (ComKind::D3d12CommandList, 11) => "ClearState",
+        (ComKind::D3d12CommandList, 12) => "DrawInstanced",
+        (ComKind::D3d12CommandList, 13) => "DrawIndexedInstanced",
+        (ComKind::D3d12CommandList, 14) => "Dispatch",
+        (ComKind::D3d12CommandList, 15) => "CopyBufferRegion",
+        (ComKind::D3d12CommandList, 16) => "CopyTextureRegion",
+        (ComKind::D3d12CommandList, 17) => "CopyResource",
+        (ComKind::D3d12CommandList, 18) => "CopyTiles",
+        (ComKind::D3d12CommandList, 19) => "ResolveSubresource",
+        (ComKind::D3d12CommandList, 20) => "IASetPrimitiveTopology",
+        (ComKind::D3d12CommandList, 21) => "RSSetViewports",
+        (ComKind::D3d12CommandList, 22) => "RSSetScissorRects",
+        (ComKind::D3d12CommandList, 23) => "OMSetBlendFactor",
+        (ComKind::D3d12CommandList, 24) => "OMSetStencilRef",
+        (ComKind::D3d12CommandList, 25) => "SetPipelineState",
+        (ComKind::D3d12CommandList, 26) => "ResourceBarrier",
+        (ComKind::D3d12CommandList, 28) => "SetDescriptorHeaps",
+        (ComKind::D3d12CommandList, 29) => "SetComputeRootSignature",
+        (ComKind::D3d12CommandList, 30) => "SetGraphicsRootSignature",
+        (ComKind::D3d12CommandList, 31) => "SetComputeRootDescriptorTable",
+        (ComKind::D3d12CommandList, 32) => "SetGraphicsRootDescriptorTable",
+        (ComKind::D3d12CommandList, 33) => "SetComputeRoot32BitConstant",
+        (ComKind::D3d12CommandList, 34) => "SetGraphicsRoot32BitConstant",
+        (ComKind::D3d12CommandList, 35) => "SetComputeRoot32BitConstants",
+        (ComKind::D3d12CommandList, 36) => "SetGraphicsRoot32BitConstants",
+        (ComKind::D3d12CommandList, 37) => "SetComputeRootConstantBufferView",
+        (ComKind::D3d12CommandList, 38) => "SetGraphicsRootConstantBufferView",
+        (ComKind::D3d12CommandList, 39) => "SetComputeRootShaderResourceView",
+        (ComKind::D3d12CommandList, 40) => "SetGraphicsRootShaderResourceView",
+        (ComKind::D3d12CommandList, 41) => "SetComputeRootUnorderedAccessView",
+        (ComKind::D3d12CommandList, 42) => "SetGraphicsRootUnorderedAccessView",
+        (ComKind::D3d12CommandList, 43) => "IASetIndexBuffer",
+        (ComKind::D3d12CommandList, 44) => "IASetVertexBuffers",
+        (ComKind::D3d12CommandList, 45) => "SOSetTargets",
+        (ComKind::D3d12CommandList, 46) => "OMSetRenderTargets",
+        (ComKind::D3d12CommandList, 47) => "ClearDepthStencilView",
+        (ComKind::D3d12CommandList, 48) => "ClearRenderTargetView",
+        (ComKind::D3d12CommandList, 49) => "ClearUnorderedAccessViewUint",
+        (ComKind::D3d12CommandList, 50) => "ClearUnorderedAccessViewFloat",
+        (ComKind::D3d12CommandList, 51) => "DiscardResource",
+        (ComKind::D3d12CommandList, 52) => "BeginQuery",
+        (ComKind::D3d12CommandList, 53) => "EndQuery",
+        (ComKind::D3d12CommandList, 54) => "ResolveQueryData",
+        (ComKind::D3d12CommandList, 55) => "SetPredication",
+        (ComKind::D3d12CommandList, 56) => "SetMarker",
+        (ComKind::D3d12CommandList, 57) => "BeginEvent",
+        (ComKind::D3d12CommandList, 58) => "EndEvent",
+        (ComKind::D3d12CommandList, 59) => "ExecuteIndirect",
+
+        (ComKind::D3d12DescriptorHeap, 7) => "GetDesc",
+        (ComKind::D3d12DescriptorHeap, 8) => "GetCPUDescriptorHandleForHeapStart",
+        (ComKind::D3d12DescriptorHeap, 9) => "GetGPUDescriptorHandleForHeapStart",
+
+        (ComKind::D3d12RootSignature, 5) => "SetName",
+        (ComKind::D3d12PipelineState, 5) => "SetName",
+
+        (ComKind::D3d12Resource, 3) => "SetPrivateData",
+        (ComKind::D3d12Resource, 4) => "SetPrivateDataInterface",
+        (ComKind::D3d12Resource, 5) => "SetName",
+        (ComKind::D3d12Resource, 6) => "GetNodeCount",
+        (ComKind::D3d12Resource, 7) => "GetDesc",
+        (ComKind::D3d12Resource, 8) => "Map",
+        (ComKind::D3d12Resource, 9) => "Unmap",
+        (ComKind::D3d12Resource, 10) => "WriteToSubresource",
+        (ComKind::D3d12Resource, 11) => "ReadFromSubresource",
+        (ComKind::D3d12Resource, 12) => "GetHeapProperties",
+        (ComKind::D3d12Resource, 13) => "SetEvictionPriority",
+        (ComKind::D3d12Resource, 14) => "GetEvictionPriority",
+
+        (ComKind::D3d12Fence, 7) => "GetCompletedValue",
+        (ComKind::D3d12Fence, 8) => "SetEventOnCompletion",
+        (ComKind::D3d12Fence, 9) => "Signal",
+
+        _ => "UnknownMethod",
+    }
+}
+
+/// Interface family name used in trace lines and histogram keys.
+pub fn interface_name(kind: ComKind) -> &'static str {
+    match kind {
+        ComKind::DxgiFactory => "IDXGIFactory4",
+        ComKind::DxgiAdapter => "IDXGIAdapter1",
+        ComKind::DxgiOutput => "IDXGIOutput",
+        ComKind::DxgiSwapChain => "IDXGISwapChain3",
+        ComKind::D3dBlob => "ID3D10Blob",
+        ComKind::D3d12Device => "ID3D12Device",
+        ComKind::D3d12CommandQueue => "ID3D12CommandQueue",
+        ComKind::D3d12CommandAllocator => "ID3D12CommandAllocator",
+        ComKind::D3d12CommandList => "ID3D12GraphicsCommandList",
+        ComKind::D3d12DescriptorHeap => "ID3D12DescriptorHeap",
+        ComKind::D3d12RootSignature => "ID3D12RootSignature",
+        ComKind::D3d12PipelineState => "ID3D12PipelineState",
+        ComKind::D3d12Resource => "ID3D12Resource",
+        ComKind::D3d12Fence => "ID3D12Fence",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResourceData {
     pub dimension: u32, // 1 = BUFFER, 3 = TEXTURE2D
@@ -168,6 +413,11 @@ pub struct D3d12Subsystem {
     next_com_alloc: u64,
     next_desc_ptr: u64,
     next_gpu_va: u64,
+    /// Diagnostics: COM calls (`ID3D12Device::CreateCommandQueue=3`), methods that fell through
+    /// to the default arm, and free-form notes drained by the driver into its trace.
+    pub com_calls: HashMap<String, u64>,
+    pub com_unimplemented: Vec<String>,
+    pub notes: Vec<String>,
     pub frames_presented: u64,
     pub last_frame_width: u32,
     pub last_frame_height: u32,
@@ -185,6 +435,9 @@ impl D3d12Subsystem {
             next_com_alloc: COM_HEAP_BASE,
             next_desc_ptr: 0x0000_7FF5_0000_0000,
             next_gpu_va: GPU_BUFFER_VA_BASE,
+            com_calls: HashMap::new(),
+            com_unimplemented: Vec::new(),
+            notes: Vec::new(),
             frames_presented: 0,
             last_frame_width: 0,
             last_frame_height: 0,
@@ -232,6 +485,39 @@ impl D3d12Subsystem {
             }
             self.vtables.insert(kind, vtbl_va);
         }
+    }
+
+    /// Records a COM call in the histogram and (for the trace) as a note.
+    fn record_com(&mut self, kind: ComKind, slot: usize, args: &[u64; 10], result: u64) {
+        let key = format!("{}::{}", interface_name(kind), method_name(kind, slot));
+        *self.com_calls.entry(key.clone()).or_insert(0) += 1;
+        if result == E_NOTIMPL as u64 {
+            if self.com_unimplemented.len() < 256 && !self.com_unimplemented.contains(&key) {
+                self.com_unimplemented.push(key.clone());
+            }
+        }
+        if self.notes.len() < 200_000 {
+            self.notes.push(format!(
+                "K COM {key} this=0x{:x} args=[0x{:x},0x{:x},0x{:x},0x{:x},0x{:x}] -> 0x{result:08x}",
+                args[0], args[1], args[2], args[3], args[4], args[5]
+            ));
+        }
+    }
+
+    /// `Interface::Method=count` lines, most-called first.
+    pub fn com_histogram(&self, top: usize) -> String {
+        let mut pairs: Vec<(&String, &u64)> = self.com_calls.iter().collect();
+        pairs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        pairs
+            .into_iter()
+            .take(top)
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn unimplemented_methods(&self) -> String {
+        self.com_unimplemented.join(" ")
     }
 
     pub fn lookup_method(&self, thunk_va: u64) -> Option<(ComKind, usize)> {
@@ -933,6 +1219,27 @@ impl D3d12Subsystem {
 
     /// Dispatches a COM vtable call (`RCX = This`, `RDX, R8, R9, stack[5..]` = args) and returns `RAX`.
     pub fn dispatch_vtable_call(
+        &mut self,
+        kind: ComKind,
+        slot: usize,
+        args: &[u64; 10],
+        vmm: &mut VirtualMemoryManager,
+        signal_win32_event: impl FnMut(u64),
+        query_client_size: impl FnMut(u64) -> Option<(u32, u32)>,
+    ) -> u64 {
+        let result = self.dispatch_vtable_call_inner(
+            kind,
+            slot,
+            args,
+            vmm,
+            signal_win32_event,
+            query_client_size,
+        );
+        self.record_com(kind, slot, args, result);
+        result
+    }
+
+    fn dispatch_vtable_call_inner(
         &mut self,
         kind: ComKind,
         slot: usize,
@@ -1972,7 +2279,11 @@ impl D3d12Subsystem {
             }
             (ComKind::D3d12CommandList, _) => 0,
 
-            _ => S_OK as u64,
+            // Nothing implemented this method. Returning S_OK here used to hide the failure from
+            // the guest *and* from the trace: a game would carry on with an uninitialised object
+            // and die later somewhere unrelated. E_NOTIMPL is what a real driver returns for an
+            // unsupported entry point, and it shows up in the unimplemented-method list.
+            _ => E_NOTIMPL as u64,
         }
     }
 }

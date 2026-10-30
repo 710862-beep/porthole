@@ -116,6 +116,10 @@ jobs:
         run: node scripts/fetch-wine-source.mjs
       - name: Build unmodified Wine 64-bit test binaries
         run: node scripts/build-wine64-tests.mjs
+      - name: Build the real-game startup fixtures (PE32+ x86_64)
+        run: node scripts/build-game-fixtures.mjs
+      - name: Load real PE32+ game-shaped executables in the Wasm emulator
+        run: node tests/game/run-game.mjs --report artifacts/game-report.json --fixtures tests/assets/game
       - name: Run Wine conformance inside the Wasm x86-64 emulator
         run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64
       - name: Preserve JS regressions for the existing runtime
@@ -133,6 +137,8 @@ jobs:
           path: |
             artifacts/wine64-report.json
             artifacts/wine64-report.json.xml
+            artifacts/game-report.json
             tests/assets/wine64/MANIFEST.json
+            tests/assets/game/MANIFEST.json
           if-no-files-found: warn
           retention-days: 14

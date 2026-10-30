@@ -185,6 +185,16 @@ fn main() {
     }
     println!("--- hle histogram (top 40) ---");
     println!("{}", emu.hle_histogram(40));
+    let com = emu.com_histogram(40);
+    if !com.is_empty() {
+        println!("--- com histogram (top 40) ---");
+        println!("{com}");
+    }
+    let missing_com = emu.unimplemented_methods();
+    if !missing_com.is_empty() {
+        println!("--- unimplemented com methods ---");
+        println!("{missing_com}");
+    }
     let missing = emu.unimplemented_symbols();
     if !missing.is_empty() {
         println!("--- unimplemented symbols ---");
