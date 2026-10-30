@@ -45,10 +45,9 @@ jobs:
         run: |
           # run <fixture> <subtest> [tag] [extra xtrace flags...]
           run() {
-            f="$1"; sub="$2"; tag=""; extra=""
+            f="$1"; sub="$2"; tag=""
             shift 2
             if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then tag="$1"; shift; fi
-            extra="$*"
             out="trace-$f$sub${tag:+-$tag}.log"
             echo "##### fixture=$f subtest=${sub:-none}" > "$out"
             if [ -f "tests/assets/wine64/$f.exe" ]; then
@@ -56,7 +55,7 @@ jobs:
                 --budget 60000 --slice 4000 --trace 260 \
                 --watch 0x430000:0x4300d0 --watch 0x300000000:0x300000120 \
                 --peek 0x430040 --peek 0x430048 --peek 0x300000020 \
-                ${sub:+--args "$f.exe $sub"} $extra >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
+                ${sub:+--args "$f.exe $sub"} "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"
             else
               echo "fixture missing" >> "$out"
             fi
