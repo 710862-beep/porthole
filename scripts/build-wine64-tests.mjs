@@ -32,7 +32,8 @@ function makeTestlistSource(testNames) {
 const char * __cdecl __wine_dbg_strdup( const char *str ) {
     struct winetest_thread_data *data = winetest_get_thread_data();
     size_t len = strlen(str) + 1;
-    if (data->str_pos + len > data->strings + sizeof(data->strings)) data->str_pos = data->strings;
+    if (!data->str_pos || len > sizeof(data->strings) || data->str_pos + len > data->strings + sizeof(data->strings)) data->str_pos = data->strings;
+    if (len > sizeof(data->strings)) len = sizeof(data->strings);
     memcpy(data->str_pos, str, len);
     char *ret = data->str_pos;
     data->str_pos += len;

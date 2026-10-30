@@ -17,6 +17,7 @@ static void porthole_json_string(char *out, size_t cap, const char *text)
 }
 static void porthole_assert_emit(const char *file, int line, const char *expr, int actual, const char *fmt, ...)
 {
+    winetest_set_location(file, line);
     struct winetest_thread_data *data = winetest_get_thread_data();
     char message[4096], expr_json[8192], msg_json[16384], file_json[4096];
     char json[32768], debug[33000];
@@ -37,7 +38,6 @@ static void porthole_assert_emit(const char *file, int line, const char *expr, i
         OutputDebugStringA(debug);
         printf("%s\n", debug);
     }
-    winetest_set_location(file, line);
     winetest_ok(actual, "%s", message);
 }
 #define PORTHOLE_OK(file, line, cond, ...) porthole_assert_emit(file, line, #cond, !!(cond), __VA_ARGS__)
