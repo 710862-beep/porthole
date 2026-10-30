@@ -5,7 +5,7 @@ use crate::pe64::{
     CURDIR_HANDLE, MAIN_STACK_BOTTOM, MAIN_STACK_TOP, MAIN_TEB_ADDR, PROC_PARAMS_ADDR, PEB_ADDR,
     EXPORT_THUNK_BASE, EXPORT_THUNK_END, THREAD_EXIT_THUNK_ADDR, THUNK_BASE, THUNK_STRIDE,
 };
-use crate::vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_READWRITE};
+use crate::vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, MEM_RELEASE, PAGE_READWRITE};
 use crate::win32_fmt::{
     cp1252_byte_to_wchar, format_win64_printf, mb_to_wide, wide_to_mb, VaSlotReader,
 };
