@@ -180,6 +180,9 @@ jobs:
             artifacts/chocolate-doom-tier-b-report.txt
             artifacts/chocolate-doom-run.log
             artifacts/tier-b-pin.json
+            artifacts/chocolate-doom-frame-first.ppm
+            artifacts/chocolate-doom-frame-mid.ppm
+            artifacts/chocolate-doom-frame-final.ppm
           if-no-files-found: warn
           retention-days: 14
 

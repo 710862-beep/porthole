@@ -1,19 +1,26 @@
 #!/usr/bin/env node
 /*
- * GATE 1 Tier B / GATE 2 probe: run the pinned, UNMODIFIED official Chocolate Doom 3.1.1
+ * GATE 1 Tier B / GATE 2 runner: run the pinned, UNMODIFIED official Chocolate Doom 3.1.1
  * Windows x64 build with the Freedoom 0.13.0 IWAD inside the wasm-bindgen emulator.
  *
- * This runner is fail-closed and separates the four claims: today it can only produce
- * EXECUTION evidence (or a named-blocker failure log). It reports PASS only when the guest
- * both (a) exits 0 after a deterministic timedemo and (b) has actually PRESENTED guest-written
- * frames through the emulator's frame path (presented_frames > 0 with a framebuffer checksum).
- * A host-authored pixel never counts. Until the SDL2 HLE path exists, the expected result is
- * FAIL with the first named API blockers — that log is the deliverable, not a fake success.
+ * Fail-closed criteria, separating the claims:
+ *   EXECUTION — the guest's own timedemo completes. Upstream Chocolate Doom reports timedemo
+ *     results from G_CheckDemoStatus() via I_Error(), which exits with code -1 on every
+ *     platform (that is the success path, not a crash). So success = exit:0, OR exit:-1 with
+ *     the guest-printed line "timed N gametics in M realtics" (N > 0) in the guest console.
+ *   RENDERING — frames the GUEST presented through SDL (presented_frames > 0, copied from
+ *     guest texture memory at SDL_RenderPresent) whose FNV-1a checksum is recorded at first,
+ *     mid-run and final frame, with at least 2 distinct checksums (the framebuffer visibly
+ *     evolves under demo input; a static or host-filled buffer cannot satisfy this).
+ * What PASS does NOT assert: checksum equality against a reference render of the same binary
+ * on real Wine/Windows (Gate 2 reference comparison, still owed), interactive GAMEPLAY
+ * (this is recorded-demo playback), or anything about Chrome/Chromebook (Gate 4).
+ * Sampled guest frames are dumped as PPM artifacts for human inspection.
  *
  * Workload knobs (recorded in the report; the binary is never modified):
- *   PORTHOLE_DOOM_ARGS      guest argv tail, default "-iwad C:\Game\DOOM2.WAD -timedemo demo1 -nodraw -nosound"
+ *   PORTHOLE_DOOM_ARGS      guest argv tail, default "-iwad C:\Game\DOOM2.WAD -timedemo demo1 -nosound"
  *   PORTHOLE_DOOM_RESIDENT  VMM resident-page budget, default 65536 pages (256 MiB)
- *   PORTHOLE_DOOM_TIMEOUT_S wall-clock budget, default 540
+ *   PORTHOLE_DOOM_TIMEOUT_S wall-clock budget, default 1200 (measured full run: ~450 s)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,10 +33,32 @@ const exeRel = 'tests/assets/third-party/chocolate-doom.exe';
 const wadRel = 'tests/assets/third-party/freedoom2.wad';
 const guestArgs = process.env.PORTHOLE_DOOM_ARGS ?? '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound';
 const residentPages = Math.max(64, Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536) || 65536);
-const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 540) || 540) * 1000;
+const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
+
+/** Exact JS replica of the emulator's frame_checksum: FNV-1a/64 over w(LE u32)|h(LE u32)|RGBA8. */
+function fnv1a64Frame(w, h, rgba) {
+  let hash = 0xcbf29ce484222325n;
+  const mix = (b) => { hash ^= BigInt(b); hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn; };
+  const le32 = (v) => [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff];
+  for (const b of le32(w)) mix(b);
+  for (const b of le32(h)) mix(b);
+  for (const b of rgba) mix(b);
+  return `fnv1a64:${hash.toString(16).padStart(16, '0')}`;
+}
+
+/** Write an RGBA8 frame as a binary PPM (P6) artifact (alpha dropped) for human inspection. */
+function writePPM(file, w, h, rgba) {
+  const header = Buffer.from(`P6\n${w} ${h}\n255\n`, 'ascii');
+  const rgb = Buffer.alloc(w * h * 3);
+  for (let i = 0, j = 0; i < w * h; i++, j += 3) {
+    rgb[j] = rgba[i * 4]; rgb[j + 1] = rgba[i * 4 + 1]; rgb[j + 2] = rgba[i * 4 + 2];
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, Buffer.concat([header, rgb]));
+}
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
 const abs = (p) => path.resolve(root, p);
 
@@ -113,8 +142,12 @@ function writeReport(report) {
     `iwad=${report.iwad} sha256=${report.iwadSha256 || 'unknown'} bytes=${report.iwadBytes || 0}`,
     `runner=${report.runner} device=${JSON.stringify(report.device)}`,
     `argv=chocolate-doom.exe ${guestArgs} resident_pages=${residentPages}`,
-    `claim_scope=EXECUTION probe; RENDERING requires guest-presented frames (see presented_frames)`,
+    `claim_scope=EXECUTION (guest timedemo) + RENDERING (guest-presented frames); NOT a Wine-reference checksum match, NOT interactive gameplay`,
     `presented_frames=${run.presentedFrames ?? 0} framebuffer_checksum=${run.frameChecksum || 'none'} frame_size=${run.frameWidth || 0}x${run.frameHeight || 0}`,
+    `timedemo_gametics=${run.gametics ?? 0} realtics=${run.realtics ?? 0} distinct_frame_checksums=${run.distinctFrameChecksums ?? 0} checksum_cross_check=${run.checksumCrossCheck ?? false}`,
+    `frame_first=${run.firstFrame ? `${run.firstFrame.checksum} @presented=${run.firstFrame.presentedAtCapture} ${run.firstFrame.file}` : 'none'}`,
+    `frame_mid=${run.midFrame ? `${run.midFrame.checksum} @presented=${run.midFrame.presentedAtCapture} ${run.midFrame.file}` : 'none'}`,
+    `frame_final=${run.finalFrame ? `${run.finalFrame.checksum} @presented=${run.finalFrame.presentedAtCapture} ${run.finalFrame.file}` : 'none'}`,
     `reason=${report.reason || 'none'}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
@@ -202,6 +235,29 @@ async function main() {
   emu.set_command_line(`C:\\Game\\chocolate-doom.exe ${guestArgs}`);
   report.load = load;
 
+  // Gate 2 frame evidence: watch guest presents as they happen, fingerprint every distinct
+  // framebuffer state, and snapshot first / mid-run / final frames as PPM artifacts.
+  const frameSamples = { distinct: new Set(), first: null, mid: null, final: null, lastPresented: 0 };
+  const grabFrame = (label) => {
+    const rgba = emu.guest_frame_rgba?.();
+    const w = Number(emu.guest_frame_width?.() || 0);
+    const h = Number(emu.guest_frame_height?.() || 0);
+    if (!rgba || !rgba.length || !w || !h) return null;
+    const bytes = new Uint8Array(rgba);
+    const file = `artifacts/chocolate-doom-frame-${label}.ppm`;
+    writePPM(abs(file), w, h, bytes);
+    return { checksum: fnv1a64Frame(w, h, bytes), w, h, file, presentedAtCapture: Number(emu.presented_frames?.() || 0) };
+  };
+  const sampleFrames = () => {
+    const presented = Number(emu.presented_frames?.() || 0);
+    if (presented === 0 || presented === frameSamples.lastPresented) return;
+    frameSamples.lastPresented = presented;
+    const cs = emu.frame_checksum?.() || '';
+    if (cs) frameSamples.distinct.add(cs);
+    if (!frameSamples.first) frameSamples.first = grabFrame('first');
+    if (!frameSamples.mid && presented >= 1500) frameSamples.mid = grabFrame('mid');
+  };
+
   const started = Date.now();
   const deadline = started + timeoutMs;
   const pageStore = new Map();
@@ -218,6 +274,7 @@ async function main() {
         pageStore.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 8 + 4096));
       }
     }
+    sampleFrames();
     if (status === 'next') continue;
     if (status.startsWith('page-fault:')) {
       pageFaults += 1;
@@ -233,6 +290,14 @@ async function main() {
   const wallMs = Date.now() - started;
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
+  sampleFrames();
+  frameSamples.final = grabFrame('final');
+  const emuChecksum = emu.frame_checksum?.() || '';
+  // JS-side FNV of the grabbed final frame must equal the emulator's own checksum of the same
+  // last-presented frame; a mismatch means the capture path and the fingerprint disagree.
+  const checksumCrossCheck = frameSamples.final
+    ? frameSamples.final.checksum === emuChecksum
+    : false;
   report.run = {
     terminal,
     slices,
@@ -250,19 +315,41 @@ async function main() {
     faultSnapshot: terminal.startsWith('fault:') ? (emu.fault_snapshot?.() || '') : '',
     // Gate 2 accounting: only frames the GUEST presented through the emulator frame path count.
     presentedFrames: Number(emu.presented_frames?.() || 0),
-    frameChecksum: emu.frame_checksum?.() || '',
+    frameChecksum: emuChecksum,
     frameWidth: Number(emu.guest_frame_width?.() || 0),
     frameHeight: Number(emu.guest_frame_height?.() || 0),
+    distinctFrameChecksums: frameSamples.distinct.size,
+    firstFrame: frameSamples.first,
+    midFrame: frameSamples.mid,
+    finalFrame: frameSamples.final,
+    checksumCrossCheck,
   };
 
-  if (terminal === 'exit:0' && report.run.presentedFrames > 0 && report.run.frameChecksum) {
+  // EXECUTION: upstream reports timedemo completion through I_Error -> exit(-1). Accept that
+  // ONLY together with the guest-printed timing line; exit:0 is accepted unconditionally.
+  const timed = /timed (\d+) gametics in (\d+) realtics/.exec(report.run.console || '');
+  const gametics = timed ? Number(timed[1]) : 0;
+  const realtics = timed ? Number(timed[2]) : 0;
+  report.run.gametics = gametics;
+  report.run.realtics = realtics;
+  const timedemoDone = gametics > 0;
+  const okExit = terminal === 'exit:0' || (terminal === 'exit:4294967295' && timedemoDone);
+  // RENDERING: guest presents happened, the framebuffer actually changed across the run
+  // (demo-input-driven), and the host-side fingerprint of the captured frame agrees with the
+  // emulator's own checksum of the same guest bytes.
+  const framesOk = report.run.presentedFrames > 0
+    && !!report.run.frameChecksum
+    && report.run.distinctFrameChecksums >= 2
+    && checksumCrossCheck;
+  if (okExit && framesOk) {
     report.status = 'PASS';
   } else {
     report.status = 'FAIL';
     const blockers = report.run.unimplemented ? report.run.unimplemented.split(/\s+/).filter(Boolean).slice(0, 24).join(' ') : '';
-    report.reason = terminal === 'exit:0'
-      ? `guest exited 0 but presented_frames=${report.run.presentedFrames} (no guest frame = no rendering claim)`
-      : `guest terminal=${terminal}${blockers ? `; first named blockers: ${blockers}` : ''}`;
+    const why = [];
+    if (!okExit) why.push(`terminal=${terminal} (timedemoDone=${timedemoDone}, gametics=${gametics})`);
+    if (!framesOk) why.push(`presented=${report.run.presentedFrames} distinctChecksums=${report.run.distinctFrameChecksums} crossCheck=${checksumCrossCheck}`);
+    report.reason = `${why.join('; ')}${blockers ? `; first named blockers: ${blockers}` : ''}`;
   }
   writeReport(report);
   process.exit(report.status === 'PASS' ? 0 : 1);
