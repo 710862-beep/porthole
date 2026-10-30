@@ -18,8 +18,6 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /*
  * `/blockstage:N` makes the process stop *before* stage N and emit the same one-line failure
@@ -116,10 +114,27 @@ int main(void)
     (void)unused;
 
     {
+        /* Parsed by hand: strstr()/atoi() are msvcrt symbols this emulator does not implement
+         * yet, and a fixture that cannot run without them would hide the D3D12 result. */
         const char *cmd = GetCommandLineA();
-        const char *hit = cmd ? strstr(cmd, "/blockstage:") : NULL;
-        if (hit)
-            g_block_stage = atoi(hit + 12);
+        const char *p;
+        printf("DOOM_STARTUP_CMDLINE %s\n", cmd ? cmd : "(null)");
+        for (p = cmd; p && *p; p++)
+        {
+            if (p[0] == '/' && p[1] == 'b' && p[2] == 'l' && p[3] == 'o' && p[4] == 'c' &&
+                p[5] == 'k' && p[6] == 's' && p[7] == 't' && p[8] == 'a' && p[9] == 'g' &&
+                p[10] == 'e' && p[11] == ':')
+            {
+                int v = 0;
+                const char *d = p + 12;
+                while (*d >= '0' && *d <= '9')
+                    v = v * 10 + (*d++ - '0');
+                g_block_stage = v;
+                break;
+            }
+        }
+        printf("DOOM_STARTUP_BLOCK_STAGE %d\n", g_block_stage);
+        fflush(stdout);
     }
 
     printf("DOOM_STARTUP_BEGIN\n");
