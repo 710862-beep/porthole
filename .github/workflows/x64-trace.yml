@@ -44,7 +44,12 @@ jobs:
           ls -l tests/assets/game
       - name: Build xtrace
         working-directory: rust/porthole-x64-wasm
-        run: cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
+        # pipefail: `cargo build | tee` reports tee's exit status, so a compile error used to
+        # leave every following trace saying "xtrace: No such file or directory" while the step
+        # showed a green check.
+        run: |
+          set -o pipefail
+          cargo build --release --bin xtrace 2>&1 | tee -a "$GITHUB_WORKSPACE/trace.log"
       - name: Run the four Wine64 fixtures through the tracer
         run: |
           # run <fixture> <subtest> [tag] [extra xtrace flags...]
@@ -73,7 +78,9 @@ jobs:
             base="$(basename "$img" .exe)"
             out="trace-game$base${tag:+-$tag}.log"
             echo "##### game=$img" > "$out"
-            if [ -f "$img" ]; then
+            if [ ! -x ./rust/porthole-x64-wasm/target/release/xtrace ]; then
+              echo "xtrace binary missing" >> "$out"
+            elif [ -f "$img" ]; then
               ./rust/porthole-x64-wasm/target/release/xtrace "$img" \
                 --budget 4000000 --slice 200000 --trace 400 --no-watch \
                 --args "C:\\Game\\$(basename "$img")" "$@" >> "$out" 2>&1 || echo "xtrace exit=$?" >> "$out"

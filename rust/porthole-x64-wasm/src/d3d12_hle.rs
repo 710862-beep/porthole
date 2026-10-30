@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::vmm::{VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_READWRITE};
+use crate::vmm::{
+    VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
+};
 
 pub const COM_HEAP_BASE: u64 = 0x0000_7FF4_0000_0000;
 /// COM vtable stubs live in their own VA range.
