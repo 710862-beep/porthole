@@ -1,96 +1,46 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<title>Porthole — UI shell (Game Store · Desktop)</title>
-<link rel="stylesheet" href="styles.css">
-</head>
-<body>
-<!-- ===================== Desktop mode (default visible surface) ===================== -->
-<div id="desktop" class="mode">
-  <div id="hot-corner" title="Task view (multi-task overview)"></div>
-  <header id="topbar">
-    <button id="btn-taskview" class="tb-item" title="Task view">
-      <span class="logo">porthole<span class="dot">.</span></span><span class="muted"> overview</span>
-    </button>
-    <div class="tb-spacer"></div>
-    <span id="tray-storage" class="tb-item badge" title="Storage backend">storage: —</span>
-    <span id="tray-state" class="tb-item badge" title="Emulator state">emu: idle</span>
-    <span id="clock" class="tb-item">--:--</span>
-  </header>
-
-  <main id="desktop-surface" aria-label="Desktop">
-    <!-- windows are created here by ui/app.js -->
-    <div id="desktop-hint" class="hint">
-      <h2>Porthole desktop</h2>
-      <p>Launch something from the <button class="linklike" data-goto="store">Game Store</button>,
-      or open the <button class="linklike" id="btn-open-emu">emulator window</button> directly.
-      Move the pointer to the <b>top-left corner</b> for the task view.</p>
-      <p class="muted">Evidence status: Gate 1 ✅ · Gate 2 ✅ (2664 gametics == Wine 9.0; title frame
-      64,000/64,000 px vs independent reference) · Gate 3 drafted · Gate 4 probe-ready · Gate 5 6/7.
-      Details: <code>docs/FINAL-STATUS-REPORT.md</code>.</p>
+<!doctype html>
+<html lang="en" class="dark" data-motion="full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#11111b" />
+    <meta
+      name="description"
+      content="Porthole — a CachyOS-flavoured browser desktop environment for the Porthole x86-64 runtime."
+    />
+    <title>Porthole — Desktop Environment</title>
+    <link rel="icon" type="image/svg+xml" href="./porthole-mark.svg" />
+    <link rel="preload" as="image" href="./wallpapers/cachy-aurora.png" />
+    <style>
+      /* Critical shell paint: never show a white flash before the SPA mounts. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0b0b14;
+        color: #cdd6f4;
+      }
+      #boot-fallback {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(ellipse 55% 40% at 50% 35%, rgba(0, 229, 255, 0.08), transparent 70%),
+          #0b0b14;
+        font-family: Inter, system-ui, sans-serif;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        font-size: 10px;
+        color: #7f849c;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="boot-fallback">Porthole</div>
     </div>
-  </main>
-
-  <div id="taskview" hidden role="dialog" aria-label="Task view">
-    <div class="taskview-head">
-      <h2>Open windows</h2>
-      <button id="btn-taskview-close">Close overview (Esc)</button>
-    </div>
-    <div id="taskview-grid" class="grid"></div>
-    <h3 class="taskview-sub">Applications</h3>
-    <div id="taskview-apps" class="grid"></div>
-  </div>
-
-  <footer id="taskbar">
-    <button class="tb-item" data-goto="store" title="Game Store">▦ Store</button>
-    <div id="taskbar-apps"></div>
-    <div class="tb-spacer"></div>
-    <button class="tb-item" id="btn-settings" title="Settings">⚙ Settings</button>
-  </footer>
-</div>
-
-<!-- ===================== Game Store mode ===================== -->
-<div id="store" class="mode" hidden>
-  <header id="store-topbar">
-    <button class="tb-item" data-goto="desktop">← Desktop</button>
-    <h1>Game Store</h1>
-    <div class="tb-spacer"></div>
-    <span class="muted">Library entries carry their measured evidence status — nothing here
-    is "supported" beyond what CI proved.</span>
-  </header>
-  <nav id="store-cats"></nav>
-  <main id="store-grid" class="grid" aria-label="Game library"></main>
-</div>
-
-<!-- ===================== Settings (modal window content is in-app) ===================== -->
-<div id="storage-panel-template" hidden>
-  <div class="settings-body">
-    <h3>Storage backend</h3>
-    <p class="muted">Guest RAM overflow and the virtual disk persist through one host
-    protocol (drain → shard files → supply on fault). Preference order:
-    File System Access (a folder you pick) → OPFS → in-memory (volatile).
-    The emulator window performs the actual mount; this panel records your preference
-    and reports what this browser/policy permits.</p>
-    <div id="storage-options"></div>
-    <p id="storage-detail" class="muted mono"></p>
-  </div>
-</div>
-
-<!-- ===================== Yes/No modal ===================== -->
-<div id="modal-backdrop" hidden>
-  <div id="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-body">
-    <h2 id="modal-title">Confirm</h2>
-    <p id="modal-body">Are you sure?</p>
-    <div class="modal-actions">
-      <button id="modal-cancel">No</button>
-      <button id="modal-confirm" class="primary">Yes</button>
-    </div>
-  </div>
-</div>
-
-<script src="app.js"></script>
-</body>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
