@@ -34,6 +34,23 @@ pub const ERROR_BROKEN_PIPE: u32 = 109;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_INVALID_ADDRESS: u32 = 487;
+pub const ERROR_NOT_SUPPORTED: u32 = 50;
+
+/// Guest VA of the synthetic CRT data-import cells (`_fmode`, `_commode`, `_iob`, `__initenv`).
+///
+/// Old MSVC binaries (7za.exe 21.07 among them) import *data* symbols from msvcrt.dll: the IAT
+/// slot must contain the address of the variable inside the DLL, and the guest dereferences it
+/// (`mov rcx,[__imp__fmode]; mov [rcx],eax` at 0x4d82cb in 7za). Binding those slots to code
+/// thunks made the CRT write through 0x7ff000001350 and fault on instruction 29.
+pub const DATA_IMPORT_BASE: u64 = 0x0000_7FF0_0004_0000;
+/// Old-msvcrt `FILE` (`struct _iobuf`) stride on x64.
+pub const OLD_FILE_SIZE: u64 = 48;
+/// Deterministic guest clock: 2026-10-30T00:00:00Z as a Windows FILETIME.
+pub const FIXED_FILETIME: u64 = 134_377_920_000_000_000;
+
+pub const STDIN_HANDLE_VAL: u64 = 0x10;
+pub const STDOUT_HANDLE_VAL: u64 = 0x14;
+pub const STDERR_HANDLE_VAL: u64 = 0x18;
 
 pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 pub const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
@@ -192,6 +209,26 @@ struct Waitable {
     manual_reset: bool,
 }
 
+#[derive(Debug, Clone)]
+struct FindEntry {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
+
+#[derive(Debug, Clone)]
+struct FindSearch {
+    entries: Vec<FindEntry>,
+    next: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FileMapping {
+    file_key: Option<String>,
+    size: u64,
+    va: u64,
+}
+
 pub struct Win32Kernel {
     pub last_error: u32,
     atoms_global: AtomTable,
@@ -242,6 +279,22 @@ pub struct Win32Kernel {
     pub hle_calls: HashMap<String, u64>,
     /// Symbols that reached the default arm, i.e. the guest called an API nobody implemented.
     pub hle_unimplemented: Vec<String>,
+    /// Full path of the loaded image (`GetModuleFileNameW(NULL, ...)`), set by the harness.
+    pub exe_path: String,
+    /// Data-import cells, created by [`Self::init_data_imports`].
+    pub fmode_cell: u64,
+    pub commode_cell: u64,
+    pub iob_base: u64,
+    pub initenv_cell: u64,
+    atexit_funcs: Vec<u64>,
+    semaphores: HashMap<u64, i32>,
+    find_searches: HashMap<u64, FindSearch>,
+    file_mappings: HashMap<u64, FileMapping>,
+    next_mapping_va: u64,
+    alloc_sizes: HashMap<u64, u64>,
+    free_blocks: Vec<(u64, u64)>,
+    qpc_ticks: u64,
+    app_type: u32,
 }
 
 impl Win32Kernel {
@@ -398,9 +451,21 @@ impl Win32Kernel {
         if s.is_empty() {
             return Err(ERROR_PATH_NOT_FOUND);
         }
-        // Reject wildcards for creation/removal paths (Wine returns ERROR_INVALID_NAME).
+        // Wildcard ordering follows NT name resolution: a wildcard in a *parent* component
+        // names a directory that cannot exist, so the lookup fails with ERROR_PATH_NOT_FOUND
+        // before the final component is ever validated; a wildcard confined to the final
+        // component is ERROR_INVALID_NAME (directory.c:243-249, 438, Gate 5).
         if s.contains('?') || s.contains('*') {
-            return Err(ERROR_INVALID_NAME);
+            let comps: Vec<&str> = s.split(['\\', '/']).filter(|c| !c.is_empty()).collect();
+            let in_parent = comps.len() > 1
+                && comps[..comps.len() - 1]
+                    .iter()
+                    .any(|c| c.contains('?') || c.contains('*'));
+            return Err(if in_parent {
+                ERROR_PATH_NOT_FOUND
+            } else {
+                ERROR_INVALID_NAME
+            });
         }
         if s.starts_with("\\\\") {
             return Err(ERROR_INVALID_NAME);
@@ -512,6 +577,21 @@ impl Win32Kernel {
     // ---------------------------------------------------------------- memory
 
     fn heap_alloc(&mut self, vmm: &mut VirtualMemoryManager, heap: u64, size: u64) -> u64 {
+        let aligned = (size.max(1) + 15) & !15;
+        // Reuse freed blocks before growing the bump frontier. A pure bump allocator exhausts
+        // any fixed region under a real C++ workload (7-Zip churns thousands of new/delete
+        // pairs for a single small archive), so `free` must actually recycle.
+        if let Some(pos) = self.free_blocks.iter().position(|&(_, sz)| sz >= aligned) {
+            let (va, sz) = self.free_blocks.swap_remove(pos);
+            if sz - aligned >= 16 {
+                self.free_blocks.push((va + aligned, sz - aligned));
+                self.alloc_sizes.insert(va, aligned);
+            } else {
+                self.alloc_sizes.insert(va, sz);
+            }
+            let _ = vmm.host_write_bytes(va, &vec![0u8; aligned as usize]);
+            return va;
+        }
         let idx = self
             .heaps
             .iter()
@@ -521,7 +601,6 @@ impl Win32Kernel {
             return 0;
         }
         let h = &mut self.heaps[idx];
-        let aligned = (size.max(1) + 15) & !15;
         if h.next + aligned > h.end {
             return 0;
         }
@@ -530,12 +609,124 @@ impl Win32Kernel {
         // Zero the block (HeapAlloc without HEAP_ZERO_MEMORY is uninitialized in Windows, but
         // zeroing keeps guest behaviour deterministic and matches HEAP_ZERO_MEMORY callers).
         let _ = vmm.host_write_bytes(va, &vec![0u8; aligned as usize]);
+        self.alloc_sizes.insert(va, aligned);
         va
+    }
+
+    fn heap_free(&mut self, ptr: u64) {
+        if ptr == 0 {
+            return;
+        }
+        if let Some(sz) = self.alloc_sizes.remove(&ptr) {
+            self.free_blocks.push((ptr, sz));
+        }
+    }
+
+    fn heap_block_size(&self, ptr: u64) -> u64 {
+        self.alloc_sizes.get(&ptr).copied().unwrap_or(0)
+    }
+
+    /// `realloc`/`HeapReAlloc` semantics: new block, copy `min(old, new)`, free the old block.
+    fn heap_realloc(&mut self, vmm: &mut VirtualMemoryManager, heap: u64, ptr: u64, size: u64) -> u64 {
+        if ptr == 0 {
+            return self.heap_alloc(vmm, heap, size);
+        }
+        if size == 0 {
+            self.heap_free(ptr);
+            return 0;
+        }
+        let old_size = self.heap_block_size(ptr);
+        let va = self.heap_alloc(vmm, heap, size);
+        if va == 0 {
+            return 0;
+        }
+        let copy = old_size.min(size) as usize;
+        if copy > 0 {
+            let mut buf = vec![0u8; copy];
+            if vmm.read_bytes(ptr, &mut buf).is_ok() {
+                let _ = vmm.host_write_bytes(va, &buf);
+            }
+        }
+        self.heap_free(ptr);
+        va
+    }
+
+    /// Creates the writable guest cells for old-msvcrt *data* imports and returns
+    /// `(symbol, cell_va)` pairs the loader must write into the IAT *instead of* code thunks.
+    pub fn init_data_imports(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+    ) -> Vec<(String, u64)> {
+        vmm.map_region(
+            DATA_IMPORT_BASE,
+            0x1_0000,
+            PAGE_READWRITE,
+            MEM_COMMIT,
+            MEM_PRIVATE,
+            true,
+        );
+        self.fmode_cell = DATA_IMPORT_BASE;
+        self.commode_cell = DATA_IMPORT_BASE + 0x08;
+        self.iob_base = DATA_IMPORT_BASE + 0x10;
+        self.initenv_cell = DATA_IMPORT_BASE + 0x100;
+        let initenv_vector = DATA_IMPORT_BASE + 0x200;
+        // _fmode defaults to _O_TEXT (0x4000); the guest CRT overwrites it from its own
+        // `_fmode` initializer during startup, which is the exact store that used to fault.
+        let _ = vmm.write_u32(self.fmode_cell, 0x4000);
+        let _ = vmm.write_u32(self.commode_cell, 0);
+        // struct _iobuf (x64, 48 bytes): _flag @24, _file @28. _IOREAD=1, _IOWRT=2.
+        let flags = [1u32, 2, 2];
+        for i in 0..3u64 {
+            let f = self.iob_base + i * OLD_FILE_SIZE;
+            let _ = vmm.write_u32(f + 24, flags[i as usize]);
+            let _ = vmm.write_u32(f + 28, i as u32);
+        }
+        // __initenv (`char **`) starts as an empty NULL-terminated vector; __getmainargs
+        // repoints the cell at the materialised environment vector.
+        let _ = vmm.write_u64(initenv_vector, 0);
+        let _ = vmm.write_u64(self.initenv_cell, initenv_vector);
+        vec![
+            ("_fmode".to_string(), self.fmode_cell),
+            ("_commode".to_string(), self.commode_cell),
+            ("_iob".to_string(), self.iob_base),
+            ("__initenv".to_string(), self.initenv_cell),
+        ]
+    }
+
+    /// Index (0=stdin, 1=stdout, 2=stderr) of an old-msvcrt `FILE *`, when it points into
+    /// the synthetic `_iob` array.
+    fn iob_index(&self, ptr: u64) -> Option<usize> {
+        if self.iob_base == 0 || ptr < self.iob_base {
+            return None;
+        }
+        let off = ptr - self.iob_base;
+        if off % OLD_FILE_SIZE == 0 && off / OLD_FILE_SIZE < 3 {
+            Some((off / OLD_FILE_SIZE) as usize)
+        } else {
+            None
+        }
+    }
+
+    pub fn set_exe_path(&mut self, path: &str) {
+        self.exe_path = path.to_string();
+    }
+
+    fn module_file_name(&self) -> String {
+        if !self.exe_path.is_empty() {
+            return self.exe_path.clone();
+        }
+        let toks = self.argv_tokens();
+        let arg0 = toks.first().cloned().unwrap_or_else(|| "test.exe".to_string());
+        if arg0.contains('\\') || arg0.contains(':') {
+            arg0.replace('/', "\\")
+        } else {
+            format!("{}\\{}", self.cwd, arg0)
+        }
     }
 
     pub fn init_heaps(&mut self, vmm: &mut VirtualMemoryManager) {
         let region_base = 0x0000_0003_0000_0000u64;
-        let region_size = 0x0000_0000_0100_0000u64; // 16 MB
+        let region_size = 0x0000_0000_1000_0000u64; // 256 MB sparse VA (pages materialise on use)
         vmm.map_region(
             region_base,
             region_size,
@@ -959,6 +1150,236 @@ impl Win32Kernel {
         None
     }
 
+    // ------------------------------------------------- OLEAUT32 BSTR / VARIANT
+
+    fn bstr_alloc(&mut self, vmm: &mut VirtualMemoryManager, units: &[u16]) -> u64 {
+        let byte_len = (units.len() * 2) as u32;
+        let va = self.heap_alloc(vmm, self.process_heap, byte_len as u64 + 6);
+        if va == 0 {
+            return 0;
+        }
+        let _ = vmm.write_u32(va, byte_len);
+        for (i, u) in units.iter().enumerate() {
+            let _ = vmm.write_u16(va + 4 + (i as u64) * 2, *u);
+        }
+        let _ = vmm.write_u16(va + 4 + byte_len as u64, 0);
+        va + 4
+    }
+
+    fn bstr_len_bytes(&mut self, vmm: &mut VirtualMemoryManager, ptr: u64) -> u32 {
+        if ptr == 0 {
+            return 0;
+        }
+        vmm.read_u32(ptr.wrapping_sub(4)).unwrap_or(0)
+    }
+
+    fn variant_clear(&mut self, vmm: &mut VirtualMemoryManager, p: u64) -> u64 {
+        if p == 0 {
+            return 0x8007_0057; // E_INVALIDARG
+        }
+        // VT_BSTR payloads come from the bump/freelist heap; freeing is a no-op there.
+        let _ = vmm.write_bytes(p, &[0u8; 16]);
+        0
+    }
+
+    fn variant_copy(&mut self, vmm: &mut VirtualMemoryManager, dst: u64, src: u64) -> u64 {
+        if dst == 0 || src == 0 {
+            return 0x8007_0057;
+        }
+        let mut raw = [0u8; 24];
+        if vmm.read_bytes(src, &mut raw).is_err() {
+            return 0x8007_0057;
+        }
+        let vt = u16::from_le_bytes([raw[0], raw[1]]);
+        if dst != src {
+            let _ = self.variant_clear(vmm, dst);
+        }
+        let _ = vmm.write_bytes(dst, &raw);
+        if vt == 8 {
+            // VT_BSTR: deep-copy the string so independent lifetimes do not alias.
+            let bstr = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+            if bstr != 0 {
+                let bytes = self.bstr_len_bytes(vmm, bstr);
+                let chars = (bytes / 2) as usize;
+                let mut units = vec![0u16; chars];
+                for (i, slot) in units.iter_mut().enumerate() {
+                    *slot = vmm.read_u16(bstr + (i as u64) * 2).unwrap_or(0);
+                }
+                let copy = self.bstr_alloc(vmm, &units);
+                let _ = vmm.write_u64(dst + 8, copy);
+            }
+        }
+        0
+    }
+
+    // ------------------------------------------------- find-file machinery
+
+    fn wildcard_match(pattern: &str, name: &str) -> bool {
+        let p: Vec<char> = pattern.chars().collect();
+        let n: Vec<char> = name.chars().collect();
+        // Classic two-pointer glob match with '*' backtracking, '?' single-char, ASCII-folded.
+        let (mut pi, mut ni) = (0usize, 0usize);
+        let (mut star, mut retry) = (usize::MAX, 0usize);
+        while ni < n.len() {
+            if pi < p.len()
+                && (p[pi] == '?' || p[pi].eq_ignore_ascii_case(&n[ni]))
+            {
+                pi += 1;
+                ni += 1;
+            } else if pi < p.len() && p[pi] == '*' {
+                star = pi;
+                retry = ni;
+                pi += 1;
+            } else if star != usize::MAX {
+                pi = star + 1;
+                retry += 1;
+                ni = retry;
+            } else {
+                return false;
+            }
+        }
+        while pi < p.len() && p[pi] == '*' {
+            pi += 1;
+        }
+        pi == p.len()
+    }
+
+    fn write_find_data(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        out: u64,
+        wide: bool,
+        entry: &FindEntry,
+    ) {
+        let mut buf = [0u8; 592];
+        let attrs: u32 = if entry.is_dir { 0x10 } else { 0x80 };
+        buf[0..4].copy_from_slice(&attrs.to_le_bytes());
+        for off in [4usize, 12, 20] {
+            buf[off..off + 8].copy_from_slice(&FIXED_FILETIME.to_le_bytes());
+        }
+        buf[28..32].copy_from_slice(&((entry.size >> 32) as u32).to_le_bytes());
+        buf[32..36].copy_from_slice(&(entry.size as u32).to_le_bytes());
+        if wide {
+            for (i, u) in entry.name.encode_utf16().take(259).enumerate() {
+                buf[44 + i * 2..44 + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+            }
+            let _ = vmm.write_bytes(out, &buf[..592]);
+        } else {
+            let (bytes, _) = wide_to_mb(
+                ANSI_CODEPAGE,
+                &entry.name.encode_utf16().collect::<Vec<_>>(),
+            );
+            let n = bytes.len().min(259);
+            buf[44..44 + n].copy_from_slice(&bytes[..n]);
+            let _ = vmm.write_bytes(out, &buf[..320]);
+        }
+    }
+
+    /// Enumerates candidate entries for a find pattern. Returns `(entries, err)`.
+    fn find_candidates(&mut self, raw: &str) -> (Vec<FindEntry>, u32) {
+        let s = raw.replace('/', "\\");
+        let (parent_raw, pattern) = match s.rfind('\\') {
+            Some(i) => (&s[..i + 1], &s[i + 1..]),
+            None => ("", s.as_str()),
+        };
+        let parent = if parent_raw.is_empty() {
+            self.cwd.clone()
+        } else if parent_raw.contains('?') || parent_raw.contains('*') {
+            return (Vec::new(), ERROR_PATH_NOT_FOUND);
+        } else {
+            match self.canonical_path(parent_raw) {
+                Ok(p) => p,
+                Err(e) => return (Vec::new(), e),
+            }
+        };
+        if !self.dir_exists(&parent) {
+            return (Vec::new(), ERROR_PATH_NOT_FOUND);
+        }
+        let has_wild = pattern.contains('*') || pattern.contains('?');
+        let mut entries: Vec<FindEntry> = Vec::new();
+        for f in self.files.values() {
+            let dir = Self::dir_of(&f.path);
+            let same_dir = dir.eq_ignore_ascii_case(&parent)
+                || (parent == "C:\\" && dir == "C:");
+            if !same_dir || f.path.eq_ignore_ascii_case(&parent) {
+                continue;
+            }
+            let name = f
+                .path
+                .rsplit('\\')
+                .next()
+                .unwrap_or(f.path.as_str())
+                .to_string();
+            let hit = if has_wild {
+                Self::wildcard_match(pattern, &name)
+                    || (pattern == "*.*" && Self::wildcard_match("*", &name))
+            } else {
+                name.eq_ignore_ascii_case(pattern)
+            };
+            if hit {
+                entries.push(FindEntry {
+                    name,
+                    is_dir: f.is_directory,
+                    size: f.data.len() as u64,
+                });
+            }
+        }
+        entries.sort_by(|a, b| a.name.to_ascii_uppercase().cmp(&b.name.to_ascii_uppercase()));
+        if has_wild && (pattern == "*" || pattern == "*.*") {
+            entries.insert(
+                0,
+                FindEntry { name: "..".to_string(), is_dir: true, size: 0 },
+            );
+            entries.insert(
+                0,
+                FindEntry { name: ".".to_string(), is_dir: true, size: 0 },
+            );
+        }
+        (entries, 0)
+    }
+
+    // ------------------------------------------------- FILETIME conversions
+
+    fn filetime_to_civil(ft: u64) -> (u16, u16, u16, u16, u16, u16, u16, u16) {
+        // (year, month, day_of_week, day, hour, minute, second, millis), Sunday = 0.
+        let total_ms = ft / 10_000;
+        let millis = (total_ms % 1000) as u16;
+        let secs = total_ms / 1000;
+        let second = (secs % 60) as u16;
+        let minute = ((secs / 60) % 60) as u16;
+        let hour = ((secs / 3600) % 24) as u16;
+        let days1601 = (secs / 86_400) as i64;
+        // 1601-01-01 was a Monday; Sunday=0 so day 0 -> 1.
+        let dow = ((days1601 + 1) % 7) as u16;
+        // Howard Hinnant's civil_from_days (input: days since 1970-01-01).
+        let z = (days1601 - 134_774) + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = if m <= 2 { y + 1 } else { y };
+        (year as u16, m as u16, dow, d as u16, hour, minute, second, millis)
+    }
+
+    fn civil_to_filetime(year: i64, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> u64 {
+        // Days since 1601-01-01 via civil-from-days inverse (Howard Hinnant / days_from_civil),
+        // whose epoch (1970-01-01) is 134774 days after the FILETIME epoch.
+        let y_adj = if month <= 2 { year - 1 } else { year };
+        let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+        let yoe = (y_adj - era * 400) as u64;
+        let mp = if month > 2 { month - 3 } else { month + 9 } as u64;
+        let doy = (153 * mp + 2) / 5 + day as u64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days1970 = era * 146_097 + doe as i64 - 719_468;
+        let days1601 = days1970 + 134_774;
+        let secs = days1601 * 86_400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64;
+        (secs.max(0) as u64) * 10_000_000
+    }
+
     // ---------------------------------------------------------- dispatch
 
     pub fn dispatch(
@@ -1011,11 +1432,83 @@ impl Win32Kernel {
                 };
                 return HleAction::Return(self.d3d12.create_dxgi_factory(vmm, riid, out) as u64);
             }
+            // OLEAUT32 ordinal imports (7za.exe imports #2,#4,#6,#7,#9,#10). Ordinal -> name
+            // mapping is the pinned Wine `dlls/oleaut32/oleaut32.spec` table.
+            ("oleaut32.dll", "#2") | ("oleaut32.dll", "SysAllocString") => {
+                let s = self.read_wide(vmm, a0);
+                let units: Vec<u16> = s.encode_utf16().collect();
+                return HleAction::Return(self.bstr_alloc(vmm, &units));
+            }
+            ("oleaut32.dll", "#4") | ("oleaut32.dll", "SysAllocStringLen") => {
+                let n = a1 as u32 as usize;
+                let mut units = vec![0u16; n];
+                if a0 != 0 {
+                    for (i, slot) in units.iter_mut().enumerate() {
+                        *slot = vmm.read_u16(a0 + (i as u64) * 2).unwrap_or(0);
+                    }
+                }
+                return HleAction::Return(self.bstr_alloc(vmm, &units));
+            }
+            ("oleaut32.dll", "#6") | ("oleaut32.dll", "SysFreeString") => {
+                if a0 >= 4 {
+                    self.heap_free(a0 - 4);
+                }
+                return HleAction::Return(0);
+            }
+            ("oleaut32.dll", "#7") | ("oleaut32.dll", "SysStringLen") => {
+                return HleAction::Return((self.bstr_len_bytes(vmm, a0) / 2) as u64);
+            }
+            ("oleaut32.dll", "#8") | ("oleaut32.dll", "VariantInit") => {
+                if a0 != 0 {
+                    let _ = vmm.write_bytes(a0, &[0u8; 24]);
+                }
+                return HleAction::Return(0);
+            }
+            ("oleaut32.dll", "#9") | ("oleaut32.dll", "VariantClear") => {
+                return HleAction::Return(self.variant_clear(vmm, a0));
+            }
+            ("oleaut32.dll", "#10") | ("oleaut32.dll", "VariantCopy") => {
+                return HleAction::Return(self.variant_copy(vmm, a0, a1));
+            }
             _ => {}
         }
 
         let result: u64 = match symbol {
             // ------------------------------------------------------- console
+            "GetStdHandle" => {
+                match a0 as u32 as i32 {
+                    -10 => STDIN_HANDLE_VAL,
+                    -11 => STDOUT_HANDLE_VAL,
+                    -12 => STDERR_HANDLE_VAL,
+                    _ => {
+                        self.set_last_error(ERROR_INVALID_PARAMETER);
+                        INVALID_HANDLE_VALUE
+                    }
+                }
+            }
+            "GetConsoleScreenBufferInfo" => {
+                // The guest console is a redirected pipe, but a plausible 80x25 buffer keeps
+                // callers that only probe dimensions on their happy path.
+                if a0 == STDOUT_HANDLE_VAL || a0 == STDERR_HANDLE_VAL {
+                    if a1 != 0 {
+                        let mut info = [0u8; 22];
+                        info[0..2].copy_from_slice(&80u16.to_le_bytes());
+                        info[2..4].copy_from_slice(&25u16.to_le_bytes());
+                        info[8..10].copy_from_slice(&7u16.to_le_bytes()); // wAttributes
+                        info[14..16].copy_from_slice(&79u16.to_le_bytes()); // window right
+                        info[16..18].copy_from_slice(&24u16.to_le_bytes()); // window bottom
+                        info[18..20].copy_from_slice(&80u16.to_le_bytes());
+                        info[20..22].copy_from_slice(&25u16.to_le_bytes());
+                        let _ = vmm.write_bytes(a1, &info);
+                    }
+                    1
+                } else {
+                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    0
+                }
+            }
+            "SetConsoleCtrlHandler" => 1,
+            "SetFileApisToOEM" | "SetFileApisToANSI" => 0,
             "GetConsoleMode" => {
                 self.set_last_error(ERROR_INVALID_HANDLE);
                 0
@@ -1458,51 +1951,46 @@ impl Win32Kernel {
             "GetWindowsDirectoryW" => self.get_dir_api(vmm, a0, a1, 1),
             "GetSystemDirectoryA" => self.get_dir_api(vmm, a0, a1, 2),
             "GetSystemDirectoryW" => self.get_dir_api(vmm, a0, a1, 3),
+            // GetTempPath/GetCurrentDirectory take `(nBufferLength, lpBuffer)` — length first,
+            // unlike GetWindowsDirectory/GetSystemDirectory. The previous arms treated arg0 as
+            // the buffer pointer and wrote the path at address `MAX_PATH` (a silent no-op into
+            // unmapped memory), leaving the caller's buffer untouched. That single swap cascaded
+            // into 14 of the Wine `directory` failures: every later path was built by appending
+            // to a stale buffer that still ended in '*'.
             "GetTempPathA" => {
                 let path = "C:\\Users\\PORTHOLE\\Temp\\";
                 let need = path.len() + 1;
-                if a1 == 0 {
+                if a1 == 0 || (a0 as usize) < need {
                     return HleAction::Return(need as u64);
                 }
-                if (a1 as usize) < need {
-                    return HleAction::Return(need as u64);
-                }
-                let _ = self.write_ansi(vmm, a0, path);
-                (path.len() + 1) as u64
+                let _ = self.write_ansi(vmm, a1, path);
+                path.len() as u64
             }
             "GetTempPathW" => {
                 let path = "C:\\Users\\PORTHOLE\\Temp\\";
                 let need = path.len() + 1;
-                if a1 == 0 {
+                if a1 == 0 || (a0 as usize) < need {
                     return HleAction::Return(need as u64);
                 }
-                if (a1 as usize) < need {
-                    return HleAction::Return(need as u64);
-                }
-                let _ = self.write_wide(vmm, a0, path);
-                (path.len() + 1) as u64
+                let _ = self.write_wide(vmm, a1, path);
+                path.len() as u64
             }
             "GetCurrentDirectoryA" => {
                 let dir = self.cwd.clone();
-                if a1 == 0 {
+                if a1 == 0 || (a0 as usize) <= dir.len() {
                     return HleAction::Return(dir.len() as u64 + 1);
                 }
-                if (a1 as usize) <= dir.len() {
-                    return HleAction::Return(dir.len() as u64 + 1);
-                }
-                let _ = self.write_ansi(vmm, a0, &dir);
+                let _ = self.write_ansi(vmm, a1, &dir);
                 dir.len() as u64
             }
             "GetCurrentDirectoryW" => {
                 let dir = self.cwd.clone();
-                if a1 == 0 {
-                    return HleAction::Return(dir.len() as u64 + 1);
+                let chars = dir.encode_utf16().count();
+                if a1 == 0 || (a0 as usize) <= chars {
+                    return HleAction::Return(chars as u64 + 1);
                 }
-                if (a1 as usize) <= dir.len() {
-                    return HleAction::Return(dir.len() as u64 + 1);
-                }
-                let _ = self.write_wide(vmm, a0, &dir);
-                dir.len() as u64
+                let _ = self.write_wide(vmm, a1, &dir);
+                chars as u64
             }
             "SetCurrentDirectoryA" | "SetCurrentDirectoryW" => {
                 let raw = if symbol.ends_with('A') {
@@ -1758,9 +2246,12 @@ impl Win32Kernel {
                 }
                 self.heap_alloc(vmm, a0, a1)
             }
-            "HeapFree" => 1,
-            "HeapReAlloc" => self.heap_alloc(vmm, a0, a2),
-            "HeapSize" => 0,
+            "HeapFree" => {
+                self.heap_free(a2);
+                1
+            }
+            "HeapReAlloc" => self.heap_realloc(vmm, a0, a2, a3),
+            "HeapSize" => self.heap_block_size(a2),
             "VirtualAlloc" => {
                 let addr = vmm.virtual_alloc(a0, a1, a2 as u32, a3 as u32);
                 if addr == 0 {
@@ -1907,7 +2398,23 @@ impl Win32Kernel {
                     }
                 }
             }
-            "WriteFile" => match self.handle_path(a0) {
+            "WriteFile" => match (a0 == STDOUT_HANDLE_VAL || a0 == STDERR_HANDLE_VAL)
+                .then_some(())
+            {
+                Some(()) => {
+                    let mut bytes = vec![0u8; a2 as usize];
+                    if a1 == 0 || vmm.read_bytes(a1, &mut bytes).is_ok() {
+                        self.stdout.extend_from_slice(&bytes);
+                        if a3 != 0 {
+                            let _ = vmm.write_u32(a3, bytes.len() as u32);
+                        }
+                        1
+                    } else {
+                        self.set_last_error(ERROR_INVALID_PARAMETER);
+                        0
+                    }
+                }
+                None => match self.handle_path(a0) {
                 Some(key) => {
                     let mut bytes = vec![0u8; a2 as usize];
                     let read_ok = a1 == 0 || vmm.read_bytes(a1, &mut bytes).is_ok();
@@ -1931,6 +2438,58 @@ impl Win32Kernel {
                         self.set_last_error(ERROR_INVALID_PARAMETER);
                         0
                     }
+                }
+                None => {
+                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    0
+                }
+                },
+            },
+            "SetEndOfFile" => match self.handle_path(a0) {
+                Some(key) => {
+                    if let Some(f) = self.files.get_mut(&key) {
+                        let pos = f.position as usize;
+                        f.data.resize(pos, 0);
+                    }
+                    1
+                }
+                None => {
+                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    0
+                }
+            },
+            "SetFileTime" => {
+                if self.handle_path(a0).is_some()
+                    || a0 == STDIN_HANDLE_VAL
+                    || a0 == STDOUT_HANDLE_VAL
+                    || a0 == STDERR_HANDLE_VAL
+                {
+                    1
+                } else {
+                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    0
+                }
+            }
+            "GetFileInformationByHandle" => match self.handle_path(a0) {
+                Some(key) => {
+                    let (is_dir, size) = {
+                        let f = &self.files[&key];
+                        (f.is_directory, f.data.len() as u64)
+                    };
+                    if a1 != 0 {
+                        let mut info = [0u8; 52];
+                        let attrs: u32 = if is_dir { 0x10 } else { 0x80 };
+                        info[0..4].copy_from_slice(&attrs.to_le_bytes());
+                        for off in [4usize, 12, 20] {
+                            info[off..off + 8].copy_from_slice(&FIXED_FILETIME.to_le_bytes());
+                        }
+                        info[28..32].copy_from_slice(&0xC0DE_0001u32.to_le_bytes());
+                        info[32..36].copy_from_slice(&((size >> 32) as u32).to_le_bytes());
+                        info[36..40].copy_from_slice(&(size as u32).to_le_bytes());
+                        info[40..44].copy_from_slice(&1u32.to_le_bytes()); // nNumberOfLinks
+                        let _ = vmm.write_bytes(a1, &info);
+                    }
+                    1
                 }
                 None => {
                     self.set_last_error(ERROR_INVALID_HANDLE);
@@ -1972,6 +2531,650 @@ impl Win32Kernel {
             },
             "CloseHandle" => {
                 self.close_handle(a0)
+            }
+            "FindFirstFileW" | "FindFirstFileA" => {
+                let wide = symbol.ends_with('W');
+                let raw = if wide {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                let (entries, err) = self.find_candidates(&raw);
+                if entries.is_empty() {
+                    self.set_last_error(if err != 0 { err } else { ERROR_FILE_NOT_FOUND });
+                    return HleAction::Return(INVALID_HANDLE_VALUE);
+                }
+                if a1 != 0 {
+                    self.write_find_data(vmm, a1, wide, &entries[0].clone());
+                }
+                let h = self.alloc_handle();
+                self.find_searches.insert(h, FindSearch { entries, next: 1 });
+                h
+            }
+            "FindNextFileW" | "FindNextFileA" => {
+                let wide = symbol.ends_with('W');
+                let entry = match self.find_searches.get_mut(&a0) {
+                    Some(s) if s.next < s.entries.len() => {
+                        let e = s.entries[s.next].clone();
+                        s.next += 1;
+                        e
+                    }
+                    Some(_) => {
+                        self.set_last_error(ERROR_NO_MORE_FILES);
+                        return HleAction::Return(0);
+                    }
+                    None => {
+                        self.set_last_error(ERROR_INVALID_HANDLE);
+                        return HleAction::Return(0);
+                    }
+                };
+                if a1 != 0 {
+                    self.write_find_data(vmm, a1, wide, &entry);
+                }
+                1
+            }
+            "FindClose" => {
+                if self.find_searches.remove(&a0).is_some() {
+                    1
+                } else {
+                    self.set_last_error(ERROR_INVALID_HANDLE);
+                    0
+                }
+            }
+            "GetFileAttributesW" | "GetFileAttributesA" => {
+                let raw = if symbol.ends_with('W') {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                match self.canonical_path(&raw) {
+                    Err(e) => {
+                        self.set_last_error(e);
+                        INVALID_FILE_ATTRIBUTES as u64
+                    }
+                    Ok(path) => {
+                        if self.is_root(&path) {
+                            0x10
+                        } else if let Some(f) = self.lookup_file(&path) {
+                            if f.is_directory { 0x10 } else { 0x80 }
+                        } else {
+                            self.set_last_error(if self.parent_exists(&path) {
+                                ERROR_FILE_NOT_FOUND
+                            } else {
+                                ERROR_PATH_NOT_FOUND
+                            });
+                            INVALID_FILE_ATTRIBUTES as u64
+                        }
+                    }
+                }
+            }
+            "SetFileAttributesW" | "SetFileAttributesA" => {
+                let raw = if symbol.ends_with('W') {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                match self.canonical_path(&raw) {
+                    Err(e) => {
+                        self.set_last_error(e);
+                        0
+                    }
+                    Ok(path) => {
+                        if self.is_root(&path) || self.lookup_file(&path).is_some() {
+                            1
+                        } else {
+                            self.set_last_error(if self.parent_exists(&path) {
+                                ERROR_FILE_NOT_FOUND
+                            } else {
+                                ERROR_PATH_NOT_FOUND
+                            });
+                            0
+                        }
+                    }
+                }
+            }
+            "DeleteFileW" | "DeleteFileA" => {
+                let raw = if symbol.ends_with('W') {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                match self.canonical_path(&raw) {
+                    Err(e) => {
+                        self.set_last_error(e);
+                        0
+                    }
+                    Ok(path) => {
+                        let is_dir = self.lookup_file(&path).map(|f| f.is_directory);
+                        match is_dir {
+                            Some(true) => {
+                                self.set_last_error(ERROR_ACCESS_DENIED);
+                                0
+                            }
+                            Some(false) => {
+                                self.files.remove(&path.to_ascii_uppercase());
+                                1
+                            }
+                            None => {
+                                self.set_last_error(if self.parent_exists(&path) {
+                                    ERROR_FILE_NOT_FOUND
+                                } else {
+                                    ERROR_PATH_NOT_FOUND
+                                });
+                                0
+                            }
+                        }
+                    }
+                }
+            }
+            "MoveFileW" | "MoveFileA" | "MoveFileExW" | "MoveFileExA" => {
+                let wide = symbol.ends_with('W');
+                let src_raw = if wide { self.read_wide(vmm, a0) } else { self.read_ansi(vmm, a0) };
+                let dst_raw = if wide { self.read_wide(vmm, a1) } else { self.read_ansi(vmm, a1) };
+                let flags = if symbol.starts_with("MoveFileEx") { a2 as u32 } else { 0 };
+                let src = match self.canonical_path(&src_raw) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_last_error(e);
+                        return HleAction::Return(0);
+                    }
+                };
+                let dst = match self.canonical_path(&dst_raw) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_last_error(e);
+                        return HleAction::Return(0);
+                    }
+                };
+                if self.lookup_file(&src).is_none() {
+                    self.set_last_error(if self.parent_exists(&src) {
+                        ERROR_FILE_NOT_FOUND
+                    } else {
+                        ERROR_PATH_NOT_FOUND
+                    });
+                    return HleAction::Return(0);
+                }
+                if self.lookup_file(&dst).is_some() && (flags & 1) == 0 {
+                    self.set_last_error(ERROR_ALREADY_EXISTS);
+                    return HleAction::Return(0);
+                }
+                if !self.parent_exists(&dst) {
+                    self.set_last_error(ERROR_PATH_NOT_FOUND);
+                    return HleAction::Return(0);
+                }
+                let src_key = src.to_ascii_uppercase();
+                let dst_key = dst.to_ascii_uppercase();
+                if let Some(mut f) = self.files.remove(&src_key) {
+                    f.path = dst.clone();
+                    self.files.insert(dst_key.clone(), f);
+                    for key in self.handle_map.values_mut() {
+                        if *key == src_key {
+                            *key = dst_key.clone();
+                        }
+                    }
+                }
+                1
+            }
+            "CreateFileMappingW" | "CreateFileMappingA" => {
+                let size = ((a3 & 0xFFFF_FFFF) << 32) | (a4 & 0xFFFF_FFFF);
+                let file_key = if a0 == INVALID_HANDLE_VALUE {
+                    None
+                } else {
+                    self.handle_path(a0)
+                };
+                let real_size = if size != 0 {
+                    size
+                } else {
+                    file_key
+                        .as_ref()
+                        .map(|k| self.files[k].data.len() as u64)
+                        .unwrap_or(0)
+                };
+                if real_size == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let va = self.next_mapping_va;
+                let span = (real_size + 0xFFFF) & !0xFFFF;
+                self.next_mapping_va = va + span + 0x1_0000;
+                vmm.map_region(va, span, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+                if let Some(key) = file_key.clone() {
+                    let data = self.files[&key].data.clone();
+                    if !data.is_empty() {
+                        let _ = vmm.host_write_bytes(va, &data[..data.len().min(real_size as usize)]);
+                    }
+                }
+                let h = self.alloc_handle();
+                self.file_mappings.insert(
+                    h,
+                    FileMapping { file_key, size: real_size, va },
+                );
+                h
+            }
+            "OpenFileMappingW" | "OpenFileMappingA" => {
+                self.set_last_error(ERROR_FILE_NOT_FOUND);
+                0
+            }
+            "MapViewOfFile" => {
+                match self.file_mappings.get(&a0) {
+                    Some(m) => {
+                        let off = ((a2 & 0xFFFF_FFFF) << 32) | (a3 & 0xFFFF_FFFF);
+                        m.va + off
+                    }
+                    None => {
+                        self.set_last_error(ERROR_INVALID_HANDLE);
+                        0
+                    }
+                }
+            }
+            "UnmapViewOfFile" => {
+                let found = self
+                    .file_mappings
+                    .values()
+                    .find(|m| a0 >= m.va && a0 < m.va + m.size.max(1))
+                    .cloned();
+                match found {
+                    Some(m) => {
+                        if let Some(key) = m.file_key {
+                            let mut buf = vec![0u8; m.size as usize];
+                            if vmm.read_bytes(m.va, &mut buf).is_ok() {
+                                if let Some(f) = self.files.get_mut(&key) {
+                                    f.data = buf;
+                                }
+                            }
+                        }
+                        1
+                    }
+                    None => {
+                        self.set_last_error(ERROR_INVALID_ADDRESS);
+                        0
+                    }
+                }
+            }
+
+            // ------------------------------------------------- system information
+            "GetSystemInfo" => {
+                if a0 != 0 {
+                    let mut info = [0u8; 48];
+                    info[0..2].copy_from_slice(&9u16.to_le_bytes()); // PROCESSOR_ARCHITECTURE_AMD64
+                    info[4..8].copy_from_slice(&4096u32.to_le_bytes());
+                    info[8..16].copy_from_slice(&0x1_0000u64.to_le_bytes());
+                    info[16..24].copy_from_slice(&0x0000_7FFF_FFFE_FFFFu64.to_le_bytes());
+                    info[24..32].copy_from_slice(&1u64.to_le_bytes()); // active processor mask
+                    info[32..36].copy_from_slice(&1u32.to_le_bytes()); // number of processors
+                    info[36..40].copy_from_slice(&8664u32.to_le_bytes());
+                    info[40..44].copy_from_slice(&0x1_0000u32.to_le_bytes()); // alloc granularity
+                    info[44..46].copy_from_slice(&6u16.to_le_bytes());
+                    let _ = vmm.write_bytes(a0, &info);
+                }
+                0
+            }
+            "GlobalMemoryStatusEx" => {
+                if a0 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let mut st = [0u8; 64];
+                st[0..4].copy_from_slice(&64u32.to_le_bytes());
+                st[4..8].copy_from_slice(&30u32.to_le_bytes()); // dwMemoryLoad
+                let gib: u64 = 1 << 30;
+                st[8..16].copy_from_slice(&(4 * gib).to_le_bytes());
+                st[16..24].copy_from_slice(&(3 * gib).to_le_bytes());
+                st[24..32].copy_from_slice(&(8 * gib).to_le_bytes());
+                st[32..40].copy_from_slice(&(6 * gib).to_le_bytes());
+                st[40..48].copy_from_slice(&0x0000_7FF0_0000_0000u64.to_le_bytes());
+                st[48..56].copy_from_slice(&0x0000_7FE0_0000_0000u64.to_le_bytes());
+                let _ = vmm.write_bytes(a0, &st);
+                1
+            }
+            "GetVersionExW" | "GetVersionExA" => {
+                if a0 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let size = vmm.read_u32(a0).unwrap_or(0);
+                if size < 20 {
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(0);
+                }
+                let _ = vmm.write_u32(a0 + 4, 10);
+                let _ = vmm.write_u32(a0 + 8, 0);
+                let _ = vmm.write_u32(a0 + 12, 19045);
+                let _ = vmm.write_u32(a0 + 16, 2); // VER_PLATFORM_WIN32_NT
+                if symbol.ends_with('W') {
+                    let _ = vmm.write_u16(a0 + 20, 0);
+                } else {
+                    let _ = vmm.write_u8(a0 + 20, 0);
+                }
+                1
+            }
+            "IsProcessorFeaturePresent" => {
+                match a0 as u32 {
+                    3 | 6 | 10 | 13 => 1, // MMX / SSE / SSE2 / SSE3
+                    _ => 0,
+                }
+            }
+            "QueryPerformanceFrequency" => {
+                if a0 != 0 {
+                    let _ = vmm.write_u64(a0, 10_000_000);
+                }
+                1
+            }
+            "QueryPerformanceCounter" => {
+                self.qpc_ticks = self.qpc_ticks.wrapping_add(10_000);
+                if a0 != 0 {
+                    let _ = vmm.write_u64(a0, self.qpc_ticks);
+                }
+                1
+            }
+            "GetProcessTimes" => {
+                for (i, ptr) in [a1, a2, a3, a4].into_iter().enumerate() {
+                    if ptr != 0 {
+                        let _ = vmm.write_u64(ptr, if i == 0 { FIXED_FILETIME } else { 0 });
+                    }
+                }
+                1
+            }
+            "GetSystemTimeAsFileTime" => {
+                if a0 != 0 {
+                    let _ = vmm.write_u64(a0, FIXED_FILETIME);
+                }
+                0
+            }
+            "FileTimeToSystemTime" => {
+                if a0 == 0 || a1 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let ft = vmm.read_u64(a0).unwrap_or(0);
+                let (y, mo, dow, d, h, mi, s, ms) = Self::filetime_to_civil(ft);
+                let fields = [y, mo, dow, d, h, mi, s, ms];
+                for (i, v) in fields.into_iter().enumerate() {
+                    let _ = vmm.write_u16(a1 + (i as u64) * 2, v);
+                }
+                1
+            }
+            "FileTimeToDosDateTime" => {
+                if a0 == 0 || a1 == 0 || a2 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let ft = vmm.read_u64(a0).unwrap_or(0);
+                let (y, mo, _dow, d, h, mi, s, _ms) = Self::filetime_to_civil(ft);
+                if !(1980..=2107).contains(&(y as i32)) {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let dos_date = (((y - 1980) as u16) << 9) | (mo << 5) | d;
+                let dos_time = (h << 11) | (mi << 5) | (s / 2);
+                let _ = vmm.write_u16(a1, dos_date);
+                let _ = vmm.write_u16(a2, dos_time);
+                1
+            }
+            "DosDateTimeToFileTime" => {
+                if a2 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let date = a0 as u32;
+                let time = a1 as u32;
+                let year = 1980 + ((date >> 9) & 0x7F) as i64;
+                let month = (date >> 5) & 0xF;
+                let day = date & 0x1F;
+                let hour = (time >> 11) & 0x1F;
+                let min = (time >> 5) & 0x3F;
+                let sec = (time & 0x1F) * 2;
+                let ft = Self::civil_to_filetime(year, month, day, hour, min, sec);
+                let _ = vmm.write_u64(a2, ft);
+                1
+            }
+            "FileTimeToLocalFileTime" | "LocalFileTimeToFileTime" => {
+                if a0 == 0 || a1 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let ft = vmm.read_u64(a0).unwrap_or(0);
+                let _ = vmm.write_u64(a1, ft); // guest zone is UTC by construction
+                1
+            }
+            "CompareFileTime" => {
+                let l = if a0 != 0 { vmm.read_u64(a0).unwrap_or(0) } else { 0 };
+                let r = if a1 != 0 { vmm.read_u64(a1).unwrap_or(0) } else { 0 };
+                match l.cmp(&r) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "GetProcessAffinityMask" => {
+                if a1 != 0 {
+                    let _ = vmm.write_u64(a1, 1);
+                }
+                if a2 != 0 {
+                    let _ = vmm.write_u64(a2, 1);
+                }
+                1
+            }
+            "SetProcessAffinityMask" => 1,
+            "SetThreadAffinityMask" => 1,
+            "ResumeThread" => 1,
+            "LocalFree" => {
+                self.heap_free(a0);
+                0
+            }
+            "GetLogicalDriveStringsW" | "GetLogicalDriveStringsA" => {
+                let wide = symbol.ends_with('W');
+                let required: u64 = 5; // "C:\\" + NUL + final NUL
+                if a1 == 0 || a0 < required {
+                    return HleAction::Return(required);
+                }
+                if wide {
+                    let units: [u16; 5] = [b'C' as u16, b':' as u16, b'\\' as u16, 0, 0];
+                    for (i, u) in units.iter().enumerate() {
+                        let _ = vmm.write_u16(a1 + (i as u64) * 2, *u);
+                    }
+                } else {
+                    let _ = vmm.write_bytes(a1, b"C:\\\0\0");
+                }
+                4
+            }
+            "DeviceIoControl" => {
+                if a6 != 0 {
+                    let _ = vmm.write_u32(a6, 0);
+                }
+                self.set_last_error(ERROR_NOT_SUPPORTED);
+                0
+            }
+            "FormatMessageW" | "FormatMessageA" => {
+                let wide = symbol.ends_with('W');
+                let msg = format!("Windows error {}", a2 as u32);
+                let chars = msg.chars().count() as u64;
+                if (a0 as u32) & 0x100 != 0 {
+                    // FORMAT_MESSAGE_ALLOCATE_BUFFER
+                    let bytes = if wide { (chars + 1) * 2 } else { chars + 1 };
+                    let va = self.heap_alloc(vmm, self.process_heap, bytes);
+                    if va == 0 || a4 == 0 {
+                        self.set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+                        return HleAction::Return(0);
+                    }
+                    if wide {
+                        let _ = self.write_wide(vmm, va, &msg);
+                    } else {
+                        let _ = self.write_ansi(vmm, va, &msg);
+                    }
+                    let _ = vmm.write_u64(a4, va);
+                    chars
+                } else if a4 != 0 && a5 > chars {
+                    if wide {
+                        let _ = self.write_wide(vmm, a4, &msg);
+                    } else {
+                        let _ = self.write_ansi(vmm, a4, &msg);
+                    }
+                    chars
+                } else {
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    0
+                }
+            }
+            "GetModuleFileNameW" | "GetModuleFileNameA" => {
+                let wide = symbol.ends_with('W');
+                let path = if a0 == 0 || a0 == self.image_base() {
+                    self.module_file_name()
+                } else {
+                    match self.modules.iter().find(|(_, &va)| va == a0) {
+                        Some((name, _)) => format!("C:\\Windows\\System32\\{}", name),
+                        None => {
+                            self.set_last_error(ERROR_MOD_NOT_FOUND);
+                            return HleAction::Return(0);
+                        }
+                    }
+                };
+                if a1 == 0 || a2 == 0 {
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(0);
+                }
+                if wide {
+                    let units: Vec<u16> = path.encode_utf16().collect();
+                    if (a2 as usize) > units.len() {
+                        let _ = self.write_wide(vmm, a1, &path);
+                        units.len() as u64
+                    } else {
+                        for i in 0..(a2 as usize - 1) {
+                            let _ = vmm.write_u16(a1 + (i as u64) * 2, units[i]);
+                        }
+                        let _ = vmm.write_u16(a1 + (a2 - 1) * 2, 0);
+                        self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                        a2
+                    }
+                } else {
+                    let (bytes, _) =
+                        wide_to_mb(ANSI_CODEPAGE, &path.encode_utf16().collect::<Vec<_>>());
+                    if (a2 as usize) > bytes.len() {
+                        let _ = self.write_ansi(vmm, a1, &path);
+                        bytes.len() as u64
+                    } else {
+                        let _ = vmm.write_bytes(a1, &bytes[..(a2 as usize - 1)]);
+                        let _ = vmm.write_u8(a1 + a2 - 1, 0);
+                        self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                        a2
+                    }
+                }
+            }
+            "GetComputerNameExW" | "GetComputerNameExA" => {
+                let wide = symbol.ends_with('W');
+                let value: &str = match a0 as u32 {
+                    2 | 6 => "",          // DnsDomain (no domain)
+                    1 | 5 | 3 | 7 => "porthole", // DnsHostname / DnsFullyQualified
+                    _ => "PORTHOLE",      // NetBIOS and anything else
+                };
+                if a2 == 0 {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let cap = vmm.read_u32(a2).unwrap_or(0) as usize;
+                let needed = value.encode_utf16().count() + 1; // including NUL (environ.c)
+                if a1 == 0 || cap < needed {
+                    let _ = vmm.write_u32(a2, needed as u32);
+                    self.set_last_error(ERROR_MORE_DATA);
+                    return HleAction::Return(0);
+                }
+                if wide {
+                    let _ = self.write_wide(vmm, a1, value);
+                } else {
+                    let _ = self.write_ansi(vmm, a1, value);
+                }
+                let _ = vmm.write_u32(a2, (needed - 1) as u32);
+                1
+            }
+            "NtQueryObject" => {
+                // ObjectBasicInformation (0): 56 bytes on x64, GrantedAccess @4.
+                if a1 == 0 {
+                    return HleAction::Return(0xC000_0004u64); // STATUS_INFO_LENGTH_MISMATCH
+                }
+                let granted: u32 = if a0 == CURDIR_HANDLE {
+                    0x0010_0020 // FILE_TRAVERSE | SYNCHRONIZE (directory.c TEST_GRANTED_ACCESS)
+                } else {
+                    0x0012_019F // generic file read/write access set
+                };
+                let mut info = [0u8; 56];
+                info[4..8].copy_from_slice(&granted.to_le_bytes());
+                info[8..12].copy_from_slice(&1u32.to_le_bytes());
+                info[12..16].copy_from_slice(&1u32.to_le_bytes());
+                let len = (a2 as usize).min(56);
+                let _ = vmm.write_bytes(a1, &info[..len]);
+                if a3 != 0 {
+                    let _ = vmm.write_u64(a3, 56);
+                }
+                0
+            }
+            // ------------------------------------------------- registry (read-only misses)
+            "RegOpenKeyExW" | "RegOpenKeyExA" | "RegOpenKeyW" | "RegOpenKeyA" => {
+                if a4 != 0 {
+                    let _ = vmm.write_u64(a4, 0);
+                }
+                ERROR_FILE_NOT_FOUND as u64
+            }
+            "RegQueryValueExW" | "RegQueryValueExA" | "RegQueryValueW" | "RegQueryValueA" => {
+                ERROR_FILE_NOT_FOUND as u64
+            }
+            "RegCloseKey" => 0,
+            // ------------------------------------------------- advapi32 security surface
+            "SystemFunction036" => {
+                // RtlGenRandom: deterministic xorshift fill (guest uses it for temp names/IVs).
+                let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ (self.qpc_ticks << 1) ^ (a1 << 7);
+                let n = (a1 as usize).min(1 << 20);
+                let mut buf = vec![0u8; n];
+                for b in buf.iter_mut() {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    *b = (state >> 32) as u8;
+                }
+                if a0 != 0 && n > 0 {
+                    let _ = vmm.write_bytes(a0, &buf);
+                }
+                1
+            }
+            "LookupPrivilegeValueW" | "LookupPrivilegeValueA" => {
+                if a2 != 0 {
+                    let _ = vmm.write_u32(a2, 1);
+                    let _ = vmm.write_i32(a2 + 4, 0);
+                }
+                1
+            }
+            "AdjustTokenPrivileges" => {
+                self.set_last_error(ERROR_SUCCESS);
+                1
+            }
+            "GetFileSecurityW" | "SetFileSecurityW" | "GetFileSecurityA" | "SetFileSecurityA" => {
+                self.set_last_error(ERROR_NOT_SUPPORTED);
+                0
+            }
+            // ------------------------------------------------- semaphores / events (open)
+            "CreateSemaphoreW" | "CreateSemaphoreA" => {
+                let h = self.alloc_handle();
+                self.semaphores.insert(h, a1 as u32 as i32);
+                h
+            }
+            "ReleaseSemaphore" => {
+                match self.semaphores.get_mut(&a0) {
+                    Some(count) => {
+                        let prev = *count;
+                        *count += a1 as u32 as i32;
+                        if a2 != 0 {
+                            let _ = vmm.write_u32(a2, prev as u32);
+                        }
+                        1
+                    }
+                    None => {
+                        self.set_last_error(ERROR_INVALID_HANDLE);
+                        0
+                    }
+                }
+            }
+            "OpenEventW" | "OpenEventA" => {
+                self.set_last_error(ERROR_FILE_NOT_FOUND);
+                0
             }
 
             // ------------------------------------------------------- threads
@@ -2113,6 +3316,19 @@ impl Win32Kernel {
             "WaitForSingleObject" => {
                 if a0 == 0xFFFF_FFFF_FFFF_FFFF || a0 == 0xFFFF_FFFF_FFFF_FFFE {
                     return HleAction::Return(WAIT_OBJECT_0 as u64);
+                }
+                if let Some(count) = self.semaphores.get_mut(&a0) {
+                    if *count > 0 {
+                        *count -= 1;
+                        return HleAction::Return(WAIT_OBJECT_0 as u64);
+                    }
+                    // No second thread exists to release this semaphore in the single-thread
+                    // driver; reporting WAIT_TIMEOUT keeps the stall visible instead of
+                    // silently succeeding desynchronised.
+                    self.note(format!(
+                        "K WaitForSingleObject semaphore 0x{a0:x} at zero count would block (timeout={a1})"
+                    ));
+                    return HleAction::Return(WAIT_TIMEOUT as u64);
                 }
                 if let Some(w) = self.waitables.get_mut(&a0) {
                     if w.signaled {
@@ -2302,14 +3518,15 @@ impl Win32Kernel {
                 text.len() as u64
             }
             "fwrite" => {
-                let size = a0.wrapping_mul(a1) as usize;
-                if a2 != 0 && size > 0 {
-                    let mut buf = vec![0u8; size];
-                    if vmm.read_bytes(a2, &mut buf).is_ok() {
+                // size_t fwrite(const void *ptr=a0, size_t size=a1, size_t count=a2, FILE *stream=a3)
+                let total = a1.wrapping_mul(a2) as usize;
+                if a0 != 0 && total > 0 {
+                    let mut buf = vec![0u8; total];
+                    if vmm.read_bytes(a0, &mut buf).is_ok() {
                         self.stdout.extend_from_slice(&buf);
                     }
                 }
-                a1
+                a2
             }
             "puts" => {
                 let s = self.read_ansi(vmm, a0);
@@ -2317,10 +3534,14 @@ impl Win32Kernel {
                 self.stdout.push(b'\n');
                 0
             }
-            "_exit" | "exit" | "abort" | "_cexit" | "quick_exit" => {
+            "_exit" | "exit" | "abort" | "_cexit" | "_c_exit" | "quick_exit" => {
                 if symbol == "exit" || symbol == "_exit" {
                     self.exit_code = Some(a0 as u32);
                     return HleAction::ExitProcess(a0 as u32);
+                }
+                if symbol == "abort" {
+                    self.exit_code = Some(3);
+                    return HleAction::ExitProcess(3);
                 }
                 0
             }
@@ -2355,6 +3576,231 @@ impl Win32Kernel {
                 self.ensure_crt_argv(vmm);
                 self.crt_wenviron_var
             }
+            // ------------------------------------------- old-msvcrt startup (7za)
+            "__set_app_type" => {
+                self.app_type = a0 as u32;
+                0
+            }
+            "__getmainargs" => {
+                // int __getmainargs(int *pargc, char ***pargv, char ***penvp, int doWildcard,
+                //                   _startupinfo *startInfo)
+                let (argc_ptr, argv_var, _) = self.ensure_crt_argv(vmm);
+                let argc = if argc_ptr != 0 {
+                    vmm.read_u32(argc_ptr).unwrap_or(0)
+                } else {
+                    0
+                };
+                let argv = if argv_var != 0 {
+                    vmm.read_u64(argv_var).unwrap_or(0)
+                } else {
+                    0
+                };
+                let envp = if self.crt_environ_var != 0 {
+                    vmm.read_u64(self.crt_environ_var).unwrap_or(0)
+                } else {
+                    0
+                };
+                if a0 != 0 {
+                    let _ = vmm.write_u32(a0, argc);
+                }
+                if a1 != 0 {
+                    let _ = vmm.write_u64(a1, argv);
+                }
+                if a2 != 0 {
+                    let _ = vmm.write_u64(a2, envp);
+                }
+                if self.initenv_cell != 0 {
+                    let _ = vmm.write_u64(self.initenv_cell, envp);
+                }
+                if a4 != 0 {
+                    let _ = vmm.write_u32(a4, 0); // _startupinfo.newmode
+                }
+                0
+            }
+            "_onexit" => {
+                if a0 != 0 {
+                    self.atexit_funcs.push(a0);
+                }
+                a0
+            }
+            "__dllonexit" => {
+                // __dllonexit(func, **pbegin, **pend): append `func` to the caller's onexit
+                // table (growing it when full), mirroring Wine's MSVCRT___dllonexit contract.
+                if a0 != 0 {
+                    self.atexit_funcs.push(a0);
+                }
+                if a1 != 0 && a2 != 0 && a0 != 0 {
+                    let begin = vmm.read_u64(a1).unwrap_or(0);
+                    let end = vmm.read_u64(a2).unwrap_or(0);
+                    let mut placed = false;
+                    if begin != 0 && end > begin {
+                        let mut p = begin;
+                        while p < end {
+                            if vmm.read_u64(p).unwrap_or(1) == 0 {
+                                let _ = vmm.write_u64(p, a0);
+                                placed = true;
+                                break;
+                            }
+                            p += 8;
+                        }
+                    }
+                    if !placed {
+                        let old_count = if end > begin { (end - begin) / 8 } else { 0 };
+                        let new_count = old_count + 32;
+                        let table = self.heap_alloc(vmm, self.process_heap, new_count * 8 + 8);
+                        if table != 0 {
+                            for i in 0..old_count {
+                                let v = vmm.read_u64(begin + i * 8).unwrap_or(0);
+                                let _ = vmm.write_u64(table + i * 8, v);
+                            }
+                            let _ = vmm.write_u64(table + old_count * 8, a0);
+                            let _ = vmm.write_u64(a1, table);
+                            // `end` tracks one past the last registered entry in the
+                            // growing-table convention used by the MSVC CRT.
+                            let _ = vmm.write_u64(a2, table + (old_count + 1) * 8);
+                        }
+                    }
+                }
+                a0
+            }
+            "_beginthreadex" => {
+                // uintptr_t _beginthreadex(void *sec, unsigned stack, unsigned (__stdcall *start)(void*),
+                //                          void *arg, unsigned initflag, unsigned *thrdaddr)
+                let entry = a2;
+                let param = a3;
+                let handle = self.alloc_handle();
+                let base = 0x0000_0000_0300_0000u64
+                    + (self.threads.len() as u64) * 0x0000_0000_0010_0000;
+                let top = base + 0x0000_0000_0008_0000;
+                self.threads.push(GuestThread {
+                    handle,
+                    teb_addr: 0,
+                    stack_top: top,
+                    stack_base: base,
+                    entry,
+                    param,
+                    exit_code: STILL_ACTIVE,
+                    finished: false,
+                    started: false,
+                    signal_handle: 0,
+                });
+                if a5 != 0 {
+                    let _ = vmm.write_u32(a5, 0x3000 + self.threads.len() as u32);
+                }
+                self.note(format!(
+                    "K _beginthreadex entry=0x{entry:x} param=0x{param:x} handle=0x{handle:x} (thread body not scheduled)"
+                ));
+                handle
+            }
+            "_XcptFilter" => 0, // EXCEPTION_CONTINUE_SEARCH for the CRT's purposes
+            "__C_specific_handler" | "__CxxFrameHandler" | "__CxxFrameHandler3" => 1, // ContinueSearch
+            "_CxxThrowException" => {
+                // Named hard blocker: guest C++ exception unwind is not implemented. Fail
+                // loudly with the MSVC C++ exception code instead of pretending success.
+                self.note(format!(
+                    "K CXX_THROW object=0x{a0:x} throwinfo=0x{a1:x}: C++ exception unwind not implemented"
+                ));
+                self.record_unimplemented("_CxxThrowException(unwind)");
+                return HleAction::ExitProcess(0xE06D_7363);
+            }
+            "_purecall" => {
+                self.note("K _purecall: pure virtual call in guest".to_string());
+                return HleAction::ExitProcess(3);
+            }
+            "?terminate@@YAXXZ" => {
+                self.note("K std::terminate called by guest".to_string());
+                return HleAction::ExitProcess(3);
+            }
+            "??1type_info@@UEAA@XZ" => a0, // type_info dtor: `this` in rcx, nothing to release
+            // ------------------------------------------- old-msvcrt memory/string
+            "memcpy" => {
+                let n = a2 as usize;
+                let mut remaining = n;
+                let mut off = 0usize;
+                while remaining > 0 {
+                    let chunk = remaining.min(1 << 20);
+                    let mut buf = vec![0u8; chunk];
+                    if a1 != 0 && vmm.read_bytes(a1 + off as u64, &mut buf).is_err() {
+                        break;
+                    }
+                    if a0 != 0 && vmm.write_bytes(a0 + off as u64, &buf).is_err() {
+                        break;
+                    }
+                    off += chunk;
+                    remaining -= chunk;
+                }
+                a0
+            }
+            "memmove" => {
+                let n = a2 as usize;
+                if n > 0 && a1 != 0 {
+                    let mut buf = vec![0u8; n];
+                    if vmm.read_bytes(a1, &mut buf).is_ok() && a0 != 0 {
+                        let _ = vmm.write_bytes(a0, &buf);
+                    }
+                }
+                a0
+            }
+            "memset" => {
+                let n = a2 as usize;
+                if n > 0 && a0 != 0 {
+                    let byte = a1 as u8;
+                    let mut remaining = n;
+                    let mut off = 0usize;
+                    while remaining > 0 {
+                        let chunk = remaining.min(1 << 20);
+                        let buf = vec![byte; chunk];
+                        if vmm.write_bytes(a0 + off as u64, &buf).is_err() {
+                            break;
+                        }
+                        off += chunk;
+                        remaining -= chunk;
+                    }
+                }
+                a0
+            }
+            "memcmp" => {
+                let n = a2 as usize;
+                let mut l = vec![0u8; n];
+                let mut r = vec![0u8; n];
+                let _ = vmm.read_bytes(a0, &mut l);
+                let _ = vmm.read_bytes(a1, &mut r);
+                match l.cmp(&r) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "wcsstr" => {
+                let hay = vmm.read_wide_string(a0, 0x8000).unwrap_or_default();
+                let needle = vmm.read_wide_string(a1, 0x8000).unwrap_or_default();
+                if needle.is_empty() {
+                    return HleAction::Return(a0);
+                }
+                let found = hay
+                    .windows(needle.len())
+                    .position(|w| w == needle.as_slice());
+                match found {
+                    Some(i) => a0 + (i as u64) * 2,
+                    None => 0,
+                }
+            }
+            // ------------------------------------------- old-msvcrt stdio over _iob
+            "fputs" => {
+                let s = self.read_ansi(vmm, a0);
+                if a1 == 0 || self.iob_index(a1) != Some(0) {
+                    self.stdout.extend_from_slice(s.as_bytes());
+                }
+                0
+            }
+            "fputc" => {
+                if a1 == 0 || self.iob_index(a1) != Some(0) {
+                    self.stdout.push(a0 as u8);
+                }
+                a0 & 0xFF
+            }
+            "fgetc" => (-1i64) as u64, // EOF
+            "fclose" => 0,
             "GetCommandLineA" => {
                 let (a, _) = self.ensure_command_line_buffers(vmm);
                 a
@@ -2499,7 +3945,7 @@ impl Win32Kernel {
                 self.tzname_ptr
             }
             "free" | "cfree" => {
-                // Bump allocator: freeing is a no-op, but the call must not touch the heap.
+                self.heap_free(a0);
                 0
             }
             "__setusermatherr" | "frexp" | "atoi" | "malloc" | "calloc" | "realloc" => {
@@ -2834,6 +4280,9 @@ impl Win32Kernel {
     }
 
     fn close_handle(&mut self, handle: u64) -> u64 {
+        self.find_searches.remove(&handle);
+        self.semaphores.remove(&handle);
+        self.file_mappings.remove(&handle);
         if let Some(key) = self.handle_map.remove(&handle) {
             if let Some(f) = self.files.get_mut(&key) {
                 f.handle_count = f.handle_count.saturating_sub(1);
@@ -2851,6 +4300,29 @@ impl Win32Kernel {
     fn crt_alloc(&mut self, vmm: &mut VirtualMemoryManager, symbol: &str, a0: u64, a1: u64) -> u64 {
         match symbol {
             "malloc" => self.heap_alloc(vmm, self.process_heap, a0),
+            "realloc" => self.heap_realloc(vmm, self.process_heap, a0, a1),
+            "atoi" => {
+                let s = self.read_ansi(vmm, a0);
+                let t = s.trim_start();
+                let mut value: i64 = 0;
+                let mut sign: i64 = 1;
+                let mut chars = t.chars().peekable();
+                if let Some(&c) = chars.peek() {
+                    if c == '-' {
+                        sign = -1;
+                        chars.next();
+                    } else if c == '+' {
+                        chars.next();
+                    }
+                }
+                for c in chars {
+                    if !c.is_ascii_digit() {
+                        break;
+                    }
+                    value = value.wrapping_mul(10) + (c as i64 - '0' as i64);
+                }
+                (sign * value) as u64
+            }
             "calloc" => {
                 let total = a0.saturating_mul(a1);
                 let va = self.heap_alloc(vmm, self.process_heap, total);
@@ -3270,6 +4742,17 @@ impl Win32Kernel {
         var
     }
 
+    /// Materialises `_environ` as `var -> arr -> ["K=V", ..., NULL]` from the live env table.
+    fn build_env_vector(&mut self, vmm: &mut VirtualMemoryManager, wide: bool) -> u64 {
+        let mut entries = self.env.clone();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let items: Vec<String> = entries
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        self.build_argv_vector(vmm, &items, wide)
+    }
+
     /// Lazily materialises `__argc`, `__argv`, `__wargv` and the environment variables.
     fn ensure_crt_argv(&mut self, vmm: &mut VirtualMemoryManager) -> (u64, u64, u64) {
         if self.crt_argc_ptr != 0 {
@@ -3282,8 +4765,8 @@ impl Win32Kernel {
         }
         let argv_var = self.build_argv_vector(vmm, &tokens, false);
         let wargv_var = self.build_argv_vector(vmm, &tokens, true);
-        self.crt_environ_var = self.build_empty_env_vector(vmm);
-        self.crt_wenviron_var = self.build_empty_env_vector(vmm);
+        self.crt_environ_var = self.build_env_vector(vmm, false);
+        self.crt_wenviron_var = self.build_env_vector(vmm, true);
         self.crt_argc_ptr = argc_ptr;
         self.crt_argv_var = argv_var;
         self.crt_wargv_var = wargv_var;

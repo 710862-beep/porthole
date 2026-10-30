@@ -99,6 +99,11 @@ impl BrowserX64Emulator {
         self.kernel.set_command_line(line);
     }
 
+    /// Records the guest-visible path of the loaded image for `GetModuleFileNameW(NULL, ...)`.
+    pub fn set_exe_path(&mut self, path: &str) {
+        self.kernel.set_exe_path(path);
+    }
+
     /// Maps a PE32+ (`0x8664`) image, resolves imports against the HLE thunk space, initializes
     /// PEB/TEB/stack, and runs the AOT block compiler over `.text`.
     pub fn load_pe(&mut self, bytes: &[u8]) -> Result<String, JsValue> {
@@ -118,6 +123,15 @@ impl BrowserX64Emulator {
         );
         self.kernel.d3d12.init_memory(&mut self.vmm);
 
+        // Data imports (`_fmode`, `_iob`, ...) must be bound to writable variable cells, not
+        // code thunks: the guest dereferences the IAT slot. Binding them to thunks made real
+        // MSVC CRT startup (7za.exe) write through a thunk address and fault at insn 29.
+        let data_cells: std::collections::HashMap<String, u64> = self
+            .kernel
+            .init_data_imports(&mut self.vmm)
+            .into_iter()
+            .collect();
+
         let vmm = &mut self.vmm;
         let jit = &mut self.jit;
 
@@ -128,6 +142,11 @@ impl BrowserX64Emulator {
         let mut thunk_slots: BTreeMap<(String, String, u16), u64> = BTreeMap::new();
         let mut next_import_thunk = IMPORT_THUNK_BASE;
         let (info, bindings) = load_pe64_image(bytes, vmm, jit, |dll: &str, symbol: &str, ordinal: u16| {
+            if dll == "msvcrt.dll" || dll == "ucrtbase.dll" {
+                if let Some(&cell) = data_cells.get(symbol) {
+                    return cell;
+                }
+            }
             let key = (dll.to_string(), symbol.to_string(), ordinal);
             if let Some(&slot) = thunk_slots.get(&key) {
                 return slot;

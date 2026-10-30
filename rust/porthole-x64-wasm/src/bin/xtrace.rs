@@ -23,6 +23,11 @@ struct Options {
     args: Option<String>,
     hle_only: bool,
     match_patterns: Vec<String>,
+    mkdirs: Vec<String>,
+    puts: Vec<(String, String)>,
+    gets: Vec<(String, String)>,
+    exe_path: Option<String>,
+    resident: u32,
 }
 
 fn parse_u64(v: &str) -> Option<u64> {
@@ -47,6 +52,11 @@ fn parse_args() -> Options {
         args: None,
         hle_only: false,
         match_patterns: Vec::new(),
+        mkdirs: Vec::new(),
+        puts: Vec::new(),
+        gets: Vec::new(),
+        exe_path: None,
+        resident: 2048,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -69,6 +79,29 @@ fn parse_args() -> Options {
                 }
             }
             "--args" => opts.args = it.next(),
+            "--resident" => {
+                opts.resident = it.next().and_then(|v| v.parse().ok()).unwrap_or(opts.resident)
+            }
+            "--mkdir" => {
+                if let Some(v) = it.next() {
+                    opts.mkdirs.push(v);
+                }
+            }
+            "--exe-path" => opts.exe_path = it.next(),
+            "--put" => {
+                if let Some(v) = it.next() {
+                    if let Some((g, h)) = v.split_once('=') {
+                        opts.puts.push((g.to_string(), h.to_string()));
+                    }
+                }
+            }
+            "--get" => {
+                if let Some(v) = it.next() {
+                    if let Some((g, h)) = v.split_once('=') {
+                        opts.gets.push((g.to_string(), h.to_string()));
+                    }
+                }
+            }
             "--watch" => {
                 if let Some(v) = it.next() {
                     let mut parts = v.split(':');
@@ -101,8 +134,26 @@ fn main() {
     println!("===PORTHOLE-TRACE-BEGIN===");
     println!("image={} bytes={}", opts.path, bytes.len());
 
-    let mut emu = BrowserX64Emulator::new(2048);
+    let started = std::time::Instant::now();
+    let mut emu = BrowserX64Emulator::new(opts.resident);
     emu.enable_trace(opts.trace);
+    for dir in &opts.mkdirs {
+        emu.vfs_mkdir(dir);
+        println!("vfs_mkdir={dir}");
+    }
+    for (guest, host) in &opts.puts {
+        match std::fs::read(host) {
+            Ok(data) => {
+                println!("vfs_put {guest} <- {host} ({} bytes)", data.len());
+                emu.vfs_insert(guest, &data);
+            }
+            Err(e) => println!("vfs_put FAILED {guest} <- {host}: {e}"),
+        }
+    }
+    if let Some(exe) = &opts.exe_path {
+        emu.set_exe_path(exe);
+        println!("exe_path={exe}");
+    }
     if opts.hle_only {
         // Only Win32/NT HLE traffic: the whole run then fits in a 260-line buffer.
         emu.set_hle_trace_only(true);
@@ -140,22 +191,35 @@ fn main() {
     let mut page_faults = 0u64;
     let mut slices = 0u32;
     let mut outcome = "budget".to_string();
+    // Host-side store for pages evicted from the resident LRU window. Draining after every
+    // slice and re-supplying from here makes small-resident runs faithful: the previous
+    // always-zero supply silently zeroed evicted guest data on refault.
+    let mut page_store: std::collections::HashMap<u64, Vec<u8>> = std::collections::HashMap::new();
 
     while emu.instructions_executed() < opts.budget {
         let status = emu.run_slice(opts.slice);
         slices += 1;
+        let drained = emu.drain_evicted_pages();
+        let mut off = 0usize;
+        while off + 8 + 4096 <= drained.len() {
+            let base = u64::from_le_bytes(drained[off..off + 8].try_into().unwrap());
+            page_store.insert(base, drained[off + 8..off + 8 + 4096].to_vec());
+            off += 8 + 4096;
+        }
         if status == "next" {
             continue;
         }
         if let Some(addr) = status.strip_prefix("page-fault:") {
             page_faults += 1;
-            if page_faults > 512 {
+            if page_faults > 100_000 {
                 outcome = format!("page-fault-storm {addr}");
                 break;
             }
-            // Mirror the JS harness: a swapped-out page with no persisted shard reads as zeroes.
             let base: u64 = addr.parse().unwrap_or(0);
-            emu.supply_page(base, &[0u8; 4096]);
+            match page_store.get(&base) {
+                Some(data) => emu.supply_page(base, data),
+                None => emu.supply_page(base, &[0u8; 4096]),
+            }
             continue;
         }
         outcome = status;
@@ -168,14 +232,34 @@ fn main() {
     println!("--- fault snapshot ---");
     print!("{}", emu.fault_snapshot());
     println!("--- result ---");
+    let elapsed = started.elapsed();
+    let insns = emu.instructions_executed();
+    let mips = if elapsed.as_secs_f64() > 0.0 {
+        insns as f64 / elapsed.as_secs_f64() / 1_000_000.0
+    } else {
+        0.0
+    };
     println!(
-        "outcome={} instructions={} slices={} page_faults={} last_error={}",
+        "outcome={} instructions={} slices={} page_faults={} last_error={} wall_ms={} mips={:.2} resident_pages={} pages_evicted={}",
         outcome,
-        emu.instructions_executed(),
+        insns,
         slices,
         page_faults,
-        emu.last_error()
+        emu.last_error(),
+        elapsed.as_millis(),
+        mips,
+        emu.resident_pages(),
+        emu.pages_evicted()
     );
+    for (guest, host) in &opts.gets {
+        match emu.vfs_read(guest) {
+            Some(data) => match std::fs::write(host, &data) {
+                Ok(()) => println!("vfs_get {guest} -> {host} ({} bytes)", data.len()),
+                Err(e) => println!("vfs_get FAILED {guest} -> {host}: {e}"),
+            },
+            None => println!("vfs_get MISSING {guest}"),
+        }
+    }
     if !opts.peeks.is_empty() {
         println!("--- memory peeks ---");
         for addr in &opts.peeks {
@@ -203,7 +287,7 @@ fn main() {
     let console = emu.take_console();
     if !console.is_empty() {
         println!("--- guest console ---");
-        for line in console.lines().take(60) {
+        for line in console.lines().take(400) {
             println!("{line}");
         }
     }

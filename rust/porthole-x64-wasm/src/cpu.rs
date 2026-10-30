@@ -1581,6 +1581,59 @@ impl CpuState {
                     0x38 => {
                         let op3 = code[cursor];
                         cursor += 1;
+                        // CRC32 (F2 0F 38 F0/F1) and MOVBE (0F 38 F0/F1) use integer operands,
+                        // not XMM registers, so they are decoded before the XMM path below.
+                        // 7-Zip's hardware CRC32 path (selected when CPUID advertises SSE4.2)
+                        // faulted here as "Unimplemented 0F 38 0xf1".
+                        if matches!(op3, 0xF0 | 0xF1) {
+                            let (_m2, reg2, _rm2, addr2) =
+                                self.decode_modrm_addressing(&pfx, code, &mut cursor);
+                            let next_rip2 = insn_rip + cursor as u64;
+                            if pfx.repne_f2 {
+                                // CRC32 r/m: F0 => byte source, F1 => operand-size source.
+                                let dest_sz = if pfx.rex_w { 8 } else { 4 };
+                                let src_sz = if op3 == 0xF0 {
+                                    1
+                                } else {
+                                    Self::operand_size(&pfx, false)
+                                };
+                                let src = self.read_rm(vmm, addr2, next_rip2, src_sz, pfx.has_rex)?;
+                                let mut crc = self.gpr[reg2] as u32;
+                                for i in 0..src_sz {
+                                    let b = ((src >> (i * 8)) & 0xFF) as u8;
+                                    crc ^= b as u32;
+                                    for _ in 0..8 {
+                                        crc = if crc & 1 != 0 {
+                                            (crc >> 1) ^ 0x82F6_3B78
+                                        } else {
+                                            crc >> 1
+                                        };
+                                    }
+                                }
+                                self.write_gpr(reg2, dest_sz, pfx.has_rex, crc as u64);
+                            } else {
+                                // MOVBE: F0 loads with byte swap, F1 stores with byte swap.
+                                let sz = Self::operand_size(&pfx, false);
+                                if op3 == 0xF0 {
+                                    let raw = self.read_rm(vmm, addr2, next_rip2, sz, pfx.has_rex)?;
+                                    let swapped = match sz {
+                                        2 => (raw as u16).swap_bytes() as u64,
+                                        4 => (raw as u32).swap_bytes() as u64,
+                                        _ => raw.swap_bytes(),
+                                    };
+                                    self.write_gpr(reg2, sz, pfx.has_rex, swapped);
+                                } else {
+                                    let raw = self.read_gpr(reg2, sz, pfx.has_rex);
+                                    let swapped = match sz {
+                                        2 => (raw as u16).swap_bytes() as u64,
+                                        4 => (raw as u32).swap_bytes() as u64,
+                                        _ => raw.swap_bytes(),
+                                    };
+                                    self.write_rm(vmm, addr2, next_rip2, sz, pfx.has_rex, swapped)?;
+                                }
+                            }
+                            return Ok(ExecOutcome::Next);
+                        }
                         let (_m, reg, _rm, addr) = self.decode_modrm_addressing(&pfx, code, &mut cursor);
                         let next_rip = insn_rip + cursor as u64;
                         let a = self.get_xmm(reg);
