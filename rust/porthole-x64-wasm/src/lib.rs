@@ -414,7 +414,7 @@ impl BrowserX64Emulator {
                         match action {
                             HleAction::Return(rax) => {
                                 let api = format!("{dll}!{symbol}");
-                                let implemented = !self.kernel.is_unimplemented(symbol);
+                                let implemented = !self.kernel.is_unimplemented(&symbol);
                                 self.record_api_audit(&api, &args, rax, insn_rip, &audit_before, implemented);
                                 self.cpu.gpr[0] = rax;
                                 let ret = self.vmm.read_u64(rsp).unwrap_or(0);
