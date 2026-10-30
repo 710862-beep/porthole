@@ -844,7 +844,7 @@ impl BrowserX64Emulator {
             .cpu
             .icache
             .get(&page_base)
-            .map(|cb| cb.exec_count == 64)
+            .map(|cb| cb.exec_count > 0 && cb.exec_count % 64 == 0)
             .unwrap_or(false);
         if !should {
             return;
