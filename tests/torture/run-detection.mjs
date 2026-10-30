@@ -101,7 +101,7 @@ async function main() {
           if (status === 'next') {
             // Virtual pointer profile: slow deterministic drift exercises GetCursorPos/movement
             // checks through the real input API, not by altering detection results.
-            if (entry.suite === 'pafish' && typeof emu.inject_mouse_move === 'function') {
+            if (typeof emu.inject_mouse_move === 'function') {
               emu.inject_mouse_move(640 + (n % 97), 360 + (Math.floor(n / 97) % 53));
             }
             continue;
