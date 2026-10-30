@@ -1323,7 +1323,9 @@ mod tests {
         emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
         emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
         emu.vmm.map_region(scratch, 70 * 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
-        emu.vmm.host_write_bytes(code, &[0x90, 0xC3]).unwrap();
+        // mov rax,0x88; ret — a real GPR-writing block (nop/ret alone emits no JitOps).
+        let block = [0x48, 0xB8, 0x88, 0, 0, 0, 0, 0, 0, 0, 0xC3];
+        emu.vmm.host_write_bytes(code, &block).unwrap();
         emu.vmm.host_write_bytes(stack, &0x1234u64.to_le_bytes()).unwrap();
         // The VMM's minimum resident budget is 64 pages; touch enough unpinned pages to
         // evict the stack while the pinned code page remains resident.
@@ -1333,7 +1335,7 @@ mod tests {
         let saved = emu.vmm.drain_evicted_dirty_pages();
         let old = saved.iter().find(|p| p.page_base == stack).expect("stack evicted");
         let epoch = emu.vmm.page_write_epoch(code);
-        emu.jit.try_compile_block(code, epoch, &[0x90, 0xC3, 0, 0]).unwrap();
+        emu.jit.try_compile_block(code, epoch, &block).unwrap();
         emu.cpu.rip = code;
         emu.cpu.gpr[4] = stack;
         emu.cpu.gpr[0] = 0x77;
