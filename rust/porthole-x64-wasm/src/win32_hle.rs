@@ -121,6 +121,8 @@ pub enum HleAction {
     Return(u64),
     Upcall { target: u64, resume_rip: u64, rax: u64 },
     ExitProcess(u32),
+    /// Suspend the guest until the browser host answers a modal dialog.
+    Modal { request_json: String },
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +277,8 @@ pub struct Win32Kernel {
     pub stdout: Vec<u8>,
     pub exit_code: Option<u32>,
     pub ticks: u64,
+    pub cursor_x: i32,
+    pub cursor_y: i32,
     upcall_stack: Vec<UpcallState>,
     vectored_handlers: Vec<(u64, u64)>,
     unhandled_filter: u64,
@@ -359,6 +363,8 @@ impl Win32Kernel {
             stdout: Vec::new(),
             exit_code: None,
             ticks: 3_600_000, // plausible uptime (>12 min); Sleep advances it
+            cursor_x: 640,
+            cursor_y: 360,
             upcall_stack: Vec::new(),
             vectored_handlers: Vec::new(),
             unhandled_filter: 0,
@@ -822,6 +828,23 @@ impl Win32Kernel {
     }
 
     // ------------------------------------------------------------- strings
+
+    fn json_escape(s: &str) -> String {
+        let mut out = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
 
     pub fn read_ansi(&mut self, vmm: &mut VirtualMemoryManager, addr: u64) -> String {
         if addr == 0 {
@@ -2340,6 +2363,37 @@ impl Win32Kernel {
 
             // ------------------------------------------------------- version
             "GetVersion" => 0x0A00_0000u64, // NT 10.0, high bit clear
+
+            // ------------------------------------------------- host-integrated modals/input
+            "MessageBoxA" | "MessageBoxW" | "MessageBoxExA" | "MessageBoxExW" => {
+                let wide = symbol.ends_with('W') || symbol.ends_with("ExW");
+                let text = if wide { self.read_wide(vmm, a1) } else { self.read_ansi(vmm, a1) };
+                let caption = if wide { self.read_wide(vmm, a2) } else { self.read_ansi(vmm, a2) };
+                let kind = a3 as u32;
+                let request = format!(
+                    "{{\"api\":\"{}\",\"hwnd\":\"0x{:x}\",\"text\":{},\"caption\":{},\"type\":{}}}",
+                    symbol, a0, Self::json_escape(&text), Self::json_escape(&caption), kind
+                );
+                HleAction::Modal { request_json: request }
+            }
+            "GetSystemMetrics" => match a0 as u32 {
+                0 => 1920, 1 => 1080,           // SM_CXSCREEN / SM_CYSCREEN
+                16 => 1920, 17 => 1040,         // SM_CXFULLSCREEN / SM_CYFULLSCREEN
+                19 => 1,                        // SM_MOUSEPRESENT
+                20 => 0, 21 => 0,               // SM_MOUSEWHEELPRESENT? keep conservative
+                43 => 0,                        // SM_REMOTESESSION
+                80 => 0,                        // SM_CLEANBOOT
+                _ => 0,
+            },
+            "GetCursorPos" => {
+                if a0 == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                let _ = vmm.write_u32(a0, self.cursor_x as u32);
+                let _ = vmm.write_u32(a0 + 4, self.cursor_y as u32);
+                1
+            }
+            "SetCursorPos" => { self.cursor_x = a0 as i32; self.cursor_y = a1 as i32; 1 }
+            "GetDoubleClickTime" => 500,
+            "GetMessagePos" => ((self.cursor_y as u32 as u64) << 16) | (self.cursor_x as u32 as u64),
 
             // --------------------------------------------------------- time
             "GetTickCount" => self.ticks & 0xFFFF_FFFF,

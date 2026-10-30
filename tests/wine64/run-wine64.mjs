@@ -124,6 +124,12 @@ async function runOne(binding, manifestEntry, options, testName = null) {
     const drained = emu.drain_evicted_pages();
     const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
     for (let off = 0; off + 4104 <= drained.length; off += 4104) pageCache.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 4104));
+    if (status === 'modal') {
+      const request = JSON.parse(emu.modal_request());
+      (item.modals ||= []).push({ request, response: 1, policy: 'headless-auto-IDOK' });
+      emu.modal_respond(1);
+      continue;
+    }
     if (status === 'next') continue;
     if (status.startsWith('exit:')) {
       item.exitCode = Number(status.slice(5));

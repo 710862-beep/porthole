@@ -72,7 +72,19 @@ async function main() {
           const drained = emu.drain_evicted_pages();
           const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
           for (let off = 0; off + 4104 <= drained.length; off += 4104) pages.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 4104));
-          if (status === 'next') continue;
+          if (status === 'modal') {
+            const request = JSON.parse(emu.modal_request());
+            (item.modals ||= []).push({ request, response: 1, policy: 'headless-auto-IDOK' });
+            emu.modal_respond(1); continue;
+          }
+          if (status === 'next') {
+            // Virtual pointer profile: slow deterministic drift exercises GetCursorPos/movement
+            // checks through the real input API, not by altering detection results.
+            if (entry.suite === 'pafish' && typeof emu.inject_mouse_move === 'function') {
+              emu.inject_mouse_move(640 + (n % 97), 360 + (Math.floor(n / 97) % 53));
+            }
+            continue;
+          }
           if (status.startsWith('page-fault:')) {
             const base = Number(status.slice(11)); const saved = pages.get(base);
             emu.supply_page(BigInt(base), saved || new Uint8Array(4096)); continue;
@@ -88,7 +100,7 @@ async function main() {
         item.apiAudit = audit; item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
         item.findings.forEach(f => { f.apiCandidates = audit.filter(e => e.kind === 'api').slice(-20); f.correlation = 'last-call window; upstream check does not identify a causal API'; });
         item.status = !terminal ? 'TIMEOUT' : terminal.startsWith('fault:') ? 'GUEST_FAULT' : item.exitCode !== 0 || !item.completed ? 'FAIL' : item.findings.length || item.auditOverflow.length ? 'FAIL' : 'PASS';
-        if (entry.suite === 'al-khaser') item.caveat = 'Upstream --sleep 1 requested; HLE Sleep currently does not model elapsed time, so timing-check results are not conformance evidence.';
+        if (entry.suite === 'al-khaser') item.caveat = 'Upstream --sleep 1 requested; virtual clock advances on Sleep. Headless modal policy auto-answers IDOK; pafish receives a deterministic virtual pointer profile.';
         fs.mkdirSync(o.rawDir, { recursive: true });
         const stem = path.join(o.rawDir, entry.name);
         fs.writeFileSync(`${stem}.console.log`, item.console);

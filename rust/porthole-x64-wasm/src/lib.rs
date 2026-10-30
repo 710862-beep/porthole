@@ -45,6 +45,7 @@ pub struct BrowserX64Emulator {
     status: RunStatus,
     fault_message: String,
     pending_upcall: bool,
+    modal_pending: Option<(u64, String, String, Vec<u64>, Vec<Option<Vec<u8>>>)>,
     frames_presented_seen: u64,
     console: Vec<u8>,
     /// Instruction-level execution trace (see [`BrowserX64Emulator::enable_trace`]).
@@ -79,6 +80,7 @@ impl BrowserX64Emulator {
             status: RunStatus::Ready,
             fault_message: String::new(),
             pending_upcall: false,
+            modal_pending: None,
             frames_presented_seen: 0,
             console: Vec::new(),
             trace: Vec::new(),
@@ -449,6 +451,15 @@ impl BrowserX64Emulator {
                                 self.drain_watch();
                                 executed += 1;
                                 continue;
+                            }
+                            HleAction::Modal { request_json } => {
+                                let api = format!("{dll}!{symbol}");
+                                self.record_api_audit(&api, &args, 0, insn_rip, &audit_before, true);
+                                self.modal_pending = Some((rsp, request_json, api, args.to_vec(), audit_before));
+                                self.status = RunStatus::Running;
+                                self.trace_event(format!("M 0x{:x} {} modal pending", insn_rip, api));
+                                self.drain_watch();
+                                return "modal".to_string();
                             }
                             HleAction::Upcall { target, resume_rip, rax } => {
                                 if matches!(self.kernel.pending_upcall(), Some(UpcallState::Exception { .. })) {
@@ -1153,6 +1164,22 @@ impl BrowserX64Emulator {
     }
 
     // -------------------------------------------------------- hybrid JIT host bridge
+
+    /// Returns the pending host modal request JSON, or "" when none.
+    pub fn modal_request(&self) -> String { self.modal_pending.as_ref().map(|(_, j, _, _, _)| j.clone()).unwrap_or_default() }
+    /// Host answers a modal; resumes the guest with the chosen button result.
+    pub fn modal_respond(&mut self, result: u32) -> bool {
+        let Some((rsp, _request, api, args, before)) = self.modal_pending.take() else { return false; };
+        let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+        self.record_api_audit(&api, &args, result as u64, self.cpu.rip, &before, true);
+        self.cpu.gpr[0] = result as u64;
+        self.cpu.gpr[4] = rsp.wrapping_add(8);
+        self.cpu.rip = ret;
+        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(1);
+        true
+    }
+    /// Host-driven virtual mouse input (browser pointer events).
+    pub fn inject_mouse_move(&mut self, x: i32, y: i32) { self.kernel.cursor_x = x; self.kernel.cursor_y = y; }
 
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
     pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }
