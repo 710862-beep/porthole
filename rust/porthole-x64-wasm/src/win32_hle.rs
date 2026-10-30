@@ -414,7 +414,14 @@ impl Win32Kernel {
         } else if s.starts_with('\\') {
             // root-relative
         } else {
-            s = format!("{}\\{}", self.cwd, s);
+            // `cwd` already carries its drive ("C:\Windows\System32"), so only its drive-less
+            // part may be prepended - joining the whole thing produced "C:\C:\Windows\System32"
+            // for every relative path, so CreateDirectoryA(".") failed with a no-parent error.
+            let base = match self.cwd.split_once(':') {
+                Some((_, rest)) => rest.to_string(),
+                None => self.cwd.clone(),
+            };
+            s = format!("{}\\{}", base.trim_end_matches(['\\', '/']), s);
         }
         if !s.starts_with('\\') {
             s = format!("\\{}", s);
