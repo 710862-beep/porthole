@@ -92,14 +92,14 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p artifacts/torture
-          PORTHOLE_JIT=0 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600             PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-baseline.log || true
+          PORTHOLE_JIT=0 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600             PORTHOLE_DOOM_RESIDENT=4096 PORTHOLE_DOOM_DEBUG_WAD=1 PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-baseline.log || true
           cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-baseline-report.json || true
       - name: Chocolate Doom hybrid JIT candidate (100M instructions)
         continue-on-error: true
         run: |
           set -o pipefail
           mkdir -p artifacts/torture
-          PORTHOLE_JIT=1 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600             PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-jit.log || true
+          PORTHOLE_JIT=1 PORTHOLE_DOOM_MAX_INSTRUCTIONS=100000000 PORTHOLE_DOOM_TIMEOUT_S=600             PORTHOLE_DOOM_RESIDENT=4096 PORTHOLE_DOOM_DEBUG_WAD=1 PORTHOLE_DOOM_TRACE=0 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/torture/doom-jit.log || true
           cp artifacts/chocolate-doom-tier-b-report.json artifacts/torture/doom-jit-report.json || true
       - name: Publish measured A/B benchmark
         if: always()

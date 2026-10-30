@@ -44,7 +44,7 @@ const titleProbe = process.argv.includes('--title-probe');
 const titlePresents = Math.max(1, Number(process.env.PORTHOLE_TITLE_PRESENTS || 30) || 30);
 const guestArgs = process.env.PORTHOLE_DOOM_ARGS
   ?? (titleProbe ? '-iwad C:\\Game\\DOOM2.WAD -nosound' : '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound');
-const residentPages = 8192;
+const residentPages = Number(process.env.PORTHOLE_DOOM_RESIDENT || 8192);
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
 const limits = { slice: 2_000_000, maxSlices: 100000 };
 const jitEnabled = process.env.PORTHOLE_JIT !== '0';
@@ -255,7 +255,7 @@ async function main() {
   ]) emu.vfs_mkdir(dir);
   emu.vfs_insert('C:\\Game\\chocolate-doom.exe', new Uint8Array(exeBytes));
   emu.vfs_insert('C:\\Game\\DOOM2.WAD', new Uint8Array(wadBytes));
-  if (process.env.PORTHOLE_DOOM_TRACE !== '0') { emu.enable_trace?.(2000); emu.set_hle_trace_only?.(true); }
+  if (process.env.PORTHOLE_DOOM_TRACE !== '0' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') { emu.enable_trace?.(200000); emu.set_hle_trace_only?.(true); }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
   emu.set_exe_path?.('C:\\Game\\chocolate-doom.exe');
   emu.set_command_line(`C:\\Game\\chocolate-doom.exe ${guestArgs}`);
@@ -322,6 +322,15 @@ async function main() {
   report.jit.stats = jit.stats;
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
+  if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {
+    const m = /MapViewOfFile[^\n]*rax=0x([0-9a-f]+)/.exec(trace);
+    if (m) {
+      const va = BigInt('0x' + m[1]);
+      report.wad.guestMapVa = '0x' + va.toString(16);
+      report.wad.guestHeader = emu.peek_qwords(va, 2);
+      report.wad.guestDirectory = emu.peek_qwords(va + BigInt(report.wad.dirOfs), 8);
+    } else report.wad.guestMapVa = 'not found in trace';
+  }
   sampleFrames();
   frameSamples.final = grabFrame('final');
   const emuChecksum = emu.frame_checksum?.() || '';
