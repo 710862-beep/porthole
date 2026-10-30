@@ -39,6 +39,10 @@ pub const ERROR_NOT_SUPPORTED: u32 = 50;
 pub const ERROR_RESOURCE_TYPE_NOT_FOUND: u32 = 1813;
 pub const ERROR_RESOURCE_NAME_NOT_FOUND: u32 = 1814;
 const RESOURCE_HANDLE_BASE: u64 = 0x0000_7FF2_0000_0000;
+pub const ERROR_NO_NETWORK: u32 = 1222;
+pub const ERROR_SERVICE_DOES_NOT_EXIST: u32 = 1060;
+const SCM_HANDLE: u64 = 0x0000_0000_5000_0000;
+const ACPI_PROVIDER: u64 = 0x4143_5049; // 'ACPI' little-endian
 
 /// Guest VA of the synthetic CRT data-import cells (`_fmode`, `_commode`, `_iob`, `__initenv`).
 ///
@@ -3753,6 +3757,26 @@ impl Win32Kernel {
                 );
                 h
             }
+            "CreateWaitableTimerA" | "CreateWaitableTimerW" | "CreateWaitableTimerExA" | "CreateWaitableTimerExW" => {
+                let h = self.alloc_handle();
+                self.waitables.insert(h, Waitable { signaled: false, manual_reset: true });
+                h
+            }
+            "SetWaitableTimer" => {
+                if a1 == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                let due = vmm.read_u64(a1).unwrap_or(0) as i64;
+                // Relative due times are negative 100ns intervals. Model the requested virtual
+                // delay synchronously, then signal the timer so WaitForSingleObject observes it.
+                let delay_ms = if due < 0 { ((-(due as i128)) / 10_000) as u64 } else { 0 };
+                self.ticks = self.ticks.wrapping_add(delay_ms.min(60_000));
+                if let Some(w) = self.waitables.get_mut(&a0) { w.signaled = true; }
+                self.set_last_error(ERROR_SUCCESS);
+                1
+            }
+            "CancelWaitableTimer" => {
+                if let Some(w) = self.waitables.get_mut(&a0) { w.signaled = false; }
+                1
+            }
             "CreateMutexA" | "CreateMutexW" => {
                 let h = self.alloc_handle();
                 self.waitables.insert(
@@ -4050,6 +4074,67 @@ impl Win32Kernel {
                 }
                 self.set_last_error(ERROR_SUCCESS);
                 copy as u64
+            }
+            "OpenSCManagerA" | "OpenSCManagerW" => {
+                self.set_last_error(ERROR_SUCCESS);
+                SCM_HANDLE
+            }
+            "OpenServiceA" | "OpenServiceW" => {
+                self.set_last_error(ERROR_SERVICE_DOES_NOT_EXIST);
+                0
+            }
+            "CloseServiceHandle" => 1,
+            "EnumServicesStatusA" | "EnumServicesStatusW" | "EnumServicesStatusExA" | "EnumServicesStatusExW" => {
+                // The sandbox hosts no VM guest drivers/services. Return a successful empty
+                // enumeration rather than a NULL SCM handle that anti-VM checks flag as BAD.
+                if a6 != 0 { let _ = vmm.write_u32(a6, 0); }
+                if a7 != 0 { let _ = vmm.write_u32(a7, 0); }
+                if a8 != 0 { let _ = vmm.write_u32(a8, 0); }
+                self.set_last_error(ERROR_SUCCESS);
+                1
+            }
+            "EnumSystemFirmwareTables" => {
+                if a0 != ACPI_PROVIDER {
+                    self.set_last_error(ERROR_INVALID_FUNCTION);
+                    return HleAction::Return(0);
+                }
+                let ids: [u8; 12] = [b'D', b'S', b'D', b'T', b'F', b'A', b'C', b'P', b'A', b'P', b'I', b'C'];
+                let needed = ids.len() as u64;
+                if a1 == 0 || (a2 as usize) < ids.len() {
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(needed);
+                }
+                if let Some(action) = self.host_write_or_fault(vmm, a1, &ids) { return action; }
+                self.set_last_error(ERROR_SUCCESS);
+                needed
+            }
+            "GetSystemFirmwareTable" => {
+                if a0 != ACPI_PROVIDER {
+                    self.set_last_error(ERROR_INVALID_FUNCTION);
+                    return HleAction::Return(0);
+                }
+                let data = Self::acpi_table_bytes(a1 as u32);
+                if data.is_empty() {
+                    self.set_last_error(ERROR_INVALID_FUNCTION);
+                    return HleAction::Return(0);
+                }
+                let needed = data.len() as u64;
+                if a2 == 0 || (a3 as usize) < data.len() {
+                    self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
+                    return HleAction::Return(needed);
+                }
+                if let Some(action) = self.host_write_or_fault(vmm, a2, &data) { return action; }
+                self.set_last_error(ERROR_SUCCESS);
+                needed
+            }
+            "WNetGetProviderNameA" | "WNetGetProviderNameW" => {
+                // No network redirector is installed (in particular no VirtualBox Shared Folders).
+                if a1 != 0 {
+                    if symbol.ends_with('W') { let _ = vmm.write_u16(a1, 0); } else { let _ = vmm.write_u8(a1, 0); }
+                }
+                if a2 != 0 { let _ = vmm.write_u32(a2, 0); }
+                self.set_last_error(ERROR_NO_NETWORK);
+                ERROR_NO_NETWORK as u64
             }
             "GetProcAddress" => {
                 let hmod = a0;
@@ -5478,6 +5563,28 @@ impl Win32Kernel {
     }
 
     // ------------------------------------------------------------- helpers
+
+    fn acpi_table_bytes(signature: u32) -> Vec<u8> {
+        let sig = signature.to_le_bytes();
+        match &sig {
+            b"DSDT" | b"FACP" | b"APIC" => {}
+            _ => return Vec::new(),
+        }
+        // Minimal generic ACPI description header. OEM strings deliberately identify the
+        // Porthole platform, not VirtualBox/VMware/QEMU, and the checksum is valid.
+        let mut t = vec![0u8; 64];
+        t[0..4].copy_from_slice(&sig);
+        t[4..8].copy_from_slice(&64u32.to_le_bytes());
+        t[8] = 1; // Revision
+        t[10..16].copy_from_slice(b"PORTHL");
+        t[16..24].copy_from_slice(b"PORTHOLE");
+        t[24..28].copy_from_slice(&1u32.to_le_bytes());
+        t[28..32].copy_from_slice(b"PTH ");
+        t[32..36].copy_from_slice(&1u32.to_le_bytes());
+        let sum: u8 = t.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        t[9] = 0u8.wrapping_sub(sum);
+        t
+    }
 
     fn resource_key_from_guest(&mut self, vmm: &mut VirtualMemoryManager, value: u64, wide: bool) -> ResourceKey {
         if value < 0x1_0000 {
