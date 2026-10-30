@@ -10,7 +10,7 @@ This file records **measured** evidence only. Nothing below is a projection.
 | Wasm build | `cargo build --release --target wasm32-unknown-unknown` + `wasm-bindgen --target web` | **PASS** — `porthole_x64_wasm.js` + `porthole_x64_wasm_bg.wasm` produced and uploaded |
 | Wine 64-bit fixture build | `node scripts/build-wine64-tests.mjs` (zig 0.13.0, pinned Wine `0738d528`) | **PASS** — 4 unmodified upstream tests compiled to PE32+ (`0x8664`) |
 | Wine 64-bit conformance inside the Wasm emulator | `node tests/wine64/run-wine64.mjs` | **PARTIAL — 5 of 7 subtest groups pass** (`uitools`, `wsprintf`, `atom`, `drive`, `power`); `environ` (35 failures) and `directory` (23 failures) still fail |
-| **Real PE32+ startup fixtures inside the Wasm emulator** | `node scripts/build-game-fixtures.mjs && node tests/game/run-game.mjs` | **PASS — 3 of 3** executables run to `ExitProcess(0)`; the D3D12 one reaches `Present` and produces a 1280×720 RGBA frame |
+| **Real PE32+ startup fixtures inside the Wasm emulator** | `node scripts/build-game-fixtures.mjs && node tests/game/run-game.mjs` | **PASS — 3 of 4 pass, 1 deliberately stops at a named stage**: three executables run to `ExitProcess(0)`, the D3D12 one reaches `Present` and produces a 1280×720 RGBA frame, and the fourth proves the failure-report format |
 
 The game fixtures are built from `tests/game/*.c` by `scripts/build-game-fixtures.mjs` (zig
 `x86_64-windows-gnu`) and executed by `tests/game/run-game.mjs` against **the same Wasm module the
@@ -18,23 +18,26 @@ browser loads** — not the native tracer.
 
 ## Loading real Windows code (not Wine tests)
 
-Three PE32+ x86-64 executables, compiled from C in this repository, mounted on the virtual
+Four PE32+ x86-64 executables, compiled from C in this repository, mounted on the virtual
 `C:\Game` volume and executed by the emulator's PE64 loader:
 
 | Image | Bytes | sha256 (truncated) | What it does |
 | --- | --- | --- | --- |
-| `hello_world.exe` | 150 016 | `0654341b2b755350…` | ucrt startup, `main`, stdio, `ExitProcess(0)` |
-| `game_startup.exe` | 152 576 | `d4656fe870b97724…` | `CreateFileW`/`WriteFile` on `C:\Game`, 2 GB `MEM_RESERVE`, 64 MB `MEM_COMMIT` write+readback on all 16 384 pages, `GetModuleHandleW`, `GetProcAddress`, indirect call through the resolved thunk, `D3D12CreateDevice`, `ExitProcess(0)` |
-| `doom_d3d12_startup.exe` | 157 184 | `614d2cd61837a09f…` | 25-stage D3D12 boot: window → `CreateDXGIFactory2` → `EnumAdapters1` → `D3D12CreateDevice` → `CheckFeatureSupport` → queue → allocator → command list → fence → RTV heap → `D3D12SerializeRootSignature`+`CreateRootSignature` → PSO → `CreateSwapChainForHwnd` → `QueryInterface(IDXGISwapChain3)` → back buffers → RTVs → barriers → `ClearRenderTargetView` → `DrawInstanced` → `Close` → `ExecuteCommandLists` → `Present` |
+| `hello_world.exe` | 150 016 | `40019c0819e13e00…` | ucrt startup, `main`, stdio, `ExitProcess(0)` |
+| `game_startup.exe` | 152 576 | `54253519f269a94b…` | `CreateFileW`/`WriteFile` on `C:\Game`, 2 GB `MEM_RESERVE`, 64 MB `MEM_COMMIT` write+readback on all 16 384 pages, `GetModuleHandleW`, `GetProcAddress`, indirect call through the resolved thunk, `D3D12CreateDevice`, `ExitProcess(0)` |
+| `doom_d3d12_blocked.exe` | 160 768 | `b993cd3ac9c4fe45…` | the same image code, launched with `/blockstage:13`, so the *failure report* is measured as well |
+| `doom_d3d12_startup.exe` | 160 768 | `0c455783a7a9211c…` | 25-stage D3D12 boot: window → `CreateDXGIFactory2` → `EnumAdapters1` → `D3D12CreateDevice` → `CheckFeatureSupport` → queue → allocator → command list → fence → RTV heap → `D3D12SerializeRootSignature`+`CreateRootSignature` → PSO → `CreateSwapChainForHwnd` → `QueryInterface(IDXGISwapChain3)` → back buffers → RTVs → barriers → `ClearRenderTargetView` → `DrawInstanced` → `Close` → `ExecuteCommandLists` → `Present` |
 
-Measured runs (`run 40991477773`, Wasm module `c34de2bd7896bec8…`):
+Measured in `run 40994645347` (`gh api repos/710862-beep/porthole/check-runs/123865450546 -q .output.summary`):
 
 ```
-hello_world.exe        exit=0  instructions=566    slices=1  page_faults=0  imports=54
-game_startup.exe       exit=0  instructions=46382  slices=1  page_faults=0  imports=60
-doom_d3d12_startup.exe exit=0  instructions=2216   slices=1  page_faults=0  imports=57
-  frame: 1280x720 bytes=3686400 nonZero=1843200 sha256=5d9d754bb9731380… pixel0=[0,255,0,255]
-  last stage: 25 IDXGISwapChain::Present(1,0)   →  DOOM_STARTUP_OK stages=25
+hello_world.exe          PASS  exit=0   instructions=566    slices=1  page_faults=0  imports=54
+game_startup.exe         PASS  exit=0   instructions=46382  slices=1  page_faults=0  imports=60
+doom_d3d12_startup.exe   PASS  exit=0   instructions=2523   slices=1  page_faults=0  imports=57
+    frame: 1280x720 bytes=3686400 nonZero=1843200 sha256=5d9d754bb9731380… pixel0=[0,255,0,255]
+    last stage: 25 IDXGISwapChain::Present(1,0)   →  DOOM_STARTUP_OK stages=25
+doom_d3d12_blocked.exe   STAGE_BLOCKED  exit=13  instructions=1928  slices=1  page_faults=0
+[game] PASS: 3/4 pass · 1 blocked at a named stage · 0 faults
 ```
 
 `game_startup.exe`'s guest console, verbatim from the check-run summary:
@@ -91,7 +94,7 @@ So the honest quotable result is:
 
 > The emulator loads and executes (synthetic, DOOM-2016-shaped) PE32+ D3D12 code from the virtual
 > `C:\Game` volume and reaches `IDXGISwapChain::Present` with a rendered 1280×720 RGBA frame —
-> 2 216 guest instructions, 0 page faults, 31 distinct COM calls, exit code 0 — after fixing a
+> 2 523 guest instructions, 0 page faults, 31 distinct COM calls, exit code 0 — after fixing a
 > COM-stub/Win32-import address-space alias that had been masquerading as a missing D3D12 feature.
 
 (This is a *shape* match, not the real game: no DOOM 2016 binary or data is involved. See
@@ -146,11 +149,28 @@ names the API that was executing, then prints one line with the four things need
 
 ```
 STAGE 13: IDXGIFactory4::CreateSwapChainForHwnd
-STAGE_FAIL n=13 api=IDXGIFactory4::CreateSwapChainForHwnd hr=0x887a0001 last_error=0
+STAGE_FAIL n=13 api=... hr=... last_error=... expected="..." actual="..." fix="..."
 ```
 
-and exits with the stage number, so `exit:13` in a trace is the exact failure point. The runner
-classifies an exit as:
+and exits with the stage number, so `exit:13` in a trace is the exact failure point. The
+`doom_d3d12_blocked.exe` fixture (`/blockstage:13`) produces exactly that line on every run, so the
+report path is measured rather than assumed — verbatim from `run 40994645347`:
+
+```
+=== doom_d3d12_blocked.exe :: STAGE_BLOCKED (stage 13 IDXGIFactory4::CreateSwapChainForHwnd hr=0x887a0001)
+    instructions=1928 exit=13 slices=1 page_faults=0
+    FAILED STAGE 13: IDXGIFactory4::CreateSwapChainForHwnd hr=0x887a0001 last_error=0
+      expected: S_OK (stage 13 completes)
+      actual:   hr=0x887a0001 ptr=NULL
+      fix:      simulated blocked stage (--blockstage) for failure-report validation
+
+# guest console, same run:
+STAGE_FAIL n=13 api=IDXGIFactory4::CreateSwapChainForHwnd hr=0x887a0001 last_error=0 \
+  expected="S_OK (stage 13 completes)" actual="hr=0x887a0001 ptr=NULL" \
+  fix="simulated blocked stage (--blockstage) for failure-report validation"
+```
+
+The runner classifies an exit as:
 
 | Status | Meaning |
 | --- | --- |
@@ -204,7 +224,10 @@ exercise.
 7. **Win32 side:** `environ` (35 failures) and `directory` (23 failures) remain, and a real title
    will additionally need `CreateFileMapping`/`MapViewOfFile`, `GetSystemInfo`, `CreateEventW`
    cross-thread waits, `timeGetTime`/`QueryPerformanceCounter` pacing, and `XAudio2`/DirectSound
-   for audio.
+   for audio. Measured the hard way: the first version of the blocked-stage fixture used
+   `strstr`/`atoi` from msvcrt, both of which are **not implemented** — the call returned with
+   `last_error=120` (`ERROR_CALL_NOT_IMPLEMENTED`) and the fixture silently never blocked. The
+   fixture now parses its own command line, and `msvcrt strstr/atoi` belong on the Win32 gap list.
 
 ### Prioritized D3D12/COM API list for the first real frame
 
