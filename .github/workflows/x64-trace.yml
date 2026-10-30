@@ -169,6 +169,25 @@ jobs:
             fi
           } > trace-tier-a-extract.log 2>&1
           cat trace-tier-a-create.log trace-tier-a-extract.log >> trace.log
+      - name: GATE 1 Tier B native trace — unmodified chocolate-doom.exe + Freedoom IWAD (probe)
+        run: |
+          node scripts/fetch-chocolate-doom.mjs 2>&1 | tee -a trace.log
+          {
+            echo "##### tier-b native xtrace: chocolate-doom -timedemo demo1 -nodraw -nosound"
+            ./rust/porthole-x64-wasm/target/release/xtrace tests/assets/third-party/chocolate-doom.exe \
+              --budget 60000000 --slice 2000000 --trace 4000 --hle-only --no-watch \
+              --resident 65536 \
+              --mkdir 'C:\Windows' --mkdir 'C:\Windows\System32' --mkdir 'C:\Users' \
+              --mkdir 'C:\Users\PORTHOLE' --mkdir 'C:\Users\PORTHOLE\Temp' \
+              --mkdir 'C:\Users\PORTHOLE\AppData' --mkdir 'C:\Users\PORTHOLE\AppData\Roaming' \
+              --mkdir 'C:\Game' \
+              --put 'C:\Game\chocolate-doom.exe=tests/assets/third-party/chocolate-doom.exe' \
+              --put 'C:\Game\DOOM2.WAD=tests/assets/third-party/freedoom2.wad' \
+              --exe-path 'C:\Game\chocolate-doom.exe' \
+              --args 'C:\Game\chocolate-doom.exe -iwad C:\Game\DOOM2.WAD -timedemo demo1 -nodraw -nosound' \
+              2>&1 || echo "xtrace exit=$?"
+          } > trace-tier-b.log 2>&1
+          cat trace-tier-b.log >> trace.log
       - name: Publish each fixture trace through the Checks API
         if: always()
         env:

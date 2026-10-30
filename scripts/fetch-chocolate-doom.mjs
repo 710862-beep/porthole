@@ -112,6 +112,13 @@ const chocEntries = unzipEntries(chocZip);
 console.log(`[tier-b] chocolate zip entries: ${[...chocEntries.keys()].join(', ')}`);
 const exe = unzipFile(chocZip, chocEntries, 'chocolate-doom.exe');
 checkPE(exe.data, 'chocolate-doom.exe');
+// Pinned from the first measured acquisition (CI run 41032902055, 2026-10-30). The zip hash
+// above already pins the archive; this additionally pins the extracted executable identity
+// that every Tier B / Gate 2 claim must name.
+const CHOC_EXE_SHA256 = '15e81c194df270fbd71450222e71846247926fabfb889e72e7d855903454d752';
+if (sha256(exe.data) !== CHOC_EXE_SHA256) {
+  throw new Error(`chocolate-doom.exe SHA-256 mismatch: pinned ${CHOC_EXE_SHA256}, got ${sha256(exe.data)}`);
+}
 fs.writeFileSync(path.join(OUTDIR, 'chocolate-doom.exe'), exe.data);
 pins.chocolateDoomExe = { file: 'chocolate-doom.exe', bytes: exe.data.length, sha256: sha256(exe.data), zipEntry: exe.name };
 console.log(`[tier-b] chocolate-doom.exe bytes=${exe.data.length} sha256=${pins.chocolateDoomExe.sha256}`);
@@ -144,10 +151,17 @@ if (FREEDOOM.zipSha256 && FREEDOOM.zipSha256 !== fdZipHash) {
 console.log(`[tier-b] ${FREEDOOM.zipName} sha256=${fdZipHash} OK vs official CHECKSUM (${fdZip.length} bytes)`);
 pins.freedoomZip = { file: FREEDOOM.zipName, bytes: fdZip.length, sha256: fdZipHash };
 const fdEntries = unzipEntries(fdZip);
+// freedoom2.wad pinned from the first measured acquisition (CI run 41032902055).
+const WAD_PINS = {
+  'freedoom2.wad': 'a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b',
+};
 for (const wad of ['freedoom1.wad', 'freedoom2.wad']) {
   const w = unzipFile(fdZip, fdEntries, wad);
   const magic = w.data.toString('latin1', 0, 4);
   if (magic !== 'IWAD') throw new Error(`${wad}: bad WAD magic ${JSON.stringify(magic)}`);
+  if (WAD_PINS[wad] && sha256(w.data) !== WAD_PINS[wad]) {
+    throw new Error(`${wad} SHA-256 mismatch: pinned ${WAD_PINS[wad]}, got ${sha256(w.data)}`);
+  }
   fs.writeFileSync(path.join(OUTDIR, wad), w.data);
   pins[wad] = { file: wad, bytes: w.data.length, sha256: sha256(w.data), zipEntry: w.name };
   console.log(`[tier-b] ${wad} bytes=${w.data.length} sha256=${pins[wad].sha256}`);

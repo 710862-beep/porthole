@@ -182,6 +182,18 @@ struct GuestFile {
     handle_count: u32,
 }
 
+/// One open CRT stream (`FILE*`). The FILE struct itself is opaque to the guest because every
+/// stdio entry point is HLE-dispatched, so all state lives host-side keyed by the FILE* value.
+#[derive(Debug, Clone)]
+struct GuestStream {
+    /// Upper-case VFS key (same normalisation as `files`).
+    key: String,
+    pos: u64,
+    write: bool,
+    eof: bool,
+    ungetc: Option<u8>,
+}
+
 #[derive(Debug, Clone)]
 struct HeapState {
     base: u64,
@@ -267,8 +279,18 @@ pub struct Win32Kernel {
     crt_wargv_var: u64,
     crt_environ_var: u64,
     crt_wenviron_var: u64,
+    crt_acmdln_var: u64,
+    crt_wcmdln_var: u64,
     command_line_a: u64,
     command_line_w: u64,
+    /// Open CRT streams (`FILE*` guest address -> state) for _wfopen/fread/fseek/...
+    streams: HashMap<u64, GuestStream>,
+    /// MSVC `rand` LCG state (deterministic seed: evidence runs must be reproducible).
+    rand_state: u32,
+    /// Cached guest buffers returned by getenv/_wgetenv (must outlive the call).
+    getenv_cache: HashMap<String, u64>,
+    wgetenv_cache: HashMap<String, u64>,
+    lconv_ptr: u64,
     timezone_daylight: u64,
     tzname_ptr: u64,
     /// Next free slot in the `GetProcAddress` stub pool (`EXPORT_THUNK_BASE`..`EXPORT_THUNK_END`).
@@ -336,8 +358,15 @@ impl Win32Kernel {
             crt_wargv_var: 0,
             crt_environ_var: 0,
             crt_wenviron_var: 0,
+            crt_acmdln_var: 0,
+            crt_wcmdln_var: 0,
             command_line_a: 0,
             command_line_w: 0,
+            streams: HashMap::new(),
+            rand_state: 1,
+            getenv_cache: HashMap::new(),
+            wgetenv_cache: HashMap::new(),
+            lconv_ptr: 0,
             timezone_daylight: 0,
             tzname_ptr: 0,
             export_thunk_next: 0,
@@ -1400,6 +1429,11 @@ impl Win32Kernel {
     }
 
     // ---------------------------------------------------------- dispatch
+
+    /// Histogram bookkeeping for calls the driver resolves itself (XMM-argument float APIs).
+    pub fn note_hle_call(&mut self, symbol: &str) {
+        *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
+    }
 
     pub fn dispatch(
         &mut self,
@@ -3524,7 +3558,47 @@ impl Win32Kernel {
             }
             "__stdio_common_vfprintf" | "__stdio_common_vfprintf_s" => {
                 // (options, stream, format, locale, arglist) -> chars written
-                self.vfprintf(vmm, a2, a4)
+                if let Some(st) = self.streams.get(&a1).cloned() {
+                    let bytes = self.format_ansi(vmm, a2, a4);
+                    if let Some(f) = self.files.get_mut(&st.key) {
+                        let pos = st.pos as usize;
+                        if f.data.len() < pos {
+                            f.data.resize(pos, 0);
+                        }
+                        if f.data.len() < pos + bytes.len() {
+                            f.data.resize(pos + bytes.len(), 0);
+                        }
+                        f.data[pos..pos + bytes.len()].copy_from_slice(&bytes);
+                    }
+                    if let Some(stm) = self.streams.get_mut(&a1) {
+                        stm.pos = stm.pos.saturating_add(bytes.len() as u64);
+                    }
+                    bytes.len() as u64
+                } else {
+                    self.vfprintf(vmm, a2, a4)
+                }
+            }
+            "__stdio_common_vfscanf" => {
+                // (options, stream, format, locale, arglist) -> items assigned / EOF
+                let input = self.stream_remaining(a1).unwrap_or_default();
+                let fmt = self.read_ansi(vmm, a2);
+                let mut va = VaSlotReader::from_va_list_ptr(vmm, a4, 64);
+                let (assigned, consumed) = self.scanf_engine(vmm, &input, &fmt, &mut va);
+                self.stream_consume(a1, consumed);
+                if consumed >= input.len() {
+                    if let Some(s) = self.streams.get_mut(&a1) {
+                        s.eof = true;
+                    }
+                }
+                assigned as u64
+            }
+            "__stdio_common_vsscanf" => {
+                // (options, buffer, format, locale, arglist) -> items assigned / EOF
+                let input = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let fmt = self.read_ansi(vmm, a2);
+                let mut va = VaSlotReader::from_va_list_ptr(vmm, a4, 64);
+                let (assigned, _consumed) = self.scanf_engine(vmm, &input, &fmt, &mut va);
+                assigned as u64
             }
             "__stdio_common_vfwprintf" | "__stdio_common_vfwprintf_s" => {
                 self.vfwprintf(vmm, a2, a4)
@@ -3547,7 +3621,23 @@ impl Win32Kernel {
                 if a0 != 0 && total > 0 {
                     let mut buf = vec![0u8; total];
                     if vmm.read_bytes(a0, &mut buf).is_ok() {
-                        self.stdout.extend_from_slice(&buf);
+                        if let Some(s) = self.streams.get(&a3).cloned() {
+                            if let Some(f) = self.files.get_mut(&s.key) {
+                                let pos = s.pos as usize;
+                                if f.data.len() < pos {
+                                    f.data.resize(pos, 0);
+                                }
+                                if f.data.len() < pos + buf.len() {
+                                    f.data.resize(pos + buf.len(), 0);
+                                }
+                                f.data[pos..pos + buf.len()].copy_from_slice(&buf);
+                            }
+                            if let Some(st) = self.streams.get_mut(&a3) {
+                                st.pos = st.pos.saturating_add(buf.len() as u64);
+                            }
+                        } else {
+                            self.stdout.extend_from_slice(&buf);
+                        }
                     }
                 }
                 a2
@@ -3599,6 +3689,538 @@ impl Win32Kernel {
             "__p__wenviron" => {
                 self.ensure_crt_argv(vmm);
                 self.crt_wenviron_var
+            }
+            "__p__acmdln" => self.cmdln_var(vmm, false),
+            "__p__wcmdln" => self.cmdln_var(vmm, true),
+            // ------------------------------------------------- CRT streams (real VFS files)
+            "fopen" | "_fsopen" => {
+                let path = self.read_ansi(vmm, a0);
+                let mode = self.read_ansi(vmm, a1);
+                self.stream_open(vmm, &path, &mode)
+            }
+            "_wfopen" | "_wfsopen" => {
+                let path = self.read_wide(vmm, a0);
+                let mode = self.read_wide(vmm, a1);
+                self.stream_open(vmm, &path, &mode)
+            }
+            "fread" => {
+                // size_t fread(void *ptr=a0, size_t size=a1, size_t count=a2, FILE *stream=a3)
+                let total = a1.wrapping_mul(a2) as usize;
+                let data = match self.stream_remaining(a3) {
+                    Some(d) => d,
+                    None => return HleAction::Return(0),
+                };
+                let take = total.min(data.len());
+                if take > 0 && a0 != 0 {
+                    let _ = vmm.write_bytes(a0, &data[..take]);
+                }
+                self.stream_consume(a3, take);
+                if let Some(s) = self.streams.get_mut(&a3) {
+                    if take < total {
+                        s.eof = true;
+                    }
+                }
+                if a1 == 0 {
+                    0
+                } else {
+                    (take as u64) / a1
+                }
+            }
+            "fseek" | "_fseeki64" => {
+                // int fseek(FILE *a0, long/i64 offset=a1, int origin=a2) 0=SET 1=CUR 2=END
+                let len = self
+                    .streams
+                    .get(&a0)
+                    .and_then(|s| self.files.get(&s.key))
+                    .map(|f| f.data.len() as i64);
+                match (self.streams.get_mut(&a0), len) {
+                    (Some(s), Some(flen)) => {
+                        let base: i64 = match a2 {
+                            0 => 0,
+                            1 => s.pos as i64 - if s.ungetc.is_some() { 1 } else { 0 },
+                            2 => flen,
+                            _ => return HleAction::Return((-1i64) as u64),
+                        };
+                        let np = base.saturating_add(a1 as i64);
+                        if np < 0 {
+                            return HleAction::Return((-1i64) as u64);
+                        }
+                        s.pos = np as u64;
+                        s.ungetc = None;
+                        s.eof = false;
+                        0
+                    }
+                    _ => (-1i64) as u64,
+                }
+            }
+            "ftell" | "_ftelli64" => match self.streams.get(&a0) {
+                Some(s) => s.pos - if s.ungetc.is_some() { 1 } else { 0 },
+                None => (-1i64) as u64,
+            },
+            "feof" => match self.streams.get(&a0) {
+                Some(s) => {
+                    let flen = self.files.get(&s.key).map(|f| f.data.len() as u64).unwrap_or(0);
+                    u64::from(s.eof || (s.pos >= flen && s.ungetc.is_none()))
+                }
+                None => 1,
+            },
+            "ungetc" => {
+                // int ungetc(int c=a0, FILE *a1)
+                match self.streams.get_mut(&a1) {
+                    Some(s) => {
+                        if (a0 as i32) < 0 {
+                            return HleAction::Return((-1i64) as u64);
+                        }
+                        s.ungetc = Some(a0 as u8);
+                        s.eof = false;
+                        a0 & 0xFF
+                    }
+                    None => (-1i64) as u64,
+                }
+            }
+            "rewind" => {
+                if let Some(s) = self.streams.get_mut(&a0) {
+                    s.pos = 0;
+                    s.ungetc = None;
+                    s.eof = false;
+                }
+                0
+            }
+            "_write" => {
+                // int _write(int fd=a0, const void *buf=a1, unsigned count=a2)
+                if a0 <= 2 {
+                    let mut buf = vec![0u8; a2 as usize];
+                    if a1 != 0 && vmm.read_bytes(a1, &mut buf).is_ok() {
+                        self.stdout.extend_from_slice(&buf);
+                    }
+                    a2
+                } else {
+                    (-1i64) as u64
+                }
+            }
+            "putchar" => {
+                self.stdout.push(a0 as u8);
+                a0 & 0xFF
+            }
+            // ------------------------------------------------- stat / filesystem (CRT)
+            "_wstat64i32" | "_stat64i32" | "_wstat" | "_stat" | "_wstat64" | "_stat64" => {
+                let raw = if symbol.starts_with("_w") {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                let canon = match self.canonical_path(&raw) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.set_last_error(e);
+                        return HleAction::Return((-1i64) as u64);
+                    }
+                };
+                match self.lookup_file(&canon).map(|f| (f.is_directory, f.data.len())) {
+                    Some((is_dir, len)) => {
+                        // struct _stat64i32 (x64): mode u16 @6, size i32 @20, times i64 @24/32/40.
+                        // _stat64 shares the prefix but has i64 size @24; write both layouts'
+                        // common fields and the 64i32 size (Chocolate Doom imports _wstat64i32).
+                        let mut st = [0u8; 48];
+                        let mode: u16 = if is_dir { 0x4000 | 0o777 } else { 0x8000 | 0o666 };
+                        st[6..8].copy_from_slice(&mode.to_le_bytes());
+                        st[8..10].copy_from_slice(&1u16.to_le_bytes()); // st_nlink
+                        st[20..24].copy_from_slice(&(len as i64 as i32).to_le_bytes());
+                        let epoch: i64 = 1_793_574_400; // 2026-10-30T00:00:00Z (FIXED clock)
+                        st[24..32].copy_from_slice(&epoch.to_le_bytes());
+                        st[32..40].copy_from_slice(&epoch.to_le_bytes());
+                        st[40..48].copy_from_slice(&epoch.to_le_bytes());
+                        if a1 != 0 {
+                            let _ = vmm.write_bytes(a1, &st);
+                        }
+                        0
+                    }
+                    None => {
+                        self.set_last_error(ERROR_FILE_NOT_FOUND);
+                        (-1i64) as u64
+                    }
+                }
+            }
+            "_wmkdir" | "_mkdir" => {
+                let raw = if symbol.starts_with("_w") {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                match self.canonical_path(&raw) {
+                    Ok(path) => {
+                        if self.dir_exists(&path) || self.lookup_file(&path).is_some() {
+                            self.set_last_error(ERROR_ALREADY_EXISTS);
+                            (-1i64) as u64
+                        } else if !self.dir_exists(&Self::dir_of(&path)) {
+                            self.set_last_error(ERROR_PATH_NOT_FOUND);
+                            (-1i64) as u64
+                        } else {
+                            self.vfs_insert_directory(&path);
+                            0
+                        }
+                    }
+                    Err(e) => {
+                        self.set_last_error(e);
+                        (-1i64) as u64
+                    }
+                }
+            }
+            "_wremove" | "remove" => {
+                let raw = if symbol.starts_with("_w") {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                let canon = self.canonical_path(&raw).unwrap_or_default();
+                let key = canon.to_ascii_uppercase();
+                if self.files.remove(&key).is_some() {
+                    0
+                } else {
+                    self.set_last_error(ERROR_FILE_NOT_FOUND);
+                    (-1i64) as u64
+                }
+            }
+            "_wrename" | "rename" => {
+                let (old_raw, new_raw) = if symbol.starts_with("_w") {
+                    (self.read_wide(vmm, a0), self.read_wide(vmm, a1))
+                } else {
+                    (self.read_ansi(vmm, a0), self.read_ansi(vmm, a1))
+                };
+                let old_key = self
+                    .canonical_path(&old_raw)
+                    .unwrap_or_default()
+                    .to_ascii_uppercase();
+                let new_canon = self.canonical_path(&new_raw).unwrap_or_default();
+                let new_key = new_canon.to_ascii_uppercase();
+                match self.files.remove(&old_key) {
+                    Some(mut f) => {
+                        f.path = new_canon;
+                        self.files.insert(new_key, f);
+                        0
+                    }
+                    None => {
+                        self.set_last_error(ERROR_FILE_NOT_FOUND);
+                        (-1i64) as u64
+                    }
+                }
+            }
+            // ------------------------------------------------- environment (CRT)
+            "getenv" => {
+                let name = self.read_ansi(vmm, a0);
+                match self.env_lookup(&name) {
+                    Some(val) => {
+                        if let Some(&cached) = self.getenv_cache.get(&name.to_ascii_uppercase()) {
+                            let _ = self.write_ansi(vmm, cached, &val);
+                            cached
+                        } else {
+                            let p = self.heap_alloc(vmm, self.process_heap, val.len() as u64 + 64);
+                            if p != 0 {
+                                let _ = self.write_ansi(vmm, p, &val);
+                                self.getenv_cache.insert(name.to_ascii_uppercase(), p);
+                            }
+                            p
+                        }
+                    }
+                    None => 0,
+                }
+            }
+            "_wgetenv" => {
+                let name = self.read_wide(vmm, a0);
+                match self.env_lookup(&name) {
+                    Some(val) => {
+                        if let Some(&cached) = self.wgetenv_cache.get(&name.to_ascii_uppercase()) {
+                            let _ = self.write_wide(vmm, cached, &val);
+                            cached
+                        } else {
+                            let p = self.heap_alloc(
+                                vmm,
+                                self.process_heap,
+                                (val.chars().count() as u64 + 64) * 2,
+                            );
+                            if p != 0 {
+                                let _ = self.write_wide(vmm, p, &val);
+                                self.wgetenv_cache.insert(name.to_ascii_uppercase(), p);
+                            }
+                            p
+                        }
+                    }
+                    None => 0,
+                }
+            }
+            "_putenv" | "_wputenv" => {
+                let kv = if symbol.starts_with("_w") {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                match kv.split_once('=') {
+                    Some((k, v)) if !k.is_empty() => {
+                        let ku = k.to_ascii_uppercase();
+                        if v.is_empty() {
+                            self.env.retain(|(ek, _)| ek.to_ascii_uppercase() != ku);
+                        } else if let Some(slot) = self
+                            .env
+                            .iter_mut()
+                            .find(|(ek, _)| ek.to_ascii_uppercase() == ku)
+                        {
+                            slot.1 = v.to_string();
+                        } else {
+                            self.env.push((k.to_string(), v.to_string()));
+                        }
+                        0
+                    }
+                    _ => (-1i64) as u64,
+                }
+            }
+            // ------------------------------------------------- misc CRT
+            "rand" => {
+                self.rand_state = self
+                    .rand_state
+                    .wrapping_mul(214013)
+                    .wrapping_add(2531011);
+                ((self.rand_state >> 16) & 0x7FFF) as u64
+            }
+            "srand" => {
+                self.rand_state = a0 as u32;
+                0
+            }
+            "rand_s" => {
+                // errno_t rand_s(unsigned *a0): 0 on success. Deterministic LCG value:
+                // evidence runs must be reproducible, so no host entropy is consumed.
+                self.rand_state = self
+                    .rand_state
+                    .wrapping_mul(214013)
+                    .wrapping_add(2531011);
+                if a0 != 0 {
+                    let _ = vmm.write_u32(a0, self.rand_state ^ (self.rand_state << 13));
+                    0
+                } else {
+                    22 // EINVAL
+                }
+            }
+            "_time64" | "time" => {
+                let epoch: i64 = 1_793_574_400; // FIXED clock 2026-10-30
+                if a0 != 0 {
+                    let _ = vmm.write_u64(a0, epoch as u64);
+                }
+                epoch as u64
+            }
+            "_assert" => {
+                let expr = self.read_ansi(vmm, a0);
+                let file = self.read_ansi(vmm, a1);
+                let msg = format!("\nAssertion failed: {expr}, file {file}, line {}\n", a2);
+                self.stdout.extend_from_slice(msg.as_bytes());
+                self.exit_code = Some(3);
+                return HleAction::ExitProcess(3);
+            }
+            "_configthreadlocale" => 0,
+            "localeconv" => {
+                if self.lconv_ptr == 0 {
+                    let dot = self.heap_alloc(vmm, self.process_heap, 2);
+                    let empty = self.heap_alloc(vmm, self.process_heap, 2);
+                    if dot != 0 {
+                        let _ = vmm.write_bytes(dot, b".\0");
+                    }
+                    if empty != 0 {
+                        let _ = vmm.write_bytes(empty, b"\0\0");
+                    }
+                    // struct lconv: 10 char* (decimal_point first) then char fields.
+                    let lc = self.heap_alloc(vmm, self.process_heap, 10 * 8 + 16);
+                    if lc != 0 {
+                        let _ = vmm.write_u64(lc, dot);
+                        for i in 1..10u64 {
+                            let _ = vmm.write_u64(lc + i * 8, empty);
+                        }
+                    }
+                    self.lconv_ptr = lc;
+                }
+                self.lconv_ptr
+            }
+            "_ismbblead" => 0,
+            "isalpha" => u64::from((a0 as u32 as u8).is_ascii_alphabetic()),
+            "isprint" => u64::from(matches!(a0 as u32, 0x20..=0x7E)),
+            "isspace" => u64::from((a0 as u32 as u8).is_ascii_whitespace()),
+            "isxdigit" => u64::from((a0 as u32 as u8).is_ascii_hexdigit()),
+            "isdigit" => u64::from((a0 as u32 as u8).is_ascii_digit()),
+            "tolower" => (a0 as u32 as u8).to_ascii_lowercase() as u64,
+            "toupper" => (a0 as u32 as u8).to_ascii_uppercase() as u64,
+            "wcslen" => {
+                let units = vmm.read_wide_string(a0, 0x8000).unwrap_or_default();
+                units.len() as u64
+            }
+            "strstr" => {
+                let hay = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let needle = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                if needle.is_empty() {
+                    return HleAction::Return(a0);
+                }
+                match hay
+                    .windows(needle.len())
+                    .position(|w| w == needle.as_slice())
+                {
+                    Some(i) => a0 + i as u64,
+                    None => 0,
+                }
+            }
+            "_strnicmp" | "strncasecmp" => {
+                let l = vmm.read_c_string(a0, 0x10000).unwrap_or_default();
+                let r = vmm.read_c_string(a1, 0x10000).unwrap_or_default();
+                let n = a2 as usize;
+                let li = l[..l.len().min(n)]
+                    .iter()
+                    .map(|b| b.to_ascii_lowercase())
+                    .collect::<Vec<_>>();
+                let ri = r[..r.len().min(n)]
+                    .iter()
+                    .map(|b| b.to_ascii_lowercase())
+                    .collect::<Vec<_>>();
+                match li.cmp(&ri) {
+                    std::cmp::Ordering::Less => (-1i64) as u64,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            }
+            "_endthreadex" => {
+                self.note("K _endthreadex on unscheduled thread (no-op)".to_string());
+                0
+            }
+            // ------------------------------------------------- Win32 gaps for Tier B guests
+            "GetStartupInfoA" | "GetStartupInfoW" => {
+                // STARTUPINFO: cb u32 @0 (104 on x64 for both A/W layouts' prefix usage here).
+                if a0 != 0 {
+                    let _ = vmm.write_bytes(a0, &[0u8; 104]);
+                    let _ = vmm.write_u32(a0, 104);
+                }
+                0
+            }
+            "GetFullPathNameW" | "GetFullPathNameA" => {
+                // DWORD GetFullPathName(lpFileName=a0, nBufferLength=a1, lpBuffer=a2, lpFilePart=a3)
+                let wide = symbol.ends_with('W');
+                let raw = if wide {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                let canon = self.canonical_path(&raw).unwrap_or(raw);
+                let units: u64 = if wide {
+                    canon.encode_utf16().count() as u64
+                } else {
+                    canon.len() as u64
+                };
+                if a2 != 0 && a1 > units {
+                    if wide {
+                        let _ = self.write_wide(vmm, a2, &canon);
+                    } else {
+                        let _ = self.write_ansi(vmm, a2, &canon);
+                    }
+                    if a3 != 0 {
+                        let name_len = canon.rsplit(['\\', '/']).next().map(|n| {
+                            if wide {
+                                n.encode_utf16().count() as u64
+                            } else {
+                                n.len() as u64
+                            }
+                        }).unwrap_or(0);
+                        let off = (units - name_len) * if wide { 2 } else { 1 };
+                        let _ = vmm.write_u64(a3, a2 + off);
+                    }
+                    units
+                } else {
+                    units + 1
+                }
+            }
+            "InitializeCriticalSectionAndSpinCount" => {
+                self.crit_sections.insert(a0, 0);
+                1
+            }
+            "SetThreadPriority" => 1,
+            "TerminateProcess" => {
+                self.exit_code = Some(a1 as u32);
+                return HleAction::ExitProcess(a1 as u32);
+            }
+            "GetDeviceCaps" => {
+                // int GetDeviceCaps(HDC, int index)
+                match a1 as i32 {
+                    8 => 1920,  // HORZRES
+                    10 => 1080, // VERTRES
+                    12 => 32,   // BITSPIXEL
+                    88 => 96,   // LOGPIXELSX
+                    90 => 96,   // LOGPIXELSY
+                    116 => 60,  // VREFRESH
+                    117 => 1920,
+                    118 => 1080,
+                    _ => 0,
+                }
+            }
+            "GetDC" | "GetWindowDC" | "BeginPaint" => self.alloc_handle(),
+            "ReleaseDC" => 1,
+            "CommandLineToArgvW" => {
+                // LPWSTR *CommandLineToArgvW(LPCWSTR a0, int *a1): tokenize with the standard
+                // backslash/quote rules closely enough for unquoted argument lines, then hand
+                // back a build_argv_vector-compatible vector (LocalFree-able heap block).
+                let line = if a0 != 0 {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.command_line.clone()
+                };
+                let mut tokens: Vec<String> = Vec::new();
+                let mut cur = String::new();
+                let mut in_quotes = false;
+                let mut has_token = false;
+                let mut chars = line.chars().peekable();
+                while let Some(ch) = chars.next() {
+                    match ch {
+                        '"' => {
+                            in_quotes = !in_quotes;
+                            has_token = true;
+                        }
+                        ' ' | '\t' if !in_quotes => {
+                            if has_token {
+                                tokens.push(std::mem::take(&mut cur));
+                                has_token = false;
+                            }
+                        }
+                        _ => {
+                            cur.push(ch);
+                            has_token = true;
+                        }
+                    }
+                }
+                if has_token {
+                    tokens.push(cur);
+                }
+                if a1 != 0 {
+                    let _ = vmm.write_u32(a1, tokens.len() as u32);
+                }
+                let var = self.build_argv_vector(vmm, &tokens, true);
+                if var != 0 {
+                    vmm.read_u64(var).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+            "ShellExecuteA" | "ShellExecuteW" => {
+                let file = if symbol.ends_with('W') {
+                    self.read_wide(vmm, a2)
+                } else {
+                    self.read_ansi(vmm, a2)
+                };
+                self.note(format!("K ShellExecute({file:?}) ignored (no shell)"));
+                33 // >32 = success per ShellExecute contract
+            }
+            "PathIsRelativeW" | "PathIsRelativeA" => {
+                let p = if symbol.ends_with('W') {
+                    self.read_wide(vmm, a0)
+                } else {
+                    self.read_ansi(vmm, a0)
+                };
+                let t = p.trim();
+                let abs = t.len() >= 3
+                    && t.as_bytes()[1] == b':'
+                    && (t.as_bytes()[2] == b'\\' || t.as_bytes()[2] == b'/')
+                    || t.starts_with("\\\\");
+                u64::from(!abs)
             }
             // ------------------------------------------- old-msvcrt startup (7za)
             "__set_app_type" => {
@@ -3812,19 +4434,63 @@ impl Win32Kernel {
             // ------------------------------------------- old-msvcrt stdio over _iob
             "fputs" => {
                 let s = self.read_ansi(vmm, a0);
-                if a1 == 0 || self.iob_index(a1) != Some(0) {
+                if let Some(st) = self.streams.get(&a1).cloned() {
+                    if let Some(f) = self.files.get_mut(&st.key) {
+                        let pos = st.pos as usize;
+                        if f.data.len() < pos {
+                            f.data.resize(pos, 0);
+                        }
+                        if f.data.len() < pos + s.len() {
+                            f.data.resize(pos + s.len(), 0);
+                        }
+                        f.data[pos..pos + s.len()].copy_from_slice(s.as_bytes());
+                    }
+                    if let Some(stm) = self.streams.get_mut(&a1) {
+                        stm.pos = stm.pos.saturating_add(s.len() as u64);
+                    }
+                } else if a1 == 0 || self.iob_index(a1) != Some(0) {
                     self.stdout.extend_from_slice(s.as_bytes());
                 }
                 0
             }
             "fputc" => {
-                if a1 == 0 || self.iob_index(a1) != Some(0) {
+                if let Some(st) = self.streams.get(&a1).cloned() {
+                    if let Some(f) = self.files.get_mut(&st.key) {
+                        let pos = st.pos as usize;
+                        if f.data.len() <= pos {
+                            f.data.resize(pos + 1, 0);
+                        }
+                        f.data[pos] = a0 as u8;
+                    }
+                    if let Some(stm) = self.streams.get_mut(&a1) {
+                        stm.pos = stm.pos.saturating_add(1);
+                    }
+                } else if a1 == 0 || self.iob_index(a1) != Some(0) {
                     self.stdout.push(a0 as u8);
                 }
                 a0 & 0xFF
             }
-            "fgetc" => (-1i64) as u64, // EOF
-            "fclose" => 0,
+            "fgetc" => {
+                // int fgetc(FILE *a0): next byte or EOF(-1). Console stdin has no input source yet.
+                match self.stream_remaining(a0) {
+                    Some(d) if !d.is_empty() => {
+                        let b = d[0] as u64;
+                        self.stream_consume(a0, 1);
+                        b
+                    }
+                    Some(_) => {
+                        if let Some(s) = self.streams.get_mut(&a0) {
+                            s.eof = true;
+                        }
+                        (-1i64) as u64
+                    }
+                    None => (-1i64) as u64,
+                }
+            }
+            "fclose" => {
+                self.streams.remove(&a0);
+                0
+            }
             "GetCommandLineA" => {
                 let (a, _) = self.ensure_command_line_buffers(vmm);
                 a
@@ -4819,6 +5485,398 @@ impl Win32Kernel {
         self.command_line_w = w;
         (a, w)
     }
+    /// `__p__acmdln` / `__p__wcmdln` backing cells: address of the CRT's `_acmdln`/`_wcmdln`
+    /// variable, which holds a pointer to the process command-line string.
+    fn cmdln_var(&mut self, vmm: &mut VirtualMemoryManager, wide: bool) -> u64 {
+        let existing = if wide { self.crt_wcmdln_var } else { self.crt_acmdln_var };
+        if existing != 0 {
+            return existing;
+        }
+        let (a, w) = self.ensure_command_line_buffers(vmm);
+        let cell = self.heap_alloc(vmm, self.process_heap, 8);
+        if cell != 0 {
+            let _ = vmm.write_u64(cell, if wide { w } else { a });
+        }
+        if wide {
+            self.crt_wcmdln_var = cell;
+        } else {
+            self.crt_acmdln_var = cell;
+        }
+        cell
+    }
+
+    /// Open a CRT stream over the VFS. Returns the FILE* guest address or 0 (NULL).
+    /// Mode is parsed like MSVCRT: r/w/a with optional + and b/t suffixes (no CRLF translation
+    /// is modelled — every consumer in scope uses binary files or `\n`-tolerant text).
+    fn stream_open(&mut self, vmm: &mut VirtualMemoryManager, path: &str, mode: &str) -> u64 {
+        let canon = match self.canonical_path(path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_last_error(e);
+                return 0;
+            }
+        };
+        let key = canon.to_ascii_uppercase();
+        let first = mode.chars().next().unwrap_or('r');
+        let plus = mode.contains('+');
+        let exists = self.files.contains_key(&key);
+        match first {
+            'r' => {
+                if !exists {
+                    self.set_last_error(ERROR_FILE_NOT_FOUND);
+                    return 0;
+                }
+            }
+            'w' => {
+                if let Some(f) = self.files.get_mut(&key) {
+                    if f.is_directory {
+                        self.set_last_error(ERROR_ACCESS_DENIED);
+                        return 0;
+                    }
+                    f.data.clear();
+                } else {
+                    self.files.insert(
+                        key.clone(),
+                        GuestFile {
+                            path: canon.clone(),
+                            data: Vec::new(),
+                            position: 0,
+                            writable: true,
+                            is_directory: false,
+                            handle_count: 1,
+                        },
+                    );
+                }
+            }
+            'a' => {
+                if !exists {
+                    self.files.insert(
+                        key.clone(),
+                        GuestFile {
+                            path: canon.clone(),
+                            data: Vec::new(),
+                            position: 0,
+                            writable: true,
+                            is_directory: false,
+                            handle_count: 1,
+                        },
+                    );
+                }
+            }
+            _ => return 0,
+        }
+        let fp = self.heap_alloc(vmm, self.process_heap, 64);
+        if fp == 0 {
+            return 0;
+        }
+        let start_pos = if first == 'a' {
+            self.files.get(&key).map(|f| f.data.len() as u64).unwrap_or(0)
+        } else {
+            0
+        };
+        self.streams.insert(
+            fp,
+            GuestStream {
+                key,
+                pos: start_pos,
+                write: first != 'r' || plus,
+                eof: false,
+                ungetc: None,
+            },
+        );
+        fp
+    }
+
+    /// Remaining bytes of a stream from its current position (ungetc byte first).
+    fn stream_remaining(&self, fp: u64) -> Option<Vec<u8>> {
+        let s = self.streams.get(&fp)?;
+        let f = self.files.get(&s.key)?;
+        let mut out = Vec::new();
+        if let Some(b) = s.ungetc {
+            out.push(b);
+        }
+        let start = (s.pos as usize).min(f.data.len());
+        out.extend_from_slice(&f.data[start..]);
+        Some(out)
+    }
+
+    /// Advance a stream by `n` consumed bytes (accounting for a pending ungetc byte).
+    fn stream_consume(&mut self, fp: u64, mut n: usize) {
+        if let Some(s) = self.streams.get_mut(&fp) {
+            if s.ungetc.is_some() && n > 0 {
+                s.ungetc = None;
+                n -= 1;
+            }
+            s.pos = s.pos.saturating_add(n as u64);
+        }
+    }
+
+    /// Minimal `scanf`-family engine for `__stdio_common_vfscanf`/`vsscanf`.
+    /// Supports whitespace/literal matching, `%%`, `%d %i %u %x %o %f %s %c %[set]` with
+    /// optional field width, `*` suppression, and h/l/ll length modifiers for integers.
+    /// Returns (items assigned or -1 for input failure before any conversion, bytes consumed).
+    fn scanf_engine(
+        &mut self,
+        vmm: &mut VirtualMemoryManager,
+        input: &[u8],
+        fmt: &str,
+        va: &mut VaSlotReader,
+    ) -> (i64, usize) {
+        let fb = fmt.as_bytes();
+        let mut fi = 0usize;
+        let mut ii = 0usize;
+        let mut assigned: i64 = 0;
+        let is_ws = |b: u8| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == 0x0b || b == 0x0c;
+        while fi < fb.len() {
+            let fc = fb[fi];
+            if is_ws(fc) {
+                while ii < input.len() && is_ws(input[ii]) {
+                    ii += 1;
+                }
+                fi += 1;
+                continue;
+            }
+            if fc != b'%' {
+                if ii >= input.len() {
+                    return (if assigned == 0 { -1 } else { assigned }, ii);
+                }
+                if input[ii] != fc {
+                    return (assigned, ii);
+                }
+                ii += 1;
+                fi += 1;
+                continue;
+            }
+            fi += 1; // consume '%'
+            if fi < fb.len() && fb[fi] == b'%' {
+                if ii < input.len() && input[ii] == b'%' {
+                    ii += 1;
+                    fi += 1;
+                    continue;
+                }
+                return (assigned, ii);
+            }
+            let mut suppress = false;
+            if fi < fb.len() && fb[fi] == b'*' {
+                suppress = true;
+                fi += 1;
+            }
+            let mut width: Option<usize> = None;
+            let mut wv = 0usize;
+            let mut have_w = false;
+            while fi < fb.len() && fb[fi].is_ascii_digit() {
+                wv = wv * 10 + (fb[fi] - b'0') as usize;
+                have_w = true;
+                fi += 1;
+            }
+            if have_w {
+                width = Some(wv);
+            }
+            let mut len_mod = 0u8; // 0=int 1=short 2=long/ll (64-bit store)
+            while fi < fb.len() && (fb[fi] == b'h' || fb[fi] == b'l' || fb[fi] == b'L') {
+                len_mod = if fb[fi] == b'h' { 1 } else { 2 };
+                fi += 1;
+            }
+            if fi >= fb.len() {
+                break;
+            }
+            let conv = fb[fi];
+            fi += 1;
+            let limit = width.unwrap_or(usize::MAX);
+            match conv {
+                b'd' | b'i' | b'u' | b'x' | b'X' | b'o' => {
+                    while ii < input.len() && is_ws(input[ii]) {
+                        ii += 1;
+                    }
+                    if ii >= input.len() {
+                        return (if assigned == 0 { -1 } else { assigned }, ii);
+                    }
+                    let start = ii;
+                    let mut j = ii;
+                    if j < input.len() && (input[j] == b'-' || input[j] == b'+') {
+                        j += 1;
+                    }
+                    let neg = j > ii && input[ii] == b'-';
+                    let radix: u32 = match conv {
+                        b'x' | b'X' => 16,
+                        b'o' => 8,
+                        b'i' => {
+                            if input.get(j) == Some(&b'0')
+                                && matches!(input.get(j + 1), Some(b'x') | Some(b'X'))
+                            {
+                                16
+                            } else if input.get(j) == Some(&b'0') {
+                                8
+                            } else {
+                                10
+                            }
+                        }
+                        _ => 10,
+                    };
+                    if radix == 16
+                        && input.get(j) == Some(&b'0')
+                        && matches!(input.get(j + 1), Some(b'x') | Some(b'X'))
+                    {
+                        j += 2;
+                    }
+                    let mut val: i64 = 0;
+                    let mut any = false;
+                    while j < input.len() && (j - start) < limit {
+                        let d = (input[j] as char).to_digit(radix);
+                        match d {
+                            Some(d) => {
+                                val = val.wrapping_mul(radix as i64).wrapping_add(d as i64);
+                                any = true;
+                                j += 1;
+                            }
+                            None => break,
+                        }
+                    }
+                    if !any {
+                        return (assigned, ii);
+                    }
+                    if neg {
+                        val = -val;
+                    }
+                    ii = j;
+                    if !suppress {
+                        let ptr = va.next_u64();
+                        match len_mod {
+                            1 => {
+                                let _ = vmm.write_u16(ptr, val as u16);
+                            }
+                            2 => {
+                                let _ = vmm.write_u64(ptr, val as u64);
+                            }
+                            _ => {
+                                let _ = vmm.write_u32(ptr, val as u32);
+                            }
+                        }
+                        assigned += 1;
+                    }
+                }
+                b'f' | b'e' | b'g' | b'a' => {
+                    while ii < input.len() && is_ws(input[ii]) {
+                        ii += 1;
+                    }
+                    let start = ii;
+                    let mut j = ii;
+                    while j < input.len()
+                        && (j - start) < limit
+                        && (input[j].is_ascii_digit()
+                            || matches!(input[j], b'.' | b'-' | b'+' | b'e' | b'E'))
+                    {
+                        j += 1;
+                    }
+                    if j == start {
+                        return (assigned, ii);
+                    }
+                    let text = String::from_utf8_lossy(&input[start..j]).to_string();
+                    let val: f64 = text.parse().unwrap_or(0.0);
+                    ii = j;
+                    if !suppress {
+                        let ptr = va.next_u64();
+                        if len_mod == 2 {
+                            let _ = vmm.write_bytes(ptr, &val.to_le_bytes());
+                        } else {
+                            let _ = vmm.write_bytes(ptr, &(val as f32).to_le_bytes());
+                        }
+                        assigned += 1;
+                    }
+                }
+                b's' => {
+                    while ii < input.len() && is_ws(input[ii]) {
+                        ii += 1;
+                    }
+                    if ii >= input.len() {
+                        return (if assigned == 0 { -1 } else { assigned }, ii);
+                    }
+                    let start = ii;
+                    while ii < input.len() && !is_ws(input[ii]) && (ii - start) < limit {
+                        ii += 1;
+                    }
+                    if !suppress {
+                        let ptr = va.next_u64();
+                        let mut out = input[start..ii].to_vec();
+                        out.push(0);
+                        let _ = vmm.write_bytes(ptr, &out);
+                        assigned += 1;
+                    }
+                }
+                b'c' => {
+                    let n = width.unwrap_or(1);
+                    if ii >= input.len() {
+                        return (if assigned == 0 { -1 } else { assigned }, ii);
+                    }
+                    let take = n.min(input.len() - ii);
+                    if !suppress {
+                        let ptr = va.next_u64();
+                        let _ = vmm.write_bytes(ptr, &input[ii..ii + take]);
+                        assigned += 1;
+                    }
+                    ii += take;
+                }
+                b'[' => {
+                    let mut negate = false;
+                    if fi < fb.len() && fb[fi] == b'^' {
+                        negate = true;
+                        fi += 1;
+                    }
+                    let mut set = [false; 256];
+                    let mut prev: Option<u8> = None;
+                    while fi < fb.len() && fb[fi] != b']' {
+                        if fb[fi] == b'-' && prev.is_some() && fi + 1 < fb.len() && fb[fi + 1] != b']' {
+                            let lo = prev.unwrap();
+                            let hi = fb[fi + 1];
+                            for b in lo..=hi {
+                                set[b as usize] = true;
+                            }
+                            fi += 2;
+                            prev = None;
+                        } else {
+                            set[fb[fi] as usize] = true;
+                            prev = Some(fb[fi]);
+                            fi += 1;
+                        }
+                    }
+                    fi += 1; // consume ']'
+                    let start = ii;
+                    while ii < input.len() && (ii - start) < limit {
+                        let inside = set[input[ii] as usize];
+                        if inside == negate {
+                            break;
+                        }
+                        ii += 1;
+                    }
+                    if ii == start {
+                        return (assigned, ii);
+                    }
+                    if !suppress {
+                        let ptr = va.next_u64();
+                        let mut out = input[start..ii].to_vec();
+                        out.push(0);
+                        let _ = vmm.write_bytes(ptr, &out);
+                        assigned += 1;
+                    }
+                }
+                _ => {
+                    // Unknown conversion: stop like a matching failure.
+                    return (assigned, ii);
+                }
+            }
+        }
+        (assigned, ii)
+    }
+
+    /// Case-insensitive environment lookup (Windows semantics).
+    fn env_lookup(&self, name: &str) -> Option<String> {
+        let target = name.to_ascii_uppercase();
+        self.env
+            .iter()
+            .find(|(k, _)| k.to_ascii_uppercase() == target)
+            .map(|(_, v)| v.clone())
+    }
+
     pub fn init_runtime_tables(&mut self) {
         self.init_modules();
         self.bitmaps.clear();

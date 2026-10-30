@@ -324,6 +324,52 @@ impl BrowserX64Emulator {
                 match self.kernel.lookup_import_thunk(insn_rip) {
                     Some((dll, symbol, ordinal)) => {
                         let args = self.capture_args();
+                        // Floating-point CRT imports take/return values in XMM0, which the
+                        // kernel's integer-only argument capture cannot see. Resolve them here
+                        // where CPU state is available; everything else goes through the kernel.
+                        let float_result: Option<f64> = match symbol.as_str() {
+                            "sqrtf" => {
+                                let x = self.cpu.get_xmm(0);
+                                let v = f32::from_le_bytes([x[0], x[1], x[2], x[3]]);
+                                Some((v.sqrt()) as f64)
+                            }
+                            "sqrt" => {
+                                let x = self.cpu.get_xmm(0);
+                                let v = f64::from_le_bytes(x[0..8].try_into().unwrap());
+                                Some(v.sqrt())
+                            }
+                            "atof" | "_atof_l" => {
+                                let s = self
+                                    .vmm
+                                    .read_c_string(args[0], 4096)
+                                    .unwrap_or_default();
+                                let text = String::from_utf8_lossy(&s);
+                                Some(text.trim().parse::<f64>().unwrap_or(0.0))
+                            }
+                            _ => None,
+                        };
+                        if let Some(val) = float_result {
+                            self.kernel.note_hle_call(&symbol);
+                            let rsp = self.cpu.gpr[4];
+                            let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+                            let mut out = [0u8; 16];
+                            if symbol == "sqrtf" {
+                                out[0..4].copy_from_slice(&(val as f32).to_le_bytes());
+                            } else {
+                                out[0..8].copy_from_slice(&val.to_le_bytes());
+                            }
+                            self.cpu.set_xmm_vex_zero_upper(0, &out);
+                            self.cpu.gpr[4] = rsp.wrapping_add(8);
+                            self.cpu.rip = ret;
+                            self.cpu.instructions_executed =
+                                self.cpu.instructions_executed.wrapping_add(1);
+                            self.trace_event(format!(
+                                "H 0x{:x} {}!{} (xmm) -> {} ret=0x{:x}",
+                                insn_rip, dll, symbol, val, ret
+                            ));
+                            executed += 1;
+                            continue;
+                        }
                         let rsp = self.cpu.gpr[4];
                         // Snapshot the return address *before* the call, so a corrupted slot shows
                         // up as an explicit ret_slot=0x... value rather than an unexplained jump.
