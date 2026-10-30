@@ -6049,3 +6049,35 @@ impl Win32Kernel {
 
     fn run_all_pending_threads(&mut self, _vmm: &mut VirtualMemoryManager) {}
 }
+
+#[cfg(test)]
+mod heap_regression_tests {
+    use super::*;
+    use crate::vmm::VirtualMemoryManager;
+
+    #[test]
+    fn heap_alloc_uses_byte_size_not_flags_and_does_not_overlap() {
+        let mut vmm = VirtualMemoryManager::new(4096);
+        let mut k = Win32Kernel::new();
+        let heap = match k.dispatch(&mut vmm, "kernel32.dll", "HeapCreate", 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0, 0) {
+            HleAction::Return(h) => h,
+            _ => panic!("HeapCreate did not return"),
+        };
+        assert_ne!(heap, 0);
+        let args1 = [heap, 8, 0xc00, 0, 0, 0, 0, 0, 0, 0];
+        let p1 = match k.dispatch(&mut vmm, "kernel32.dll", "HeapAlloc", 0, &args1, 0, 0) {
+            HleAction::Return(p) => p,
+            _ => panic!("HeapAlloc did not return"),
+        };
+        let args2 = [heap, 0, 0x100, 0, 0, 0, 0, 0, 0, 0];
+        let p2 = match k.dispatch(&mut vmm, "kernel32.dll", "HeapAlloc", 0, &args2, 0, 0) {
+            HleAction::Return(p) => p,
+            _ => panic!("HeapAlloc did not return"),
+        };
+        assert_ne!(p1, 0);
+        assert_ne!(p2, 0);
+        assert!(p2 >= p1 + 0xc00, "second allocation overlapped the 0xc00-byte debug buffer");
+        vmm.write_u64(p1 + 0x20, 0x1234).unwrap();
+        assert_eq!(vmm.read_u64(p1 + 0x20).unwrap(), 0x1234);
+    }
+}
