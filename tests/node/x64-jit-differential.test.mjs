@@ -47,8 +47,8 @@ function regs(emu) {
 
 test('JIT and interpreter agree on RFLAGS across a native self-loop sub/nop/jnz block', async t => {
   const first = await newCore();
-  if (!first || typeof first.emu.jit_context_slots !== 'function' || first.emu.jit_context_slots() !== 32) {
-    t.skip('core predates the 32-slot JIT basic-block ABI; rebuild rust/porthole-x64-wasm');
+  if (!first || typeof first.emu.jit_context_slots !== 'function' || first.emu.jit_context_slots() !== 64) {
+    t.skip('core predates the 64-slot JIT basic-block ABI; rebuild rust/porthole-x64-wasm');
     return;
   }
   // mov rcx,1000; mov rdx,1; L: sub rcx,rdx; nop; jnz L; ret

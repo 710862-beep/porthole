@@ -40,7 +40,7 @@ function movImm64(reg, imm) {
 
 test('JIT covers memory loads, LEA, MOVZX/SX, SETcc and partial-register ALU', async t => {
   const probe = await newCore();
-  if (!probe || typeof probe.emu.jit_context_slots !== 'function' || probe.emu.jit_context_slots() !== 32) { t.skip('core predates the 32-slot JIT ABI'); return; }
+  if (!probe || typeof probe.emu.jit_context_slots !== 'function' || probe.emu.jit_context_slots() !== 64) { t.skip('core predates the 64-slot JIT ABI'); return; }
   // Data qword lives at .text+0x100 (VA 0x140001100); RSI points at it. This exercises
   // base+displacement and SIB loads without needing a separate .data section.
   const data = Buffer.alloc(16);

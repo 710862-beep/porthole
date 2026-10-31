@@ -113,6 +113,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {name: torture-core, path: vendor/porthole-x64-wasm}
       - run: node scripts/fetch-chocolate-doom.mjs
+      - name: JIT microbench (authored hot loop ceiling)
+        continue-on-error: true
+        run: |
+          BENCH_N=20000000 node tests/bench/jit-microbench.mjs 2>&1 | tee artifacts/torture/jit-microbench.log
       - name: Chocolate Doom interpreter baseline (full timedemo)
         id: doom-baseline
         continue-on-error: true

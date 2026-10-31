@@ -263,13 +263,13 @@ async function main() {
     async loadJitCache(sha) {
       try {
         const payload = JSON.parse(fs.readFileSync(path.join(cacheDir, `${sha}.jitcache`), 'utf8'));
-        if (payload.exeSha256 !== sha || payload.abi !== 2 || !Array.isArray(payload.blocks)) return [];
+        if (payload.exeSha256 !== sha || payload.abi !== 3 || !Array.isArray(payload.blocks)) return [];
         return payload.blocks.map(({ meta, wasmBase64 }) => ({ meta, wasmBytes: new Uint8Array(Buffer.from(wasmBase64, 'base64')) }));
       } catch { return []; }
     },
     async saveJitCache(sha, entries) {
       fs.mkdirSync(cacheDir, { recursive: true });
-      const payload = JSON.stringify({ version: 1, abi: 2, exeSha256: sha, blocks: entries.map(({ meta, wasmBytes }) => ({ meta, wasmBase64: Buffer.from(wasmBytes).toString('base64') })) });
+      const payload = JSON.stringify({ version: 1, abi: 3, exeSha256: sha, blocks: entries.map(({ meta, wasmBytes }) => ({ meta, wasmBase64: Buffer.from(wasmBytes).toString('base64') })) });
       fs.writeFileSync(path.join(cacheDir, `${sha}.jitcache`), payload);
       return { blocks: entries.length, bytes: payload.length };
     },

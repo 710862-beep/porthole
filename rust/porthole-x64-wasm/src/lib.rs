@@ -72,6 +72,11 @@ pub struct BrowserX64Emulator {
     jit_unsupported: std::collections::HashMap<String, u64>,
     jit_unsupported_exits: u64,
     jit_mem_fault: u32,
+    jit_tlb: Vec<u64>,
+    jit_undo: Vec<u64>,
+    jit_touched: Vec<u64>,
+    jit_tlb_gen: u32,
+    jit_pinned: Vec<(u64, bool)>,
 }
 
 #[wasm_bindgen]
@@ -110,6 +115,15 @@ impl BrowserX64Emulator {
             jit_unsupported: std::collections::HashMap::new(),
             jit_unsupported_exits: 0,
             jit_mem_fault: 0,
+            jit_tlb: {
+                let mut v = vec![0u64; jit::JIT_TLB_ENTRIES * 4];
+                for e in v.chunks_mut(4) { e[0] = u64::MAX; }
+                v
+            },
+            jit_undo: vec![0u64; jit::JIT_UNDO_CAP * 4],
+            jit_touched: vec![0u64; jit::JIT_TOUCHED_CAP],
+            jit_tlb_gen: 1,
+            jit_pinned: Vec::new(),
         }
     }
 
@@ -1286,6 +1300,7 @@ impl BrowserX64Emulator {
         self.jit_ctx[22] = self.cpu.fs_base;
         self.jit_ctx[23] = self.cpu.gs_base;
         self.jit_ctx[24] = 0;
+        self.jit_begin_block();
         self.jit_shadow = Some(self.cpu.clone());
         let meta = jit::HybridWasmJit::meta_json(&art, self.jit_context_ptr());
         self.jit_active = Some(art);
@@ -1317,9 +1332,9 @@ impl BrowserX64Emulator {
             self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-context".into();
         }
         if status == jit::JIT_STATUS_INTERPRET {
-            // A memory helper faulted or an unsupported instruction was reached mid-block.
-            // Prior instructions' side effects are already in the VMM; flush locals and let
-            // the interpreter execute exactly exit_rip (reproducing the precise trap).
+            // Native load/store trapped or a cross-page access needs the interpreter. Roll back
+            // any native stores from this block so the interpreter re-executes from entry precisely.
+            self.jit_rollback_memory();
             self.jit_active.take(); self.jit_shadow.take();
             self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
             self.cpu.rflags = self.jit_ctx[19];
@@ -1341,9 +1356,19 @@ impl BrowserX64Emulator {
         if art.self_loop && executed % art.insn_count as u64 != 0 {
             self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-loop-count".into();
         }
-        // Correctness lanes shadow-validate the first execution of each artifact/epoch. Once
-        // proven, subsequent commits are atomic register writeback; SMC invalidates the proof.
+        // Correctness lanes shadow-validate the first execution of each artifact/epoch. Native
+        // store blocks are rolled back to pre-block memory, then the interpreter re-executes and
+        // its memory becomes the committed truth. On mismatch we restore the pre-block pages.
         if self.jit_validate && (self.jit_validate_always || !self.jit.is_proven(art.entry_rip)) {
+            let touched: Vec<u64> = if art.has_stores {
+                let n = self.jit_ctx[31] as usize;
+                let v = self.jit_touched[..n.min(jit::JIT_TOUCHED_CAP)].to_vec();
+                self.jit_rollback_memory();
+                v
+            } else { Vec::new() };
+            let snapshots: Vec<(u64, Vec<u8>)> = touched.iter().filter_map(|&p| {
+                self.vmm.read_page(p).ok().map(|d| (p, d.to_vec()))
+            }).collect();
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
             let mut ok = true;
             for _ in 0..executed {
@@ -1352,16 +1377,21 @@ impl BrowserX64Emulator {
                     _ => { ok = false; break; }
                 }
             }
-            let mut ctx_rsp = self.jit_ctx[4];
-            let expected_rip = if art.ends_with_ret { ctx_rsp = ctx_rsp.wrapping_add(8); self.jit_ctx[4] = ctx_rsp; shadow.rip } else { exit_rip };
-            if !ok || shadow.gpr[..] != self.jit_ctx[..16] || ctx_rsp != shadow.gpr[4] || self.jit_ctx[19] != shadow.rflags || shadow.rip != expected_rip {
+            let mut xmm_ok = true;
+            for i in 0..16 {
+                let lo = u64::from_le_bytes(shadow.ymm[i][0..8].try_into().unwrap());
+                let hi = u64::from_le_bytes(shadow.ymm[i][8..16].try_into().unwrap());
+                if self.jit_ctx[32 + i * 2] != lo || self.jit_ctx[33 + i * 2] != hi { xmm_ok = false; }
+            }
+            if !ok || !xmm_ok || shadow.gpr[..] != self.jit_ctx[..16] || self.jit_ctx[19] != shadow.rflags || shadow.rip != exit_rip {
                 let actual: Vec<String> = self.jit_ctx[..16].iter().map(|v| format!("\"{}\"", v)).collect();
                 let expected: Vec<String> = shadow.gpr.iter().map(|v| format!("\"{}\"", v)).collect();
                 let mut code = [0u8; 16]; let _ = self.vmm.host_read_bytes(art.entry_rip, &mut code);
                 let hex: String = code.iter().map(|b| format!("{:02x}", b)).collect();
                 self.jit_last_failure = format!(
-                    "{{\"entryRip\":\"{}\",\"executed\":{},\"bytes\":\"{}\",\"stepOk\":{},\"expectedRip\":\"{}\",\"actualRip\":\"{}\",\"expectedFlags\":\"{}\",\"actualFlags\":\"{}\",\"expectedGpr\":[{}],\"actualGpr\":[{}]}}",
-                    art.entry_rip, executed, hex, ok, shadow.rip, expected_rip, shadow.rflags, self.jit_ctx[19], expected.join(","), actual.join(","));
+                    "{{\"entryRip\":\"{}\",\"executed\":{},\"bytes\":\"{}\",\"stepOk\":{},\"xmmOk\":{},\"expectedRip\":\"{}\",\"actualRip\":\"{}\",\"expectedFlags\":\"{}\",\"actualFlags\":\"{}\",\"expectedGpr\":[{}],\"actualGpr\":[{}]}}",
+                    art.entry_rip, executed, hex, ok, xmm_ok, shadow.rip, exit_rip, shadow.rflags, self.jit_ctx[19], expected.join(","), actual.join(","));
+                for (p, d) in snapshots { let _ = self.vmm.host_write_bytes(p, &d); }
                 self.jit_active.take(); self.jit_shadow.take(); self.jit.invalidate_entry(art.entry_rip);
                 return format!("fault:jit-validation:0x{:x}", art.entry_rip);
             }
@@ -1373,25 +1403,15 @@ impl BrowserX64Emulator {
             self.jit.mark_proven(art.entry_rip);
             return "next".into();
         }
+        if art.has_stores { self.jit_apply_memory(); }
         self.jit_shadow.take();
-        // Resolve RET target before committing registers. Use the JIT's pre-ret RSP, not the
-        // stale core RSP, because the block may have adjusted the stack (add rsp,imm; ret).
-        let ret_target = if art.ends_with_ret {
-            match self.vmm.read_u64(self.jit_ctx[4]) {
-                Ok(ret) => Some(ret),
-                Err(MemoryTrap::PageFault(a)) => { self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return format!("page-fault:{a}"); }
-                Err(MemoryTrap::AccessViolation(a)) => {
-                    self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip);
-                    self.status = RunStatus::Fault; self.fault_message = format!("JIT ret read access violation at 0x{a:x}");
-                    return format!("fault:{}", self.fault_message);
-                }
-            }
-        } else { None };
-        self.jit_active.take();
         self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
         self.cpu.rflags = self.jit_ctx[19];
-        if let Some(ret) = ret_target { self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(8); self.cpu.rip = ret; }
-        else { self.cpu.rip = exit_rip; }
+        self.cpu.rip = exit_rip;
+        for i in 0..16 {
+            self.cpu.ymm[i][0..8].copy_from_slice(&self.jit_ctx[32 + i * 2].to_le_bytes());
+            self.cpu.ymm[i][8..16].copy_from_slice(&self.jit_ctx[33 + i * 2].to_le_bytes());
+        }
         self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(executed);
         self.kernel.instructions = self.cpu.instructions_executed;
         self.jit.mark_proven(art.entry_rip);
@@ -1400,16 +1420,20 @@ impl BrowserX64Emulator {
 
     /// Drops a trapped active block without applying its register writes; the interpreter will
     /// re-execute from the original RIP and reproduce the precise fault/page-fault.
-    pub fn jit_abort_block(&mut self) { if let Some(art) = self.jit_active.take() { self.jit.invalidate_entry(art.entry_rip); } }
+    pub fn jit_abort_block(&mut self) {
+        self.jit_rollback_memory();
+        self.jit_shadow.take();
+        if let Some(art) = self.jit_active.take() { self.jit.invalidate_entry(art.entry_rip); }
+    }
 
     /// Imports a persisted artifact only after re-hashing the live guest bytes and epoch.
-    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, self_loop: bool, code_hash: u64, wasm_bytes: &[u8]) -> bool {
+    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, has_stores: bool, has_simd: bool, self_loop: bool, code_hash: u64, wasm_bytes: &[u8]) -> bool {
         if byte_len == 0 || byte_len > 4096 || insn_count == 0 || insn_count > 4096 { return false; }
         let mut live = vec![0u8; byte_len as usize];
         if self.vmm.host_read_bytes(entry_rip, &mut live).is_err() { return false; }
         if self.vmm.page_write_epoch(entry_rip & !0xFFF) != page_epoch { return false; }
-        if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm_bytes) { return false; }
-        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm_bytes.to_vec())
+        if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, has_stores, has_simd, self_loop, code_hash, &live, wasm_bytes) { return false; }
+        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, has_stores, has_simd, self_loop, code_hash, wasm_bytes.to_vec())
     }
 
     /// AOT-compile the loaded image's `.text` using the runtime JIT decoder. Called by the
@@ -1433,6 +1457,100 @@ impl BrowserX64Emulator {
                 i.aot_blocks_compiled, i.aot_bytes_compiled, i.aot_instructions_scanned, i.text_base, i.text_size),
             None => "{\"blocks\":0,\"wasmBytes\":0,\"instructionsScanned\":0}".into(),
         }
+    }
+
+    /// Native-JIT software TLB resolve. Returns a Wasm linear-memory host pointer, or
+    /// JIT_INVALID_HOST_PTR so the emitted native load/store traps without a bounds pre-check.
+    /// Write pages are pinned until block end so undo-log host pointers cannot dangle.
+    pub fn jit_resolve_page(&mut self, addr: u64, write: u32) -> u32 {
+        let page = addr & !0xFFFu64;
+        let idx = ((page ^ (page >> 7)) as usize) & (jit::JIT_TLB_ENTRIES - 1);
+        let gen = self.vmm.layout_epoch as u32;
+        let base = idx * 4;
+        let cur_gen = self.jit_tlb[base + 2] as u32;
+        if self.jit_tlb[base] == page && cur_gen == gen {
+            let ptrs = self.jit_tlb[base + 1];
+            let p = if write != 0 { (ptrs >> 32) as u32 } else { ptrs as u32 };
+            if p != jit::JIT_INVALID_HOST_PTR {
+                if write != 0 {
+                    let was = self.vmm.jit_pin_page(page);
+                    self.jit_pinned.push((page, was));
+                }
+                return p;
+            }
+        }
+        let ptr = match self.vmm.jit_prepare_page(page, write != 0) {
+            Ok(p) => p as u32,
+            Err(_) => return jit::JIT_INVALID_HOST_PTR,
+        };
+        let gen = self.vmm.layout_epoch as u32;
+        self.jit_tlb_gen = gen;
+        self.jit_ctx[26] = gen as u64;
+        let write_ptr = if self.vmm.jit_write_allowed(page) { ptr } else { jit::JIT_INVALID_HOST_PTR };
+        if write != 0 && write_ptr != jit::JIT_INVALID_HOST_PTR {
+            let was = self.vmm.jit_pin_page(page);
+            self.jit_pinned.push((page, was));
+        }
+        self.jit_tlb[base] = page;
+        self.jit_tlb[base + 1] = ptr as u64 | ((write_ptr as u64) << 32);
+        self.jit_tlb[base + 2] = gen as u64;
+        self.jit_tlb[base + 3] = 0;
+        if write != 0 { write_ptr } else { ptr }
+    }
+
+    fn jit_release_pins(&mut self) {
+        for (page, was) in self.jit_pinned.drain(..) {
+            if !was { self.vmm.jit_unpin_page(page); }
+        }
+    }
+
+    /// Reset per-block native-store transaction logs and publish MMU pointers to the context.
+    pub fn jit_begin_block(&mut self) {
+        let gen = self.vmm.layout_epoch as u32;
+        self.jit_tlb_gen = gen;
+        self.jit_ctx[25] = self.jit_tlb.as_ptr() as u64;
+        self.jit_ctx[26] = gen as u64;
+        self.jit_ctx[27] = self.jit_undo.as_mut_ptr() as u64;
+        self.jit_ctx[28] = 0;
+        self.jit_ctx[29] = jit::JIT_UNDO_CAP as u64;
+        self.jit_ctx[30] = self.jit_touched.as_mut_ptr() as u64;
+        self.jit_ctx[31] = 0;
+        for i in 0..16 {
+            let lo = u64::from_le_bytes(self.cpu.ymm[i][0..8].try_into().unwrap());
+            let hi = u64::from_le_bytes(self.cpu.ymm[i][8..16].try_into().unwrap());
+            self.jit_ctx[32 + i * 2] = lo;
+            self.jit_ctx[33 + i * 2] = hi;
+        }
+    }
+
+    /// Apply dirty/epoch bookkeeping for native stores after a successful block.
+    pub fn jit_apply_memory(&mut self) {
+        let n = self.jit_ctx[31] as usize;
+        for i in 0..n.min(jit::JIT_TOUCHED_CAP) {
+            let page = self.jit_touched[i];
+            self.vmm.apply_jit_dirty(page, 1);
+        }
+        self.jit_ctx[28] = 0;
+        self.jit_ctx[31] = 0;
+        self.jit_release_pins();
+    }
+
+    /// Roll back native stores in reverse order after a Wasm trap, preserving precise state.
+    pub fn jit_rollback_memory(&mut self) {
+        let n = self.jit_ctx[28] as usize;
+        for i in (0..n.min(jit::JIT_UNDO_CAP)).rev() {
+            let rec = &self.jit_undo[i * 4..i * 4 + 4];
+            let ptr = rec[0] as usize;
+            let size = rec[3] as usize;
+            if ptr == 0 || size == 0 || size > 16 { continue; }
+            let mut old = [0u8; 16];
+            old[0..8].copy_from_slice(&rec[1].to_le_bytes());
+            old[8..16].copy_from_slice(&rec[2].to_le_bytes());
+            unsafe { std::ptr::copy_nonoverlapping(old.as_ptr(), ptr as *mut u8, size); }
+        }
+        self.jit_ctx[28] = 0;
+        self.jit_ctx[31] = 0;
+        self.jit_release_pins();
     }
 
     /// Memory helpers imported by JIT modules. A fault sets jit_mem_fault; the module flushes
@@ -1493,54 +1611,30 @@ mod tests {
     }
 
     #[test]
-    fn jit_return_page_fault_does_not_commit_instruction_count_or_registers() {
+    fn jit_resolve_swapped_page_returns_invalid_and_rollback_restores_stores() {
         let mut emu = BrowserX64Emulator::new(2);
-        let code = 0x8_0000_0000u64;
-        let stack = 0x8_0001_0000u64;
-        let scratch = 0x8_0002_0000u64;
-        emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
-        emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        let data = 0x8_0000_0000u64;
+        let scratch = 0x8_0001_0000u64;
+        emu.vmm.map_region(data, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
         emu.vmm.map_region(scratch, 70 * 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
-        // mov rax,0x88; ret — a real GPR-writing block (nop/ret alone emits no JitOps).
-        let block = [0x48, 0xB8, 0x88, 0, 0, 0, 0, 0, 0, 0, 0xC3];
-        emu.vmm.host_write_bytes(code, &block).unwrap();
-        emu.vmm.host_write_bytes(stack, &0x1234u64.to_le_bytes()).unwrap();
-        // The VMM's minimum resident budget is 64 pages; touch enough unpinned pages to
-        // evict the stack while the pinned code page remains resident.
-        for i in 0..70u64 {
-            emu.vmm.host_write_bytes(scratch + i * 0x1000, &[1]).unwrap();
-        }
+        emu.vmm.host_write_bytes(data, &0x1234u64.to_le_bytes()).unwrap();
+        for i in 0..70u64 { emu.vmm.host_write_bytes(scratch + i * 0x1000, &[1]).unwrap(); }
         let saved = emu.vmm.drain_evicted_dirty_pages();
-        let old = saved.iter().find(|p| p.page_base == stack).expect("stack evicted");
-        let epoch = emu.vmm.page_write_epoch(code);
-        emu.jit.try_compile_block(code, epoch, &block).unwrap();
-        emu.cpu.rip = code;
-        emu.cpu.gpr[4] = stack;
-        emu.cpu.gpr[0] = 0x77;
-        emu.set_jit_validate(false); // exercise the ret-before-commit ordering path directly
-        assert!(!emu.jit_enter_block().is_empty());
-        emu.jit_ctx[0] = 0x88;
-        emu.jit_ctx[18] = 2; // mov + ret
-        emu.jit_ctx[17] = 0;
-        let before = emu.cpu.instructions_executed;
-        assert_eq!(emu.jit_commit_block(), format!("page-fault:{stack}"));
-        assert_eq!(emu.cpu.instructions_executed, before);
-        assert_eq!(emu.cpu.gpr[0], 0x77);
-        assert_eq!(emu.cpu.rip, code);
-        assert!(emu.jit_active.is_none());
-        assert!(emu.jit.get_valid_artifact(code, epoch).is_none());
-        emu.vmm.supply_faulted_page(stack, &old.data);
-        assert_eq!(emu.vmm.read_u64(stack).unwrap(), 0x1234);
+        let old = saved.iter().find(|p| p.page_base == data).expect("data evicted");
+        assert_eq!(emu.jit_resolve_page(data, 1), jit::JIT_INVALID_HOST_PTR);
+        emu.vmm.supply_faulted_page(data, &old.data);
+        assert_ne!(emu.jit_resolve_page(data, 1), jit::JIT_INVALID_HOST_PTR);
+        assert_eq!(emu.vmm.read_u64(data).unwrap(), 0x1234);
     }
 
     #[test]
-    fn jit_validation_ret_normalizes_rsp_and_commits() {
+    fn jit_validation_ret_uses_native_popped_rsp_and_exit_rip() {
         let mut emu = BrowserX64Emulator::new(4);
         let code = 0x8_0000_0000u64;
         let stack = 0x8_0001_0000u64;
         emu.vmm.map_region(code, 0x1000, vmm::PAGE_EXECUTE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, true);
         emu.vmm.map_region(stack, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
-        // add rsp,0x38; ret — the exact epilogue shape that shadow validation rejected.
+        // add rsp,0x38; ret
         let block = [0x48, 0x83, 0xC4, 0x38, 0xC3];
         emu.vmm.host_write_bytes(code, &block).unwrap();
         emu.vmm.host_write_bytes(stack + 0x38, &0x1234u64.to_le_bytes()).unwrap();
@@ -1550,11 +1644,11 @@ mod tests {
         emu.cpu.gpr[4] = stack;
         emu.cpu.gpr[0] = 0x77;
         assert!(!emu.jit_enter_block().is_empty());
-        // Simulate the Wasm block's pre-ret register result and materialized RFLAGS.
         let mut probe = emu.cpu.clone();
         let _ = probe.step_one(&mut emu.vmm); let _ = probe.step_one(&mut emu.vmm);
-        emu.jit_ctx[4] = stack + 0x38;
-        emu.jit_ctx[18] = 2; emu.jit_ctx[17] = 0; emu.jit_ctx[19] = probe.rflags;
+        // ABI v3: the Wasm block already popped RET; ctx RSP is post-ret and ctx17 is the target.
+        emu.jit_ctx[4] = stack + 0x40;
+        emu.jit_ctx[18] = 2; emu.jit_ctx[17] = 0x1234; emu.jit_ctx[19] = probe.rflags;
         let before = emu.cpu.instructions_executed;
         assert_eq!(emu.jit_commit_block(), "next");
         assert_eq!(emu.cpu.rip, 0x1234);

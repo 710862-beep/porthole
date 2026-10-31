@@ -37,7 +37,7 @@ async function run(code, jit) {
 
 test('JIT preserves ALU ModRM direction and immediate-shift flag lowering', async t => {
   const probe = await newCore();
-  if (!probe || typeof probe.emu.jit_context_slots !== 'function' || probe.emu.jit_context_slots() !== 32) { t.skip('core predates the 32-slot JIT ABI'); return; }
+  if (!probe || typeof probe.emu.jit_context_slots !== 'function' || probe.emu.jit_context_slots() !== 64) { t.skip('core predates the 64-slot JIT ABI'); return; }
   const cases = [
     // sub eax,ebx (29 /r MR): EAX must be the destination, not EBX.
     { op: [0x40, 0x29, 0xd8], a: 0x50113436, b: 0x9078dd65 },

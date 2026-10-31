@@ -1,4 +1,4 @@
-/* Host-side executor for Porthole's emitted x86-64→Wasm basic blocks (ABI v2).
+/* Host-side executor for Porthole's emitted x86-64→Wasm basic blocks (ABI v3).
  * The Rust core owns guest state; this bridge owns WebAssembly.Module compilation/OPFS cache.
  * A trapped compiled block is discarded and the interpreter re-executes the same RIP, so a
  * Wasm trap never corrupts the core instance or fabricates guest progress. */
@@ -9,8 +9,7 @@
   // Minimal module exporting a function that return_calls itself. Used only as a runtime
   // feature probe; Rust +tail-call does not imply the browser validator accepts opcode 0x12.
   const TAIL_CALL_PROBE = new Uint8Array([
-    0,97,115,109,1,0,0,0, 1,5,1,96,0,1,127, 3,3,2,0,0,
-    10,11,2, 5,0,18,1,11, 4,0,65,7,11,
+    0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,8,1,6,0,65,7,18,0,11,
   ]);
 
   class X64JitHost {
@@ -63,7 +62,7 @@
         let ctx = null;
         try {
           const dv = new DataView(this.memory.buffer); const out = [];
-          for (let i = 0; i < 22; i++) out.push(dv.getBigUint64((meta.ctx >>> 0) + i * 8, true).toString());
+          for (let i = 0; i < 32; i++) out.push(dv.getBigUint64((meta.ctx >>> 0) + i * 8, true).toString());
           ctx = out;
         } catch { /* memory unavailable */ }
         d.samples.push({ reason, commit, entryRip: String(meta.entryRip), codeHash: meta.codeHash, opcode, bytes, ctx, detail });
@@ -83,8 +82,8 @@
       if (this.exeSha256 && this.cache?.loadJitCache) entries = await this.cache.loadJitCache(this.exeSha256);
       else if (this.cache?.loadJitModules) entries = await this.cache.loadJitModules(4096);
       for (const { wasmBytes, meta } of entries) {
-        if (!meta || meta.abi !== 2 || (meta.links || []).length || !WebAssembly.validate(wasmBytes)) continue;
-        const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, !!meta.selfLoop, BigInt('0x' + meta.codeHash), wasmBytes);
+        if (!meta || meta.abi !== 3 || (meta.links || []).length || !WebAssembly.validate(wasmBytes)) continue;
+        const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, !!meta.hasStores, !!meta.hasSimd, !!meta.selfLoop, BigInt('0x' + meta.codeHash), wasmBytes);
         if (ok) {
           this.stats.loaded += 1;
           this.cacheTelemetry.hits += 1;
@@ -158,8 +157,8 @@
     }
 
     async importCached(meta, wasmBytes) {
-      if (!meta || meta.abi !== 2 || (meta.links || []).length || !WebAssembly.validate(wasmBytes)) return false;
-      const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, !!meta.selfLoop, BigInt('0x' + meta.codeHash), wasmBytes);
+      if (!meta || meta.abi !== 3 || (meta.links || []).length || !WebAssembly.validate(wasmBytes)) return false;
+      const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, !!meta.hasStores, !!meta.hasSimd, !!meta.selfLoop, BigInt('0x' + meta.codeHash), wasmBytes);
       if (!ok) return false;
       this.stats.loaded += 1;
       this.cacheTelemetry.hits += 1;
@@ -181,19 +180,8 @@
       visiting.add(meta.codeHash);
       const env = { mem: this.memory };
       const ctx = meta.ctx >>> 0;
-      if (typeof this.emu.jit_read_mem === 'function') {
-        env.read = (addr, size) => {
-          const v = this.emu.jit_read_mem(addr, size);
-          if (this.emu.jit_mem_fault && this.emu.jit_mem_fault()) {
-            new DataView(this.memory.buffer).setBigUint64(ctx + 24 * 8, 1n, true);
-          }
-          return v;
-        };
-        env.write = (addr, value, size) => {
-          const r = this.emu.jit_write_mem(addr, value, size);
-          if (r) new DataView(this.memory.buffer).setBigUint64(ctx + 24 * 8, 1n, true);
-          return r;
-        };
+      if (typeof this.emu.jit_resolve_page === 'function') {
+        env.resolve = (addr, write) => this.emu.jit_resolve_page(addr, write >>> 0);
       }
       for (const link of meta.links || []) {
         const targetMeta = this.artifacts.get(String(link.targetRip));

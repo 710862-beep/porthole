@@ -218,7 +218,7 @@
           meta,
           wasmBase64: btoa(String.fromCharCode(...wasmBytes)),
         }));
-        const payload = JSON.stringify({ version: 1, abi: 2, exeSha256, blocks });
+        const payload = JSON.stringify({ version: 1, abi: 3, exeSha256, blocks });
         const handle = await this.cacheDir.getFileHandle(`${exeSha256}.jitcache`, { create: true });
         const writable = await handle.createWritable();
         await writable.write(payload);
@@ -235,7 +235,7 @@
           const handle = await this.cacheDir.getFileHandle(`${exeSha256}.jitcache`);
           const file = await handle.getFile();
           const payload = JSON.parse(await file.text());
-          if (payload.exeSha256 !== exeSha256 || payload.abi !== 2 || !Array.isArray(payload.blocks)) return [];
+          if (payload.exeSha256 !== exeSha256 || payload.abi !== 3 || !Array.isArray(payload.blocks)) return [];
           const out = payload.blocks.map(({ meta, wasmBase64 }) => ({
             meta,
             wasmBytes: Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0)),
