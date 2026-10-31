@@ -378,7 +378,7 @@ impl HybridWasmJit {
     }
 
     fn emit_cc(b: &mut Vec<u8>, cc: u8) {
-        let bit = |b: &mut Vec<u8>, mask: i64| { Self::local_get(b, 17); Self::i64_const(b, mask); b.push(0x83); b.push(0x50); };
+        let bit = |b: &mut Vec<u8>, mask: i64| { Self::local_get(b, 17); Self::i64_const(b, mask); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); };
         match cc & 15 {
             0 => bit(b, 0x800), 1 => { bit(b, 0x800); b.push(0x45); }
             2 => bit(b, 1), 3 => { bit(b, 1); b.push(0x45); }
