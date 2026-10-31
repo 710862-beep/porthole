@@ -464,3 +464,22 @@ parsing + `FindResource/LoadResource/LockResource/SizeofResource/LoadStringA/W`
 `WNetGetProviderName` no-redirector failure, and virtual-time waitable timers
 (`b2c32b1`). These target the exact al-khaser/comdlg32/user32 failures above; they are
 not claimed as PASS until the real upstream suites rerun.
+
+### Verified closed-loop fixes through CI run `41150031555` (`3391ea9`)
+
+- **al-khaser now exits cleanly** (`exit:0`, 919,828 instructions, 133 checks) instead of
+  faulting in anti-dump. The PEB loader list (`c01d702`) fixed `SizeOfImage()`; findings
+  fell from 14 to **9**: TLS process/thread attach, PAGE_GUARD, WMI CPU fan, two ACPI
+  checks, SetTimer, timeSetEvent, RDTSC Locky. SCM enumeration, VBox shared folders,
+  CreateWaitableTimer and CreateTimerQueueTimer are no longer BAD.
+- **PE resources are real:** `comdlg32 filedlg` advanced from GUEST_FAULT to FAIL with
+  **138 upstream tests executed**; the exact audit now shows
+  `FindResourceA(base,"template_stc32",RT_DIALOG) -> 0x7ff200000002`,
+  `LoadResource -> 0x7ff200000002`, `LockResource -> 0x140097228`. The earlier NULL
+  resource fault is gone. Expanded Wine overall is still **2/16 PASS** (d3d11, vulkan);
+  dxgi/printdlg still fault and user32 msg still times out — not claimed as PASS.
+- **Wine d3d12 remains PASS** (671 assertions). Core gate SUCCESS on every candidate.
+- Diagnosed and fixed the remaining timer routing bug: `winmm.dll` was blanket-routed to
+  the SDL fallback, so `timeSetEvent` returned 0 before the callback arm ran (`e779c22`).
+  ACPI firmware now includes WSMT + fixed PNP device IDs, and `SetTimer` delivers a real
+  WM_TIMER upcall (`8854705`); rerun pending.
