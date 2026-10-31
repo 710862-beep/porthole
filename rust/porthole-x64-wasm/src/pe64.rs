@@ -583,13 +583,13 @@ pub fn aot_scan_text(
     }
     let mut blocks = 0usize;
     let mut bytes = 0usize;
-    for rip in starts {
-        let off = (rip - text_base) as usize;
-        let len = 512usize.min(text.len() - off).min(4096 - (rip & 0xFFF) as usize);
+    for rip in &starts {
+        let off = (*rip - text_base) as usize;
+        let len = 512usize.min(text.len() - off).min(4096 - (*rip & 0xFFF) as usize);
         if len < 1 { continue; }
-        let epoch = vmm.page_write_epoch(rip & !0xFFF);
-        if jit.get_valid_artifact(rip, epoch).is_some() { continue; }
-        if let Some(art) = jit.try_compile_block(rip, epoch, &text[off..off + len]) {
+        let epoch = vmm.page_write_epoch(*rip & !0xFFF);
+        if jit.get_valid_artifact(*rip, epoch).is_some() { continue; }
+        if let Some(art) = jit.try_compile_block(*rip, epoch, &text[off..off + len]) {
             blocks += 1;
             bytes += art.wasm_bytes.len();
         }
