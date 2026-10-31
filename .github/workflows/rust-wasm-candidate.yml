@@ -2,7 +2,7 @@ name: Rust Wasm candidate
 
 on:
   push:
-    branches: [arena/6a52f3cb-porthole]
+    branches: [arena/633a2716-porthole]
   workflow_dispatch:
 
 permissions:

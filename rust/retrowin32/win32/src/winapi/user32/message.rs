@@ -219,7 +219,7 @@ fn find_message(machine: &mut Machine, hwnd: HWND, min: u32, max: u32) -> Option
 }
 
 #[win32_derive::dllexport]
-pub fn PeekMessageA(
+pub async fn PeekMessageA(
     machine: &mut Machine,
     lpMsg: Option<&mut MSG>,
     hWnd: HWND,
@@ -236,7 +236,9 @@ pub fn PeekMessageA(
         *lpMsg = machine.state.user32.messages.get(index).unwrap().clone();
         let remove = wRemoveMsg.unwrap();
         if remove.contains(RemoveMsg::PM_REMOVE) {
-            machine.state.user32.messages.remove(index);
+            let msg = machine.state.user32.messages.remove(index).unwrap();
+            if super::hook::filter_message(machine, &msg).await { return false; }
+            *lpMsg = msg;
         }
         return true;
     }
@@ -244,7 +246,7 @@ pub fn PeekMessageA(
 }
 
 #[win32_derive::dllexport]
-pub fn PeekMessageW(
+pub async fn PeekMessageW(
     machine: &mut Machine,
     lpMsg: Option<&mut MSG>,
     hWnd: HWND,
@@ -259,7 +261,7 @@ pub fn PeekMessageW(
         wMsgFilterMin,
         wMsgFilterMax,
         wRemoveMsg,
-    )
+    ).await
 }
 
 async fn get_message(
@@ -282,6 +284,7 @@ async fn get_message(
     if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
         let msg = machine.state.user32.messages.get(index).unwrap().clone();
         machine.state.user32.messages.remove(index);
+        if super::hook::filter_message(machine, &msg).await { continue; }
         *lpMsg.unwrap() = msg.clone();
         if msg.message == WM::QUIT as u32 {
             return 0;
@@ -327,7 +330,7 @@ pub fn TranslateMessage(_machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
 
 pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
     let wndproc = match machine.state.user32.windows.get(msg.hwnd) {
-        Some(window) if !msg.hwnd.is_null() => window.wndclass.wndproc,
+        Some(window) if !msg.hwnd.is_null() => window.wndproc_override.unwrap_or(window.wndclass.wndproc),
         _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}
     };
     if wndproc == super::dialog_helpers::DIALOG_PROC {return Box::pin(super::dialog_helpers::dispatch(machine,msg)).await;}
@@ -336,7 +339,6 @@ pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
         log::error!("window has no wndproc, skipping message dispatch");
         return 0;
     }
-    // TODO: SetWindowLong can change the wndproc.
     machine
         .call_x86(
             wndproc,
@@ -383,6 +385,11 @@ pub fn PostQuitMessage(machine: &mut Machine, nExitCode: i32) {
         pt_x: 0,
         pt_y: 0,
     });
+}
+
+#[win32_derive::dllexport]
+pub fn PostMessageA(machine: &mut Machine, hWnd: HWND, Msg: u32, wParam: u32, lParam: u32) -> bool {
+    PostMessageW(machine, hWnd, Msg, wParam, lParam)
 }
 
 #[win32_derive::dllexport]
