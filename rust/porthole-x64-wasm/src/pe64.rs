@@ -413,6 +413,25 @@ where
     // PEB fields
     let _ = vmm.write_u64(PEB_ADDR + 0x10, image_base); // ImageBaseAddress
     let _ = vmm.write_u64(PEB_ADDR + 0x20, PROC_PARAMS_ADDR); // ProcessParameters
+    // PEB_LDR_DATA + one LDR_DATA_TABLE_ENTRY for the executable. al-khaser's SizeOfImage
+    // anti-dump walks Ldr->InLoadOrderModuleList and writes the entry's SizeOfImage; a NULL
+    // Ldr faulted the guest at the SEH sentinel instead of completing the check.
+    let ldr_va = PEB_ADDR + 0x3000;
+    let ldr_entry = PEB_ADDR + 0x4000;
+    let _ = vmm.write_u64(PEB_ADDR + 0x18, ldr_va); // Ldr
+    let _ = vmm.write_u32(ldr_va, 0x58); // Length
+    let _ = vmm.write_u8(ldr_va + 4, 1); // Initialized
+    for head in [0x10u64, 0x20, 0x30] {
+        let _ = vmm.write_u64(ldr_va + head, ldr_entry); // Flink
+        let _ = vmm.write_u64(ldr_va + head + 8, ldr_entry); // Blink
+    }
+    for link in [0x00u64, 0x10, 0x20] {
+        let _ = vmm.write_u64(ldr_entry + link, ldr_va + 0x10 + link);
+        let _ = vmm.write_u64(ldr_entry + link + 8, ldr_va + 0x10 + link);
+    }
+    let _ = vmm.write_u64(ldr_entry + 0x30, image_base); // DllBase
+    let _ = vmm.write_u64(ldr_entry + 0x38, image_base + entry_rva); // EntryPoint
+    let _ = vmm.write_u32(ldr_entry + 0x40, size_of_image as u32); // SizeOfImage
     vmm.map_region(PROCESS_HEAP_ADDR, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
     let _ = vmm.write_u64(PEB_ADDR + 0x30, PROCESS_HEAP_ADDR); // ProcessHeap
     let _ = vmm.write_u32(PEB_ADDR + 0xB8, 4); // NumberOfProcessors (x64)
