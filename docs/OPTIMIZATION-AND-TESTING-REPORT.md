@@ -539,3 +539,157 @@ blocks with **0 Wasm compile errors**, 34,691 validation fallbacks, and 46,664
 interpreter fallback instructions. The SAR compile-error regression is closed,
 but Doom still does not reach timedemo gametics; the guest exit -1 and remaining
 validation fallbacks are reported as failures, not hidden.
+
+## Phase 3 Performance Projection
+
+### Fallback telemetry: what the 34,691 actually were
+
+Phase 3 first instrumented the JIT commit path to emit the exact entry RIP, code
+hash, instruction bytes, executed count, and expected-vs-actual GPR/RIP/RFLAGS on
+every validation mismatch, plus a *separate* unsupported-opcode histogram recorded
+at compile-time block exits. The histogram proved the 34,691 Phase 2 "validation
+fallbacks" were **not** unsupported instructions. They were two compiler bugs:
+
+1. **Code-hash collision across entry RIPs.** `codeHash` was FNV-1a over the x86
+   bytes only. Identical byte sequences at different RIPs (common in CRT/thunk
+   code) collided in the host `WebAssembly.Module`/instance maps, so a block
+   executed *another* entry's embedded absolute constants. Telemetry showed wrong
+   exit RIPs with matching registers. Fix: hash `entry_rip || compiler_version ||
+   bytes` (`4b05a3f`).
+2. **ALU ModRM forms 2/3 decoded as accumulator-immediate.** `cmp/xor/add/sub
+   reg, r/m` consumed four immediate bytes and wrote RAX, producing wrong lengths
+   and flags. Fix: forms 0/1 = r/m←reg, forms 2/3 = reg←r/m (`fd408f1`).
+
+After these two fixes a 180 s local Doom run recorded **0 validation fallbacks**.
+Two further emitter bugs found by the new regressions were closed: the normal
+block exit branched to the abort label (wrong Wasm label depth), and
+`jit_import_cached`'s slice parameter named `wasm` shadowed wasm-bindgen's
+module-level instance (`malloc is not a function`) (`da4df2c`).
+
+### Expanded JIT coverage (evidence-selected)
+
+The unsupported histogram after the correctness fixes was dominated by
+RIP-relative/SIB memory loads, `cmp reg,[mem]`, `movzx/movsx`, `lea`, `pop`, and
+partial-register ALU — not SSE. The hand-written decoder was replaced with
+`iced-x86` (correct ModRM/SIB/RIP-relative/segment parsing, instruction lengths
+for AOT). The lowering now covers:
+
+- integer ALU reg/imm and reg←[mem] (read-only), byte/16/32/64-bit widths with
+  correct partial-register merge and 32-bit zero-extension;
+- `MOV` reg←[mem], `MOVZX`/`MOVSX`/`MOVSXD`, `LEA`, `POP`, `SETcc`, immediate
+  shifts, native Wasm self-loops, runtime-probed tail-call links.
+
+Memory reads import a core helper (`jit_read_mem`). A fault sets a context flag;
+the module flushes Wasm locals and resumes the interpreter at the exact RIP
+without applying the faulting instruction's effects. **Stores, CALL, indirect
+jumps and SIMD still terminate the block before their side effect** and are
+executed precisely by the interpreter. The remaining unsupported histogram is
+now byte stores (`mov [mem], r8`), SSE2 `movdqa/movdqu`, rotate/shift-by-CL, and
+CALL — the next coverage targets, named by telemetry rather than guessed.
+
+### AOT `.text` scan + SHA-256 keyed cache
+
+`pe64.rs` linear-sweeps `.text` with the iced length/flow decoder to discover real
+instruction boundaries and branch targets, then compiles each candidate block
+with the *same* JIT decoder used at runtime (cached RIPs are skipped). Portable
+artifacts are serialized to `cache/<sha256_of_exe>.jitcache` (OPFS in the browser,
+Node `fs` in the harness). At a new RIP the host checks the in-memory/persistent
+cache first; a hit loads precompiled Wasm, a miss JITs and appends.
+
+Measured Doom startup (local, Node 22, Xeon @ 2.60 GHz):
+
+| Metric | Cold (first load) | Warm (cache hit) |
+| --- | --- | --- |
+| `disk_read_time_ms` | 14.696 | 13.386 |
+| `aot_compilation_time_ms` | 2682.313 | 235.313 |
+| `cache_load_time_ms` | 273.788 | 2668.096 |
+| `total_startup_lag_ms` | 2970.797 | 2916.795 |
+| `aot_blocks_compiled` | 22736 | 0 |
+| `aot_cache_size_bytes` | 9820110 | 9820947 |
+| `cache_hit_count` | 0 | 23220 |
+| `cache_miss_count` | 441 | 0 |
+| `jit_compile_time_ms` | 2498.530 | 2233.418 |
+| `jit_fallbacks_during_play` | 25 | 25 |
+
+The startup spike is **WebAssembly compilation**, not disk I/O: cold AOT spends
+2.68 s compiling 22,736 blocks; warm load moves 2.23 s of that into
+`cache_load_time_ms` (re-instantiating cached modules). Disk read is ~14 ms.
+Amortizing AOT across runs removes recompilation but not the host compile cost;
+the next optimization is `WebAssembly.compileStreaming`/module reuse and lazy
+per-RIP instantiation instead of eager whole-archive compile.
+
+### Hard performance math
+
+At the Phase 2/3 target of **600 MIPS** and **60 FPS**:
+
+```
+600,000,000 instructions/s ÷ 60 frames/s = 10,000,000 instructions/frame
+```
+
+The authored microbench on the final candidate measures **interpreter 17.593
+MIPS, jit-validate 328.319 MIPS, jit-fast 748.520 MIPS** (N=20M, 40,000,002
+instructions). The jit-fast ceiling is therefore ~12.47M instructions/frame —
+above the 10M budget, but only on a register-resident hot loop with no HLE,
+memory pressure, or GPU submission.
+
+Measured Chocolate Doom is **0.09 MIPS** (cold and warm), i.e. ~1,500
+instructions/frame at 60 FPS. That is far below the 10M budget and below even
+Doom-era 35 Hz logic needs; the timedemo still does not reach gametics within the
+CI wall-clock lane. The gap is not validation fallbacks (25 < 100) but the
+remaining interpreted fraction: stores/CALL/SIMD exit every few instructions, so
+the guest pays a JS/Wasm handoff per tiny block. `fallbackInstructions` was
+14.19M of 16M guest instructions in the cold local run.
+
+**Modern-game assessment.** 10M instructions/frame is a modest budget. Modern
+game CPU logic (physics, animation, AI, culling, render-command generation)
+routinely consumes 100M–1B+ instructions/frame, so 600 MIPS is a floor for
+Doom-era/indie titles, not heavy modern games. Even if CPU logic fits, the next
+bottlenecks dominate:
+
+- **1 GB RAM paging to NVMe/OPFS.** The resident window is a sparse LRU of 4 KB
+  pages. A frame touching a 100 MB non-resident working set implies ~25,600 page
+  faults/frame; each fault is a host round-trip plus a 4 KB read/write. Dirty
+  eviction adds write amplification. Gate 3 must measure fault latency and
+  throughput under a 4 MiB window before any "unlimited RAM" claim.
+- **D3D12 → WebGPU.** DXIL→SPIR-V shader compilation, descriptor-heap translation,
+  resource barriers and queue submission are orders of magnitude more expensive
+  than a basic-block JIT exit. Once CPU logic fits the frame budget, GPU
+  translation/submission latency becomes the limiter (KI-05: D3D12 is still
+  fixture-grade, no real DXIL parsing).
+- **Asset I/O.** WAD/zip streaming, texture uploads and synchronous `ReadFile`
+  HLE serialize the guest. Async prefetch, decompression offload and texture
+  caching are required before asset-heavy titles stream smoothly.
+
+### Phase 3 measured results
+
+- Microbench (local, final candidate): **17.593 / 328.319 / 748.520 MIPS**
+  (interpreter / jit-validate / jit-fast), 0 compile errors, 0 traps.
+- Doom cold local 180 s: **0.09 MIPS**, 16M instructions, timeout, 0 gametics,
+  **25 JIT fallbacks** (< 100), 0 compile errors, 22,736 AOT blocks.
+- Doom warm local 120 s: **0.09 MIPS**, 12M instructions, timeout, 0 gametics,
+  **25 JIT fallbacks**, 23,220 cache hits / 0 misses.
+- Node unit/differential/coverage/AOT-cache regressions: **30 pass, 0 fail**.
+- Final CI Doom A/B (`41218942915`, 900 s lanes): baseline **FAIL**
+  `timeout-still-running`, 38M instructions / 928,473 ms / **0.04 MIPS**, 0
+  gametics; JIT **FAIL** `timeout-still-running`, 38M instructions / 907,192 ms /
+  **0.04 MIPS**, 0 gametics. JIT executed 2,281,009 instructions in 995,087
+  blocks, **27 validation fallbacks** (< 100), 35,150,642 interpreter fallback
+  instructions, **0 Wasm compile errors**, 22,736 AOT blocks, 9.83 MB cache.
+  Core + Node unit/differential/coverage/AOT-cache SUCCESS; Wine d3d12 SUCCESS.
+
+Doom is reported as a throughput/compatibility **FAIL** (no timedemo gametics),
+not hidden behind the microbench ceiling. The Phase 3 acceptance gate — fewer
+than 100 JIT validation fallbacks with exact telemetry JSON — is met.
+
+Exact CI JIT startup/lag JSON (`41218942915`, printed by the loader as
+`STARTUP_TELEMETRY_JSON`):
+
+```json
+{"disk_read_time_ms":24.534,"aot_compilation_time_ms":2915.492,"cache_load_time_ms":0.516,"total_startup_lag_ms":2940.542,"aot_blocks_compiled":22736,"aot_cache_size_bytes":9833907,"cache_hit_count":0,"cache_miss_count":463,"jit_compile_time_ms":2525.03,"aot":{"blocks":22736,"wasmBytes":9523930,"instructionsScanned":99023,"textBase":"5368713216","textSize":392704},"jit_fallbacks_during_play":27}
+```
+
+Warm-cache local JSON (23,220 hits, 0 misses, 0 AOT recompiles):
+
+```json
+{"disk_read_time_ms":13.386,"aot_compilation_time_ms":235.313,"cache_load_time_ms":2668.096,"total_startup_lag_ms":2916.795,"aot_blocks_compiled":0,"aot_cache_size_bytes":9820947,"cache_hit_count":23220,"cache_miss_count":0,"jit_compile_time_ms":2233.418,"aot":{"blocks":0,"wasmBytes":0,"instructionsScanned":99023,"textBase":"5368713216","textSize":392704},"jit_fallbacks_during_play":25}
+```

@@ -39,7 +39,7 @@
 
     recordFallback(meta, reason, commit) {
       const d = this.diagnostics;
-      if (reason.startsWith('fault:jit-validation')) d.validation += 1;
+      if (reason === 'validation' || reason.startsWith('fault:jit-validation')) d.validation += 1;
       else if (reason === 'unsupported') d.unsupported += 1;
       else d.traps += 1;
       d.byReason[reason] = (d.byReason[reason] || 0) + 1;
