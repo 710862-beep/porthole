@@ -177,7 +177,7 @@
             this.stats.executedInstructions += executed;
             remaining = Math.max(0, remaining - executed);
             status = 'next';
-            if (executed === 0 && remaining > 0) {
+            if (remaining > 0 && (executed === 0 || remaining < meta.insnCount)) {
               // Whole-block budget granularity left a remainder smaller than the artifact.
               const beforeFallback = Number(this.emu.instructions_executed());
               const fallback = this.interpretWithJitDisabled(remaining);

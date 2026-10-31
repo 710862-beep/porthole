@@ -453,8 +453,8 @@ impl HybridWasmJit {
         if let BlockExit::Branch { cc } = block.exit {
             if !self_loop {
                 // select(fallthrough, target, condition)
-                Self::i64_const(&mut b, entry_rip.wrapping_add(block.byte_len as u64) as i64);
                 Self::i64_const(&mut b, block.target as i64);
+                Self::i64_const(&mut b, entry_rip.wrapping_add(block.byte_len as u64) as i64);
                 Self::emit_cc(&mut b, cc); b.push(0x1B); Self::local_set(&mut b, 25);
                 Self::ctx_store_local(&mut b, 17, 25);
             } else { Self::ctx_store_const(&mut b, 17, exit_rip as i64); }

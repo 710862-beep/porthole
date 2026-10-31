@@ -1277,7 +1277,7 @@ impl BrowserX64Emulator {
         let executed = self.jit_ctx[18];
         let status = self.jit_ctx[16];
         let exit_rip = self.jit_ctx[17];
-        if executed > 1_000_000_000 || (executed > 0 && status != jit::JIT_STATUS_OK) {
+        if executed > 4_294_967_295 || (status != jit::JIT_STATUS_OK && status != jit::JIT_STATUS_BUDGET) {
             self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-context".into();
         }
         if executed == 0 {
