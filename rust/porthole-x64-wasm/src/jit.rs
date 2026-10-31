@@ -230,14 +230,18 @@ impl HybridWasmJit {
                     let group = op >> 3;
                     let kind = match group { 0 => AluKind::Add, 1 => AluKind::Or, 4 => AluKind::And, 5 => AluKind::Sub, 6 => AluKind::Xor, 7 => AluKind::Cmp, _ => { pc = start; break; } };
                     let form = op & 7;
-                    if form >= 4 { pc = start; break; } // byte ops / push-pop seg
-                    let (dst, src) = if form <= 1 {
-                        let (reg, rm, _) = modrm_reg!();
-                        if form <= 1 { (rm, reg) } else { (reg, rm) }
-                    } else {
+                    if form >= 4 {
+                        // Accumulator immediate forms (04/05, 0C/0D, ... 3C/3D). Byte forms
+                        // (form 4) are still left to the interpreter.
+                        if form == 4 { pc = start; break; }
                         need!(4); let imm = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4;
                         ops.push(JitOp::Alu { kind, dst: 0, src: None, imm, width }); insns += 1; continue;
-                    };
+                    }
+                    // ModRM forms: 0/1 = r/m <- reg, 2/3 = reg <- r/m. The previous
+                    // decoder sent forms 2/3 into the immediate arm, consuming the wrong
+                    // number of bytes and writing RAX (Doom: cmp/xor/add/sub reg,rm).
+                    let (reg, rm, _) = modrm_reg!();
+                    let (dst, src) = if form <= 1 { (rm, reg) } else { (reg, rm) };
                     ops.push(JitOp::Alu { kind, dst, src: Some(src), imm: 0, width }); insns += 1;
                 }
                 0x84 | 0x85 => {
