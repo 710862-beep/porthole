@@ -34,7 +34,7 @@ async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:T
  // Menus, custom dialog classes and resource image captions need unported APIs.
  if t.menu!=Name::None||!matches!(&t.class,Name::None|Name::Id(32770)){return fail(machine,50)}
  let title=match text(&t.title){Ok(t)=>t,Err(e)=>return fail(machine,e)};
- if !machine.state.user32.wndclasses.iter().any(|c|c.name=="#32770") {machine.state.user32.wndclasses.push(Rc::new(WndClass{name:"#32770".into(),wndproc:DIALOG_PROC,background:HBRUSH::null()}));}
+ if !machine.state.user32.wndclasses.iter().any(|c|c.name=="#32770") {machine.state.user32.wndclasses.push(Rc::new(WndClass{name:"#32770".into(),wndproc:DIALOG_PROC,background:HBRUSH::null(),hInstance:0,cbWndExtra:0}));}
  // Base units match the existing fixed 8x8 raster font, not Wine's GDI fonts.
  if let Some(font)=&t.font{log::warn!("DIALOG_FONT_FALLBACK requested={font:?}, fixed 8x8 raster");}
  let title=String16::from(title.as_str());let class=String16::from("#32770");

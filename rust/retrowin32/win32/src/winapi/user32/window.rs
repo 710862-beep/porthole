@@ -11,7 +11,7 @@ use crate::{
     Host, Machine, SurfaceOptions,
 };
 use bitflags::bitflags;
-use memory::{Extensions, Mem};
+use memory::{Extensions, ExtensionsMut, Mem};
 use std::rc::Rc;
 
 const TRACE_CONTEXT: &'static str = "user32/window";
@@ -515,7 +515,7 @@ pub async fn CreateWindowExW(
         typ,
         width,
         height,
-        wndclass,
+        wndclass: wndclass.clone(),
         style,
         wndproc_override: None,
         user_data: 0,

@@ -275,22 +275,24 @@ async fn get_message(
     assert_eq!(wMsgFilterMax, 0);
 
     loop {
-        match fill_message_queue(machine, hWnd) {
-            Ok(_) => break,
-            Err(wait_until) => await_message(machine, hWnd, wait_until).await,
+        loop {
+            match fill_message_queue(machine, hWnd) {
+                Ok(_) => break,
+                Err(wait_until) => await_message(machine, hWnd, wait_until).await,
+            }
         }
-    }
 
-    if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
-        let msg = machine.state.user32.messages.get(index).unwrap().clone();
-        machine.state.user32.messages.remove(index);
-        if super::hook::filter_message(machine, &msg).await { continue; }
-        *lpMsg.unwrap() = msg.clone();
-        if msg.message == WM::QUIT as u32 {
-            return 0;
+        if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
+            let msg = machine.state.user32.messages.get(index).unwrap().clone();
+            machine.state.user32.messages.remove(index);
+            if super::hook::filter_message(machine, &msg).await { continue; }
+            *lpMsg.unwrap() = msg.clone();
+            if msg.message == WM::QUIT as u32 {
+                return 0;
+            }
+            return 1;
         }
     }
-    return 1;
 }
 
 // Note: the docs say this returns BOOL, but really it can return -1/0/nonzero.

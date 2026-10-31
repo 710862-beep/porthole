@@ -27,7 +27,7 @@ impl Control {
 }
 pub fn register(machine:&mut Machine,name:&str, _kind:Kind) {
     if !machine.state.user32.wndclasses.iter().any(|c|c.name.eq_ignore_ascii_case(name)) {
-        machine.state.user32.wndclasses.push(Rc::new(WndClass{name:name.into(),wndproc:NATIVE_PROC,background:super::HBRUSH::null()}));
+        machine.state.user32.wndclasses.push(Rc::new(WndClass{name:name.into(),wndproc:NATIVE_PROC,background:super::HBRUSH::null(),hInstance:0,cbWndExtra:0}));
     }
 }
 pub fn standard(machine:&mut Machine) {
