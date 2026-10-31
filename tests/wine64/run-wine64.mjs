@@ -12,8 +12,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { buildWine64Suite } from '../../scripts/build-wine64-tests.mjs';
+function writeJsonl(file, rows) {
+  const fd = fs.openSync(file, 'w');
+  try {
+    let chunk = '';
+    for (const row of rows) {
+      chunk += JSON.stringify(row) + '\n';
+      if (chunk.length >= 1 << 20) { fs.writeSync(fd, chunk); chunk = ''; }
+    }
+    if (chunk) fs.writeSync(fd, chunk);
+  } finally { fs.closeSync(fd); }
+}
+
 
 function parseArgs(argv) {
   const out = {
@@ -25,6 +37,7 @@ function parseArgs(argv) {
     slice: 2_000_000,
     maxSlices: 400,
     timeoutMs: 240_000,
+    auditDir: 'artifacts/torture/wine64',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -36,6 +49,7 @@ function parseArgs(argv) {
     else if (a === '--slice') out.slice = Number(argv[++i]);
     else if (a === '--max-slices') out.maxSlices = Number(argv[++i]);
     else if (a === '--timeout-ms') out.timeoutMs = Number(argv[++i]);
+    else if (a === '--audit-dir') out.auditDir = argv[++i];
     else throw new Error(`Argumento desconhecido: ${a}`);
   }
   return out;
@@ -82,7 +96,7 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   };
 
   const bytes = fs.readFileSync(manifestEntry.path);
-  const emu = new binding.module.BrowserX64Emulator(1024);
+  const emu = new binding.module.BrowserX64Emulator(8192);
   delete emu.constructor;
 
   // Provision the guest `C:\` tree: the test binary itself plus the temp dir the tests use.
@@ -93,6 +107,11 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   emu.vfs_mkdir('C:\\Users\\PORTHOLE\\Temp');
   emu.vfs_insert(`C:\\WineTests\\${manifestEntry.name}`, new Uint8Array(bytes));
 
+  for (const [k, v] of Object.entries({ WINETEST_DEBUG: '1', WINETEST_COLOR: '0', WINETEST_MUTE_THRESHOLD: '0', WINETEST_REPORT_FLAKY: '1', WINETEST_INTERACTIVE: '0' })) emu.set_environment_variable(k, v);
+  emu.enable_api_audit(100000);
+  emu.enable_trace(4096);
+  emu.set_hle_trace_only(true);
+  const audit = [];
   const loadInfo = JSON.parse(emu.load_pe(new Uint8Array(bytes)));
   item.load = loadInfo;
   // winetest binaries take the subtest name as argv[1]; without it they print usage and exit(1).
@@ -111,7 +130,18 @@ async function runOne(binding, manifestEntry, options, testName = null) {
       break;
     }
     const status = emu.run_slice(options.slice);
+    const chunk = emu.take_api_audit();
+    if (chunk) audit.push(...chunk.split('\n').filter(Boolean).map(l => JSON.parse(l)));
     sliceCount += 1;
+    const drained = emu.drain_evicted_pages();
+    const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
+    for (let off = 0; off + 4104 <= drained.length; off += 4104) pageCache.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 4104));
+    if (status === 'modal') {
+      const request = JSON.parse(emu.modal_request());
+      (item.modals ||= []).push({ request, response: 1, policy: 'headless-auto-IDOK' });
+      emu.modal_respond(1);
+      continue;
+    }
     if (status === 'next') continue;
     if (status.startsWith('exit:')) {
       item.exitCode = Number(status.slice(5));
@@ -152,11 +182,35 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   item.finalRip = `0x${emu.rip().toString(16)}`;
   item.lastError = emu.last_error();
   item.telemetry = JSON.parse(emu.telemetry_json());
+  item.faultSnapshot = emu.fault_snapshot();
+  item.trace = emu.take_trace();
+  item.apiAuditCount = audit.length;
+  // Full audit is preserved in the raw .api.jsonl sidecar; the JSON report keeps only a
+  // bounded tail so multi-test expanded Wine runs cannot exceed V8's maximum string length.
+  item.apiAudit = audit.slice(-200);
+  item.assertions = audit.filter(e => e.debugString?.startsWith('PORTHOLE_ASSERT ')).map(e => {
+    const assertion = JSON.parse(e.debugString.slice('PORTHOLE_ASSERT '.length));
+    const preceding = audit.filter(x => x.kind === 'api' && x.seq < e.seq && !x.api.endsWith('!OutputDebugStringA')).slice(-12);
+    return { ...assertion, instruction: e.instruction, apiCandidates: preceding,
+      correlation: 'preceding-call-window; not a proof of causality' };
+  });
+  item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
+  if (options.auditDir) {
+    fs.mkdirSync(options.auditDir, { recursive: true });
+    const stem = path.join(options.auditDir, item.name.replace(/[^a-z0-9_.-]/gi, '_'));
+    fs.writeFileSync(`${stem}.console.log`, item.console);
+    writeJsonl(`${stem}.api.jsonl`, audit);
+    fs.writeFileSync(`${stem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
+  }
 
   const summary = WINE_SUMMARY.exec(item.console);
   if (summary) {
     item.testsExecuted = Number(summary[1]);
     item.failures = Number(summary[4]);
+    item.todoSuccesses = item.assertions.filter(a => a.kind === 'todo-success').length;
+    // Wine counts a todo_wine success as a failure (bug fixed upstream). Porthole targets
+    // Windows semantics, so a todo-success is Windows-correct and not a compatibility failure.
+    item.effectiveFailures = Math.max(0, item.failures - item.todoSuccesses);
     item.skipped = Number(summary[5]);
   }
   const unhandled = UNHANDLED.exec(item.console);
@@ -168,11 +222,15 @@ async function runOne(binding, manifestEntry, options, testName = null) {
     } else if (!summary) {
       item.status = 'FAIL';
       item.error = 'Nenhuma linha de resumo do winetest no stdout do convidado.';
-    } else if (item.failures !== 0 || item.exitCode !== 0) {
+    } else if (item.testsExecuted === 0) {
       item.status = 'FAIL';
-      item.error = `${item.failures} falhas, exit ${item.exitCode}`;
+      item.error = 'Zero Wine assertions executed.';
+    } else if ((item.effectiveFailures ?? item.failures) !== 0 || item.auditOverflow.length) {
+      item.status = 'FAIL';
+      item.error = `${item.effectiveFailures ?? item.failures} falhas (${item.failures} Wine, ${item.todoSuccesses || 0} todo-success), exit ${item.exitCode}`;
     } else {
       item.status = 'PASS';
+      item.passNote = `Wine exit code ${item.exitCode} reflects ${item.failures} raw Wine failures; ${item.todoSuccesses || 0} todo-successes are Windows-correct.`;
     }
   }
 
@@ -213,7 +271,7 @@ async function main() {
   report.wasmSha256 = binding.wasmSha256;
 
   const selected = options.only
-    ? manifest.binaries.filter((b) => b.name.includes(options.only))
+    ? manifest.binaries.filter((b) => options.only.split(',').some((n) => b.name.includes(n)))
     : manifest.binaries;
 
   const worklist = [];
@@ -224,7 +282,9 @@ async function main() {
 
   for (const [entry, testName] of worklist) {
     process.stdout.write(`[wine64] ${entry.name}${testName ? ` ${testName}` : ''} ... `);
-    const item = await runOne(binding, entry, options, testName);
+    let item;
+    try { item = await runOne(binding, entry, options, testName); }
+    catch (e) { item = { name: `${entry.name}${testName ? ` ${testName}` : ''}`, status: 'BACKEND_ERROR', error: e.stack || String(e), durationMs: 0, instructions: 0 }; }
     report.tests.push(item);
     console.log(`${item.status}${item.error ? ` (${item.error})` : ''} · ${item.instructions} instr · ${item.durationMs} ms` + (item.failures != null ? ` · ${item.failures} falhas` : ''));
     if (item.status === 'FAIL') {
@@ -259,7 +319,7 @@ async function main() {
   process.exitCode = report.status === 'PASS' ? 0 : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await main();
 }
 

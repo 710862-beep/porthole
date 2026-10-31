@@ -19,3 +19,9 @@ tests/synthetic/*.dll
 
 # Pinned Wine research checkout (acquired by script)
 vendor/wine-source/
+
+# Pinned upstream torture sources and out-of-tree builds (fetch by manifest)
+tests/upstream/
+
+vendor/porthole-x64-wasm/
+cache/

@@ -1,4 +1,5 @@
 use crate::jit::HybridWasmJit;
+use iced_x86::{Decoder, DecoderOptions, FlowControl};
 use crate::vmm::{
     VirtualMemoryManager, MEM_COMMIT, MEM_IMAGE, MEM_PRIVATE, PAGE_EXECUTE_READ,
     PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
@@ -19,6 +20,7 @@ pub const EXIT_THUNK_ADDR: u64 = THUNK_BASE;
 pub const THREAD_EXIT_THUNK_ADDR: u64 = THUNK_BASE + THUNK_STRIDE;
 
 pub const PEB_ADDR: u64 = 0x0000_7FFE_0001_0000;
+pub const PROCESS_HEAP_ADDR: u64 = 0x0000_0000_0060_0000;
 pub const PROC_PARAMS_ADDR: u64 = 0x0000_7FFE_0001_1000;
 pub const CURDIR_BUF_ADDR: u64 = 0x0000_7FFE_0001_1800;
 pub const MAIN_TEB_ADDR: u64 = 0x0000_7FFE_0002_0000;
@@ -36,6 +38,25 @@ pub struct LoadedPe64Info {
     pub text_size: u64,
     pub import_count: usize,
     pub aot_blocks_compiled: usize,
+    pub aot_bytes_compiled: usize,
+    pub aot_instructions_scanned: usize,
+    pub tls_callbacks: Vec<u64>,
+    pub resources: Vec<PeResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceKey {
+    Id(u32),
+    Name(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct PeResource {
+    pub type_key: ResourceKey,
+    pub name_key: ResourceKey,
+    pub language: u16,
+    pub data_rva: u32,
+    pub size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +80,89 @@ fn read_le_u32(b: &[u8], off: usize) -> Option<u32> {
 fn read_le_u64(b: &[u8], off: usize) -> Option<u64> {
     b.get(off..off + 8)
         .map(|s| u64::from_le_bytes(s.try_into().unwrap()))
+}
+
+fn rva_to_offset(sections: &[(u64, u64, u64, u64)], b: &[u8], rva: u64) -> Option<usize> {
+    for &(va, vsize, raw, rsize) in sections {
+        let span = vsize.max(rsize);
+        if rva >= va && rva < va + span {
+            let off = raw + (rva - va);
+            if off < b.len() as u64 {
+                return Some(off as usize);
+            }
+        }
+    }
+    None
+}
+
+fn read_resource_name(b: &[u8], off: usize) -> String {
+    let len = match read_le_u16(b, off) {
+        Some(v) => v as usize,
+        None => return String::new(),
+    };
+    let mut units = Vec::with_capacity(len.min(512));
+    for i in 0..len.min(512) {
+        match read_le_u16(b, off + 2 + i * 2) {
+            Some(v) => units.push(v),
+            None => break,
+        }
+    }
+    String::from_utf16_lossy(&units)
+}
+
+fn walk_resource_dir(
+    b: &[u8],
+    sections: &[(u64, u64, u64, u64)],
+    base: usize,
+    dir_off: usize,
+    level: u8,
+    ty: Option<ResourceKey>,
+    nm: Option<ResourceKey>,
+    out: &mut Vec<PeResource>,
+) {
+    if level > 2 || out.len() >= 8192 {
+        return;
+    }
+    let named = read_le_u16(b, dir_off + 12).unwrap_or(0) as usize;
+    let ids = read_le_u16(b, dir_off + 14).unwrap_or(0) as usize;
+    let count = named.saturating_add(ids).min(4096);
+    for i in 0..count {
+        let ent = dir_off + 16 + i * 8;
+        let name_raw = match read_le_u32(b, ent) { Some(v) => v, None => break };
+        let off_raw = match read_le_u32(b, ent + 4) { Some(v) => v, None => break };
+        let key = if name_raw & 0x8000_0000 != 0 {
+            ResourceKey::Name(read_resource_name(b, base + (name_raw & 0x7FFF_FFFF) as usize))
+        } else {
+            ResourceKey::Id(name_raw & 0xFFFF)
+        };
+        if off_raw & 0x8000_0000 != 0 {
+            let (nt, nn) = match level {
+                0 => (Some(key), None),
+                1 => (ty.clone(), Some(key)),
+                _ => (ty.clone(), nm.clone()),
+            };
+            walk_resource_dir(b, sections, base, base + (off_raw & 0x7FFF_FFFF) as usize, level + 1, nt, nn, out);
+        } else if level == 2 {
+            if let (Some(t), Some(n), ResourceKey::Id(lang)) = (ty.clone(), nm.clone(), key) {
+                let data_ent = base + off_raw as usize;
+                let data_rva = read_le_u32(b, data_ent).unwrap_or(0);
+                let size = read_le_u32(b, data_ent + 4).unwrap_or(0);
+                if data_rva != 0 && rva_to_offset(sections, b, data_rva as u64).is_some() {
+                    out.push(PeResource { type_key: t, name_key: n, language: lang as u16, data_rva, size });
+                }
+            }
+        }
+        if out.len() >= 8192 { break; }
+    }
+}
+
+fn parse_pe_resources(b: &[u8], sections: &[(u64, u64, u64, u64)], rva: u32, _size: u32) -> Vec<PeResource> {
+    let mut out = Vec::new();
+    if rva == 0 { return out; }
+    if let Some(base) = rva_to_offset(sections, b, rva as u64) {
+        walk_resource_dir(b, sections, base, base, 0, None, None, &mut out);
+    }
+    out
 }
 
 pub fn load_pe64_image<F>(
@@ -132,6 +236,7 @@ where
     let sec_table = opt + size_opt_hdr;
     let mut text_base = image_base + entry_rva;
     let mut text_size = 0u64;
+    let mut sections: Vec<(u64, u64, u64, u64)> = Vec::new();
 
     for i in 0..num_sections {
         let sh = sec_table + i * 40;
@@ -144,6 +249,7 @@ where
         let raw_size = read_le_u32(pe_bytes, sh + 16).unwrap_or(0) as usize;
         let raw_ptr = read_le_u32(pe_bytes, sh + 20).unwrap_or(0) as usize;
         let characteristics = read_le_u32(pe_bytes, sh + 36).unwrap_or(0);
+        sections.push((virt_addr, virt_size as u64, raw_ptr as u64, raw_size as u64));
 
         let copy_len = raw_size.min(if virt_size > 0 { virt_size } else { raw_size });
         if raw_ptr < pe_bytes.len() && copy_len > 0 {
@@ -283,6 +389,19 @@ where
         }
     }
 
+    // Parse the PE resource directory (DataDirectory[2]) so FindResource/LoadString can
+    // return real dialog templates and string-table entries instead of NULL.
+    let mut resources = Vec::new();
+    if num_rva > 2 {
+        let res_dir = opt + 112 + 2 * 8;
+        let res_rva = read_le_u32(pe_bytes, res_dir).unwrap_or(0);
+        let res_size = read_le_u32(pe_bytes, res_dir + 4).unwrap_or(0);
+        resources = parse_pe_resources(pe_bytes, &sections, res_rva, res_size);
+    }
+
+    // KUSER_SHARED_DATA is fixed at 0x7FFE0000 on Windows x64. Zeroed => no kernel debugger.
+    vmm.map_region(0x7FFE0000, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+
     // Initialize PEB, RTL_USER_PROCESS_PARAMETERS, and Main Thread TEB + Stack
     vmm.map_region(PEB_ADDR, 0x20000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
     vmm.map_region(
@@ -297,6 +416,30 @@ where
     // PEB fields
     let _ = vmm.write_u64(PEB_ADDR + 0x10, image_base); // ImageBaseAddress
     let _ = vmm.write_u64(PEB_ADDR + 0x20, PROC_PARAMS_ADDR); // ProcessParameters
+    // PEB_LDR_DATA + one LDR_DATA_TABLE_ENTRY for the executable. al-khaser's SizeOfImage
+    // anti-dump walks Ldr->InLoadOrderModuleList and writes the entry's SizeOfImage; a NULL
+    // Ldr faulted the guest at the SEH sentinel instead of completing the check.
+    let ldr_va = PEB_ADDR + 0x3000;
+    let ldr_entry = PEB_ADDR + 0x4000;
+    let _ = vmm.write_u64(PEB_ADDR + 0x18, ldr_va); // Ldr
+    let _ = vmm.write_u32(ldr_va, 0x58); // Length
+    let _ = vmm.write_u8(ldr_va + 4, 1); // Initialized
+    for head in [0x10u64, 0x20, 0x30] {
+        let _ = vmm.write_u64(ldr_va + head, ldr_entry); // Flink
+        let _ = vmm.write_u64(ldr_va + head + 8, ldr_entry); // Blink
+    }
+    for link in [0x00u64, 0x10, 0x20] {
+        let _ = vmm.write_u64(ldr_entry + link, ldr_va + 0x10 + link);
+        let _ = vmm.write_u64(ldr_entry + link + 8, ldr_va + 0x10 + link);
+    }
+    let _ = vmm.write_u64(ldr_entry + 0x30, image_base); // DllBase
+    let _ = vmm.write_u64(ldr_entry + 0x38, image_base + entry_rva); // EntryPoint
+    let _ = vmm.write_u32(ldr_entry + 0x40, size_of_image as u32); // SizeOfImage
+    vmm.map_region(PROCESS_HEAP_ADDR, 0x1000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+    let _ = vmm.write_u64(PEB_ADDR + 0x30, PROCESS_HEAP_ADDR); // ProcessHeap
+    let _ = vmm.write_u32(PEB_ADDR + 0xB8, 4); // NumberOfProcessors (x64)
+    let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x70, 2); // HEAP_GROWABLE, no debug flags
+    let _ = vmm.write_u32(PROCESS_HEAP_ADDR + 0x74, 0); // ForceFlags
 
     // Initial CurrentDirectory = "C:\Game\"
     let init_cwd: Vec<u16> = "C:\\Game\\".encode_utf16().collect();
@@ -316,6 +459,7 @@ where
 
     // Handle static TLS directory (DataDirectory[9]) if present
     let mut tls_array_ptr = 0u64;
+    let mut tls_callbacks: Vec<u64> = Vec::new();
     if num_rva > 9 {
         let tls_dir = opt + 112 + 9 * 8;
         let tls_rva = read_le_u32(pe_bytes, tls_dir).unwrap_or(0) as u64;
@@ -339,6 +483,15 @@ where
             }
             let _ = vmm.write_u64(tls_arr_va, tls_block_va);
             tls_array_ptr = tls_arr_va;
+            // AddressOfCallBacks (TLS directory + 24): null-terminated PIMAGE_TLS_CALLBACK array.
+            let callbacks_va = vmm.read_u64(tls_va + 24).unwrap_or(0);
+            if callbacks_va != 0 {
+                for i in 0..64u64 {
+                    let cb = vmm.read_u64(callbacks_va + i * 8).unwrap_or(0);
+                    if cb == 0 { break; }
+                    if vmm.find_region(cb).is_some() { tls_callbacks.push(cb); }
+                }
+            }
         }
     }
 
@@ -352,26 +505,11 @@ where
         tls_array_ptr,
     );
 
-    // Hybrid AOT pass: scan `.text` entry & 16-byte aligned prologue candidates to pre-emit `.wasm` blocks
-    let mut aot_blocks_compiled = 0usize;
-    if text_size >= 16 {
-        let mut scan_buf = [0u8; 64];
-        let mut candidate_rips = vec![image_base + entry_rva];
-        let max_scan = text_size.min(65536);
-        let mut off = 0u64;
-        while off + 64 <= max_scan && candidate_rips.len() < 24 {
-            candidate_rips.push(text_base + off);
-            off += 256;
-        }
-        for cand_rip in candidate_rips {
-            if vmm.host_read_bytes(cand_rip, &mut scan_buf).is_ok() {
-                let epoch = vmm.page_write_epoch(cand_rip & !0xFFF);
-                if jit.try_compile_block(cand_rip, epoch, &scan_buf).is_some() {
-                    aot_blocks_compiled += 1;
-                }
-            }
-        }
-    }
+    // Full .text AOT scan is performed by BrowserX64Emulator::aot_compile_text after load,
+    // so the host can measure compilation lag separately from PE parsing/relocation.
+    let aot_blocks_compiled = 0usize;
+    let aot_bytes_compiled = 0usize;
+    let aot_instructions_scanned = 0usize;
 
     Ok((
         LoadedPe64Info {
@@ -382,9 +520,92 @@ where
             text_size,
             import_count: bindings.len(),
             aot_blocks_compiled,
+            aot_bytes_compiled,
+            aot_instructions_scanned,
+            tls_callbacks,
+            resources,
         },
         bindings,
     ))
+}
+
+/// Linear-sweep `.text` with the iced-x86 length/flow decoder to discover real instruction
+/// boundaries and branch targets, then compile each candidate basic block with the *same*
+/// JIT decoder used at runtime. Unsupported instructions terminate a block precisely; they
+/// never cause mid-instruction decoding. Returns (blocks_compiled, wasm_bytes, insns_scanned).
+pub fn aot_scan_text(
+    vmm: &mut VirtualMemoryManager,
+    jit: &mut HybridWasmJit,
+    text_base: u64,
+    text_size: u64,
+    entry_rip: u64,
+) -> (usize, usize, usize) {
+    if text_size == 0 || text_size > 64 * 1024 * 1024 { return (0, 0, 0); }
+    let mut text = vec![0u8; text_size as usize];
+    if vmm.host_read_bytes(text_base, &mut text).is_err() { return (0, 0, 0); }
+    let mut starts: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    if entry_rip >= text_base && entry_rip < text_base + text_size { starts.insert(entry_rip); }
+    let mut decoder = match Decoder::try_new(64, &text, DecoderOptions::NONE) {
+        Ok(d) => d,
+        Err(_) => return (0, 0, 0),
+    };
+    decoder.set_ip(text_base);
+    let end = text_base + text_size;
+    let mut scanned = 0usize;
+    while (decoder.position() as u64) < text_size {
+        let ins = decoder.decode();
+        scanned += 1;
+        if ins.is_invalid() {
+            // Resynchronize at the next byte; never compile an invalid instruction.
+            let pos = decoder.position().saturating_sub(ins.len().max(1));
+            let next = pos + 1;
+            if next >= text.len() { break; }
+            decoder.set_position(next);
+            decoder.set_ip(text_base + next as u64);
+            continue;
+        }
+        let next_ip = decoder.ip();
+        match ins.flow_control() {
+            FlowControl::Next => {}
+            FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch | FlowControl::Call => {
+                let target = ins.near_branch_target();
+                if target >= text_base && target < end { starts.insert(target); }
+                if next_ip >= text_base && next_ip < end { starts.insert(next_ip); }
+            }
+            FlowControl::Return | FlowControl::Interrupt | FlowControl::Exception => {
+                if next_ip >= text_base && next_ip < end { starts.insert(next_ip); }
+            }
+            _ => {
+                if next_ip >= text_base && next_ip < end { starts.insert(next_ip); }
+            }
+        }
+        if next_ip >= end { break; }
+    }
+    let mut blocks = 0usize;
+    let mut bytes = 0usize;
+    for rip in &starts {
+        let off = (*rip - text_base) as usize;
+        let len = 512usize.min(text.len() - off).min(4096 - (*rip & 0xFFF) as usize);
+        if len < 1 { continue; }
+        let epoch = vmm.page_write_epoch(*rip & !0xFFF);
+        if jit.get_valid_artifact(*rip, epoch).is_some() { continue; }
+        if let Some(art) = jit.try_compile_block(*rip, epoch, &text[off..off + len]) {
+            blocks += 1;
+            bytes += art.wasm_bytes.len();
+        }
+    }
+    // Second pass: forward references are now present, so relink static JMP/CALL
+    // edges into native Wasm call/return_call chains where acyclic.
+    for rip in &starts {
+        let off = (*rip - text_base) as usize;
+        let len = 512usize.min(text.len() - off).min(4096 - (*rip & 0xFFF) as usize);
+        if len < 1 { continue; }
+        let epoch = vmm.page_write_epoch(*rip & !0xFFF);
+        if let Some(art) = jit.try_relink_block(*rip, epoch, &text[off..off + len]) {
+            bytes += art.wasm_bytes.len();
+        }
+    }
+    (blocks, bytes, scanned)
 }
 
 pub fn init_teb(

@@ -35,6 +35,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { X64JitHost } from '../../js/x64-jit-host.js';
 
 const wasmDir = process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm';
 const exeRel = 'tests/assets/third-party/chocolate-doom.exe';
@@ -43,9 +44,12 @@ const titleProbe = process.argv.includes('--title-probe');
 const titlePresents = Math.max(1, Number(process.env.PORTHOLE_TITLE_PRESENTS || 30) || 30);
 const guestArgs = process.env.PORTHOLE_DOOM_ARGS
   ?? (titleProbe ? '-iwad C:\\Game\\DOOM2.WAD -nosound' : '-iwad C:\\Game\\DOOM2.WAD -timedemo demo1 -nosound');
-const residentPages = Math.max(64, Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536) || 65536);
+const residentPages = Number(process.env.PORTHOLE_DOOM_RESIDENT || 65536);
 const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 1200) || 1200) * 1000;
-const limits = { slice: 2_000_000, maxSlices: 100000 };
+const limits = { slice: Math.max(1, Number(process.env.PORTHOLE_DOOM_SLICE || 2_000_000) || 2_000_000), maxSlices: 100000 };
+const jitEnabled = process.env.PORTHOLE_JIT !== '0';
+const jitValidate = process.env.PORTHOLE_JIT_VALIDATE !== '0';
+const maxInstructions = Math.max(0, Number(process.env.PORTHOLE_DOOM_MAX_INSTRUCTIONS || 0) || 0);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
@@ -136,9 +140,12 @@ async function loadBinding() {
   const gluePath = path.join(dir, 'porthole_x64_wasm.js');
   const wasmPath = path.join(dir, 'porthole_x64_wasm_bg.wasm');
   const mod = await import(pathToFileURL(gluePath).href);
-  if (typeof mod.default === 'function') await mod.default(fs.readFileSync(wasmPath));
+  // wasm-bindgen's default initializer returns the raw export namespace. The ES module
+  // itself does not export `memory`; JIT modules must import this exact WebAssembly.Memory.
+  const core = typeof mod.default === 'function' ? await mod.default(fs.readFileSync(wasmPath)) : null;
   if (typeof mod.BrowserX64Emulator !== 'function') return { error: 'BrowserX64Emulator export missing' };
-  return { mod, wasmSha256: sha256(fs.readFileSync(wasmPath)) };
+  if (!(core?.memory instanceof WebAssembly.Memory)) return { error: 'Core WebAssembly.Memory export missing' };
+  return { mod, memory: core.memory, wasmSha256: sha256(fs.readFileSync(wasmPath)) };
 }
 
 function writeReport(report) {
@@ -208,8 +215,10 @@ async function main() {
       process.exit(2);
     }
   }
+  const diskStart = performance.now();
   const exeBytes = fs.readFileSync(exeFile);
   const wadBytes = fs.readFileSync(wadFile);
+  const diskReadMs = performance.now() - diskStart;
   report.binarySha256 = sha256(exeBytes);
   report.binaryBytes = exeBytes.length;
   report.iwadSha256 = sha256(wadBytes);
@@ -228,10 +237,47 @@ async function main() {
     console.error(`[tier-b] NOT_RUN: ${binding.error}`);
     process.exit(2);
   }
-  const { mod } = binding;
+  const { mod, memory } = binding;
+  {
+    const dv = new DataView(wadBytes.buffer, wadBytes.byteOffset, wadBytes.byteLength);
+    const numLumps = dv.getInt32(4, true), dirOfs = dv.getInt32(8, true);
+    const markers = {};
+    for (let i = 0; i < numLumps; i++) {
+      const off = dirOfs + i * 16 + 8;
+      const name = Buffer.from(wadBytes.slice(off, off + 8)).toString('latin1').replace(/\0+$/, '');
+      if (['PNAMES', 'F_START', 'F_END', 'FF_START', 'FF_END'].includes(name)) markers[name] = i;
+    }
+    report.wad = {
+      numLumps, dirOfs,
+      hasPNAMES: 'PNAMES' in markers,
+      hasF_END: 'F_END' in markers,
+      markers,
+      directorySha256: sha256(wadBytes.subarray(dirOfs, dirOfs + numLumps * 16)),
+    };
+  }
   report.wasmSha256 = binding.wasmSha256;
 
   const emu = new mod.BrowserX64Emulator(residentPages);
+  const cacheDir = abs('cache');
+  const jitCache = jitEnabled ? {
+    async loadJitCache(sha) {
+      try {
+        const payload = JSON.parse(fs.readFileSync(path.join(cacheDir, `${sha}.jitcache`), 'utf8'));
+        if (payload.exeSha256 !== sha || payload.abi !== 3 || !Array.isArray(payload.blocks)) return [];
+        return payload.blocks.map(({ meta, wasmBase64 }) => ({ meta, wasmBytes: new Uint8Array(Buffer.from(wasmBase64, 'base64')) }));
+      } catch { return []; }
+    },
+    async saveJitCache(sha, entries) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const payload = JSON.stringify({ version: 1, abi: 3, exeSha256: sha, blocks: entries.map(({ meta, wasmBytes }) => ({ meta, wasmBase64: Buffer.from(wasmBytes).toString('base64') })) });
+      fs.writeFileSync(path.join(cacheDir, `${sha}.jitcache`), payload);
+      return { blocks: entries.length, bytes: payload.length };
+    },
+  } : null;
+  const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory, cache: jitCache, exeSha256: report.binarySha256, diagnostics: process.env.PORTHOLE_JIT_TELEMETRY === '1' });
+  if (typeof emu.set_jit_validate_mode === 'function') emu.set_jit_validate_mode(Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)));
+  else if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
+  report.jit = { enabled: jitEnabled, validate: jitValidate, maxInstructions: maxInstructions || null };
   for (const dir of [
     'C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE',
     'C:\\Users\\PORTHOLE\\Temp', 'C:\\Users\\PORTHOLE\\AppData', 'C:\\Users\\PORTHOLE\\AppData\\Roaming',
@@ -239,9 +285,52 @@ async function main() {
   ]) emu.vfs_mkdir(dir);
   emu.vfs_insert('C:\\Game\\chocolate-doom.exe', new Uint8Array(exeBytes));
   emu.vfs_insert('C:\\Game\\DOOM2.WAD', new Uint8Array(wadBytes));
-  emu.enable_trace?.(2000);
-  emu.set_hle_trace_only?.(true);
+  // Chocolate Doom's -timedemo demo1 opens an external demo1.lmp file; extract the
+  // pinned IWAD's DEMO1 lump so the timedemo actually has input to play back.
+  try {
+    const dv = new DataView(wadBytes.buffer, wadBytes.byteOffset, wadBytes.byteLength);
+    const numLumps = dv.getUint32(4, true); const dirOff = dv.getUint32(8, true);
+    for (let i = 0; i < numLumps; i++) {
+      const e = dirOff + i * 16;
+      const name = Buffer.from(wadBytes.subarray(e + 8, e + 16)).toString('ascii').replace(/\0+$/, '');
+      if (name.toUpperCase() === 'DEMO1') {
+        const off = dv.getUint32(e, true); const size = dv.getUint32(e + 4, true);
+        emu.vfs_insert('C:\\Game\\demo1.lmp', new Uint8Array(wadBytes.subarray(off, off + size)));
+        break;
+      }
+    }
+  } catch { /* missing DEMO1 is reported by the guest console */ }
+  if (process.env.PORTHOLE_DOOM_TRACE !== '0' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
+    emu.enable_trace?.(200000);
+    emu.set_hle_trace_only?.(true);
+    if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
+      // Keep the early file-mapping calls even if later CRT traffic fills the ring.
+      emu.set_trace_filter?.(['CreateFileMapping', 'MapViewOfFile', 'ReadFile', 'fread', 'SetFilePointer']);
+    }
+  }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
+  const cacheStart = performance.now();
+  await jit.initCache();
+  const cacheLoadMs = performance.now() - cacheStart;
+  const aotStart = performance.now();
+  const aotBlocks = typeof emu.aot_compile_text === 'function' ? emu.aot_compile_text() : 0;
+  await jit.drainPending();
+  await jit.flushCache();
+  const aotCompileMs = performance.now() - aotStart;
+  const aotStats = typeof emu.aot_stats_json === 'function' ? JSON.parse(emu.aot_stats_json()) : null;
+  report.startup = {
+    disk_read_time_ms: Number(diskReadMs.toFixed(3)),
+    aot_compilation_time_ms: Number(aotCompileMs.toFixed(3)),
+    cache_load_time_ms: Number(cacheLoadMs.toFixed(3)),
+    total_startup_lag_ms: Number((diskReadMs + aotCompileMs + cacheLoadMs).toFixed(3)),
+    aot_blocks_compiled: aotBlocks,
+    aot_cache_size_bytes: jit.cacheTelemetry.bytes,
+    cache_hit_count: jit.cacheTelemetry.hits,
+    cache_miss_count: jit.cacheTelemetry.misses,
+    jit_compile_time_ms: Number(jit.jitCompileMs.toFixed(3)),
+    aot: aotStats,
+  };
+  console.log(`STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup)}`);
   emu.set_exe_path?.('C:\\Game\\chocolate-doom.exe');
   emu.set_command_line(`C:\\Game\\chocolate-doom.exe ${guestArgs}`);
   report.load = load;
@@ -276,7 +365,7 @@ async function main() {
   let pageFaults = 0;
   let terminal = 'slice-budget';
   while (slices < limits.maxSlices && Date.now() <= deadline) {
-    const status = emu.run_slice(limits.slice);
+    const status = await jit.runSlice(limits.slice);
     slices += 1;
     const drained = emu.drain_evicted_pages?.();
     if (drained && drained.length) {
@@ -286,6 +375,7 @@ async function main() {
       }
     }
     sampleFrames();
+    if (maxInstructions && Number(emu.instructions_executed()) >= maxInstructions) { terminal = 'instruction-budget-reached'; break; }
     if (titleProbe && Number(emu.presented_frames?.() || 0) >= titlePresents) {
       terminal = 'title-probe-target-reached';
       break;
@@ -303,8 +393,29 @@ async function main() {
   }
   if (Date.now() > deadline && terminal === 'slice-budget') terminal = 'timeout-still-running';
   const wallMs = Date.now() - started;
+  report.jit.stats = jit.stats;
+  report.jit.diagnostics = jit.diagnosticReport();
+  await jit.flushCache();
+  report.startup.jit_fallbacks_during_play = jit.stats.traps;
+  report.startup.jit_compile_time_ms = Number(jit.jitCompileMs.toFixed(3));
+  report.startup.cache_miss_count = jit.cacheTelemetry.misses;
+  report.startup.aot_cache_size_bytes = jit.cacheTelemetry.bytes;
+  console.log(`STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup)}`);
+  if (process.env.PORTHOLE_JIT_TELEMETRY === '1') console.log(`JIT_DIAGNOSTICS_JSON=${JSON.stringify(report.jit.diagnostics)}`);
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
+  if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {
+    const m = /MapViewOfFile[^\n]*rax=0x([0-9a-f]+)/.exec(trace);
+    if (m) {
+      const va = BigInt('0x' + m[1]);
+      report.wad.guestMapVa = '0x' + va.toString(16);
+      report.wad.guestHeader = emu.peek_qwords(va, 2);
+      report.wad.guestDirectory = emu.peek_qwords(va + BigInt(report.wad.dirOfs), 8);
+      if (Number.isInteger(report.wad.markers?.F_END)) {
+        report.wad.guestFEndEntry = emu.peek_qwords(va + BigInt(report.wad.dirOfs + report.wad.markers.F_END * 16), 2);
+      }
+    } else report.wad.guestMapVa = 'not found in trace';
+  }
   sampleFrames();
   frameSamples.final = grabFrame('final');
   const emuChecksum = emu.frame_checksum?.() || '';
