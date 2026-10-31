@@ -44,6 +44,8 @@ pub struct CompiledJitArtifact {
     pub has_stores: bool,
     pub has_simd: bool,
     pub self_loop: bool,
+    /// True when a linked JMP/CALL makes the returned instruction count dynamic.
+    pub dynamic_count: bool,
     pub code_hash: u64,
     /// RIP of the first unsupported instruction (BlockExit::Interpret), or 0.
     pub interpret_rip: u64,
@@ -181,7 +183,7 @@ impl HybridWasmJit {
         let artifact = CompiledJitArtifact {
             entry_rip, page_base: entry_rip & !0xFFF, page_epoch,
             byte_len: block.byte_len as u32, insn_count: block.insn_count,
-            interpret_rip, ends_with_ret: block.exit == BlockExit::Ret, has_stores, has_simd, self_loop, code_hash, wasm_bytes, links,
+            interpret_rip, ends_with_ret: block.exit == BlockExit::Ret, has_stores, has_simd, self_loop, dynamic_count: !links.is_empty(), code_hash, wasm_bytes, links,
         };
         self.artifacts.insert(entry_rip, artifact.clone());
         self.pending_export_rips.push(entry_rip);
@@ -207,7 +209,7 @@ impl HybridWasmJit {
 
     pub fn import_cached_artifact(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, has_stores: bool, has_simd: bool, self_loop: bool, code_hash: u64, wasm_bytes: Vec<u8>) -> bool {
         if wasm_bytes.len() < 8 || &wasm_bytes[0..8] != b"\0asm\x01\0\0\0" { return false; }
-        self.artifacts.insert(entry_rip, CompiledJitArtifact { entry_rip, page_base: entry_rip & !0xFFF, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, interpret_rip: 0, has_stores, has_simd, wasm_bytes, links: Vec::new() });
+        self.artifacts.insert(entry_rip, CompiledJitArtifact { entry_rip, page_base: entry_rip & !0xFFF, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, dynamic_count: false, code_hash, interpret_rip: 0, has_stores, has_simd, wasm_bytes, links: Vec::new() });
         true
     }
 

@@ -1350,7 +1350,10 @@ impl BrowserX64Emulator {
             self.cpu.rip = exit_rip;
             return "next".into();
         }
-        if !art.self_loop && executed != art.insn_count as u64 {
+        if !art.self_loop && !art.dynamic_count && executed != art.insn_count as u64 {
+            self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-count".into();
+        }
+        if !art.self_loop && art.dynamic_count && executed < art.insn_count as u64 {
             self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-count".into();
         }
         if art.self_loop && executed % art.insn_count as u64 != 0 {
