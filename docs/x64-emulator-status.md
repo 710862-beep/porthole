@@ -548,3 +548,37 @@ check-run `output.summary` (`porthole-x64-trace:*`, `porthole-x64-game`) and rea
 D3D12, DXBC/DXIL translation, and any other graphics backend are later work. DXBC is not DXIL;
 Shader Model 6 requires `dxil-spirv` or an equivalent translator before WebGPU can execute those
 shaders.
+
+## Phase 2 basic-block JIT — measured microbench gate
+
+The one-instruction JIT handoff was replaced by a real basic-block compiler in
+`rust/porthole-x64-wasm/src/jit.rs` (ABI v2, 32 i64 context slots):
+
+- Decodes multi-instruction GPR blocks until JMP/Jcc/RET/CALL, an unsupported
+  instruction, or a page boundary. GPRs and RFLAGS are Wasm locals for the whole
+  block; the CPU context is read once and written back on exit.
+- Hot self-back-edges are lowered to a native Wasm `loop`/`br_if` with a
+  whole-block instruction budget, so a hot loop does not cross JS per iteration.
+- Static forward JMP edges can be linked with `return_call` when the host's
+  `WebAssembly.validate` probe accepts tail calls; otherwise the dispatcher
+  resumes the successor. The core build stays baseline because wasm-bindgen
+  0.2.92 cannot parse a `+tail-call` core module.
+- Unsupported/memory-writing instructions terminate the block before their side
+  effect; the interpreter resumes at the exact RIP. SMC/page epochs invalidate
+  artifacts and linked predecessors. Correctness lanes shadow-validate the first
+  execution of each artifact/epoch, then commit atomically.
+
+Measured authored hot-loop A/B (`tests/bench/jit-microbench.mjs`, N=20,000,000,
+Node v22.22.3, candidate from CI run `41158464780`):
+
+| mode | instructions | ms | MIPS |
+|---|---:|---:|---:|
+| interpreter | 40,000,002 | 2731 | 14.648 |
+| jit-validate | 40,000,002 | 130 | 307.527 |
+| jit-fast | 40,000,002 | 64 | 629.648 |
+
+The JIT now exceeds the interpreter's ~10–15 MIPS on the microbench by >40x.
+`x64-jit-differential` and the new `x64-jit-alu-direction` regression pass against
+the candidate core. Chocolate Doom remains a separate compatibility gate: the
+guest still stalls in `NET_Init` before timedemo gametics, so Doom throughput is
+reported as a failure rather than a JIT PASS.

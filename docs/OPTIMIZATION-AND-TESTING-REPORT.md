@@ -497,3 +497,24 @@ confirmation), which are intentionally not synthesized as fake human input.
 The remaining al-khaser findings are architectural, not stubbed PASSes: loader TLS
 attach ordering, guard-page SEH unwinding, a WBEM/WMI class provider, and cycle-accurate
 RDTSC timing. They are reported BAD rather than hidden.
+
+## Phase 2 JIT overhaul (basic blocks, register locals, native loops)
+
+The previous JIT emitted one-instruction artifacts and paid a JS/Wasm handoff per
+guest instruction. Phase 2 replaces it with a basic-block compiler: multi-
+instruction decode, GPR/RFLAGS Wasm locals, exit-only context writeback, native
+Wasm self-loops with an instruction budget, runtime-probed `return_call`
+successor linking, and precise pre-side-effect interpreter fallback. SMC/page
+epochs invalidate artifacts and linked predecessors; correctness lanes shadow-
+validate the first execution of each artifact/epoch.
+
+Verified candidate: CI run `41158464780` core SUCCESS, Node unit/differential
+SUCCESS. Authored microbench (N=20M, Node 22): interpreter **14.648 MIPS**,
+jit-validate **307.527 MIPS**, jit-fast **629.648 MIPS**. This clears the >10 MIPS
+JIT gate on the microbench. The 300–500 MIPS target is reached on the authored
+hot loop, not on a full Win32 application.
+
+Chocolate Doom timedemo is still FAIL: the guest stalls in `NET_Init` before
+gametics. A local 60 s trace-disabled A/B measured baseline **0.08 MIPS** vs JIT
+**0.10 MIPS** with 3.09M JIT instructions executed and validation fallbacks; the
+900 s CI A/B is recorded below when complete. Doom is not claimed as a JIT PASS.
