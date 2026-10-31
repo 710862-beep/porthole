@@ -152,6 +152,29 @@ impl HybridWasmJit {
         self.artifacts.get(&rip)
     }
 
+    fn link_would_cycle(&self, entry_rip: u64, target_rip: u64) -> bool {
+        let mut stack = vec![target_rip];
+        let mut seen = 0usize;
+        while let Some(rip) = stack.pop() {
+            if rip == entry_rip { return true; }
+            seen += 1; if seen > 256 { return true; }
+            if let Some(a) = self.artifacts.get(&rip) { stack.extend(a.links.iter().map(|l| l.target_rip)); }
+        }
+        false
+    }
+
+    /// Second-pass AOT relink: once forward targets exist, specialize an unlinked
+    /// JMP/CALL artifact into a native Wasm call/return_call edge.
+    pub fn try_relink_block(&mut self, entry_rip: u64, page_epoch: u32, bytes: &[u8]) -> Option<CompiledJitArtifact> {
+        let existing = self.artifacts.get(&entry_rip)?;
+        if !existing.links.is_empty() || existing.self_loop { return None; }
+        let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
+        let block = Self::decode_block(entry_rip, &bytes[..bytes.len().min(page_remain)])?;
+        let target = match block.exit { BlockExit::Jump | BlockExit::Call { indirect: false } => block.target, _ => return None };
+        if !self.artifacts.contains_key(&target) || self.link_would_cycle(entry_rip, target) { return None; }
+        self.try_compile_block(entry_rip, page_epoch, bytes)
+    }
+
     pub fn try_compile_block(&mut self, entry_rip: u64, page_epoch: u32, bytes: &[u8]) -> Option<CompiledJitArtifact> {
         let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
         let window = &bytes[..bytes.len().min(page_remain)];
@@ -162,7 +185,7 @@ impl HybridWasmJit {
         if self.tail_calls && matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) && !self_loop {
             if let Some(target) = self.artifacts.get(&block.target) {
                 // Do not create cross-module cycles; self-loops are already native loops.
-                let cyclic = target.links.iter().any(|l| l.target_rip == entry_rip) || target.entry_rip == entry_rip;
+                let cyclic = self.link_would_cycle(entry_rip, block.target);
                 if !cyclic {
                     links.push(JitLink { target_rip: block.target, page_epoch: target.page_epoch, import_name: format!("b{:016x}", block.target) });
                 }

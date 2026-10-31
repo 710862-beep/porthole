@@ -594,6 +594,17 @@ pub fn aot_scan_text(
             bytes += art.wasm_bytes.len();
         }
     }
+    // Second pass: forward references are now present, so relink static JMP/CALL
+    // edges into native Wasm call/return_call chains where acyclic.
+    for rip in &starts {
+        let off = (*rip - text_base) as usize;
+        let len = 512usize.min(text.len() - off).min(4096 - (*rip & 0xFFF) as usize);
+        if len < 1 { continue; }
+        let epoch = vmm.page_write_epoch(*rip & !0xFFF);
+        if let Some(art) = jit.try_relink_block(*rip, epoch, &text[off..off + len]) {
+            bytes += art.wasm_bytes.len();
+        }
+    }
     (blocks, bytes, scanned)
 }
 
