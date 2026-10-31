@@ -256,7 +256,7 @@ impl HybridWasmJit {
         Some(match reg {
             XMM0 => 0, XMM1 => 1, XMM2 => 2, XMM3 => 3, XMM4 => 4, XMM5 => 5, XMM6 => 6, XMM7 => 7,
             XMM8 => 8, XMM9 => 9, XMM10 => 10, XMM11 => 11, XMM12 => 12, XMM13 => 13, XMM14 => 14, XMM15 => 15,
-            _ => return None,
+            _ => return Option::None,
         })
     }
 
