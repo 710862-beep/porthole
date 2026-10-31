@@ -522,3 +522,11 @@ errors. The compile errors were traced to a wrong sign-extension opcode in
 32-bit SAR lowering (`i64.extend_i32_s` emitted without `i32.wrap_i64`); fixed
 after this run. Doom is not claimed as a JIT PASS; its pre-timedemo stall and
 the remaining validation fallbacks are separate compatibility work.
+
+Post-fix local rerun (120 s, trace disabled, candidate `41160535076`): the SAR
+opcode fix removes all Wasm compile errors. Doom JIT now runs to the wall-clock
+timeout instead of exiting -1: **0.09 MIPS**, 12M instructions, 6.09M JIT
+instructions, 0 compile errors, 9,786 validation fallbacks, 0 gametics. The
+authored microbench on the same candidate remains **~554 MIPS jit-fast /
+~298 MIPS jit-validate** vs **~15 MIPS interpreter**. The JIT gate is cleared on
+the microbench; Doom remains a compatibility failure, not a throughput PASS.
