@@ -1038,7 +1038,7 @@ impl HybridWasmJit {
         b.push(0x02); b.push(0x40); // $commit
         if self_loop { b.push(0x03); b.push(0x40); }
         let budget_br_depth = if self_loop { 2 } else { 1 };
-        let abort_depth = if self_loop { 2 } else { 1 };
+        let abort_depth = if self_loop { 3 } else { 2 };
         // budget check
         Self::local_get(&mut b, 23); Self::i64_const(&mut b, block_insns); b.push(0x54);
         b.push(0x04); b.push(0x40);
