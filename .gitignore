@@ -24,3 +24,4 @@ vendor/wine-source/
 tests/upstream/
 
 vendor/porthole-x64-wasm/
+cache/

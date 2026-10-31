@@ -18,6 +18,7 @@ pub const JIT_COMPILER_VERSION: u64 = 3;
 pub const JIT_CONTEXT_SLOTS: usize = 32;
 pub const JIT_STATUS_OK: u64 = 0;
 pub const JIT_STATUS_BUDGET: u64 = 1;
+pub const JIT_STATUS_INTERPRET: u64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct JitLink {

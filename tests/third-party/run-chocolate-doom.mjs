@@ -215,8 +215,10 @@ async function main() {
       process.exit(2);
     }
   }
+  const diskStart = performance.now();
   const exeBytes = fs.readFileSync(exeFile);
   const wadBytes = fs.readFileSync(wadFile);
+  const diskReadMs = performance.now() - diskStart;
   report.binarySha256 = sha256(exeBytes);
   report.binaryBytes = exeBytes.length;
   report.iwadSha256 = sha256(wadBytes);
@@ -256,7 +258,23 @@ async function main() {
   report.wasmSha256 = binding.wasmSha256;
 
   const emu = new mod.BrowserX64Emulator(residentPages);
-  const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory, diagnostics: process.env.PORTHOLE_JIT_TELEMETRY === '1' });
+  const cacheDir = abs('cache');
+  const jitCache = jitEnabled ? {
+    async loadJitCache(sha) {
+      try {
+        const payload = JSON.parse(fs.readFileSync(path.join(cacheDir, `${sha}.jitcache`), 'utf8'));
+        if (payload.exeSha256 !== sha || payload.abi !== 2 || !Array.isArray(payload.blocks)) return [];
+        return payload.blocks.map(({ meta, wasmBase64 }) => ({ meta, wasmBytes: new Uint8Array(Buffer.from(wasmBase64, 'base64')) }));
+      } catch { return []; }
+    },
+    async saveJitCache(sha, entries) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const payload = JSON.stringify({ version: 1, abi: 2, exeSha256: sha, blocks: entries.map(({ meta, wasmBytes }) => ({ meta, wasmBase64: Buffer.from(wasmBytes).toString('base64') })) });
+      fs.writeFileSync(path.join(cacheDir, `${sha}.jitcache`), payload);
+      return { blocks: entries.length, bytes: payload.length };
+    },
+  } : null;
+  const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory, cache: jitCache, exeSha256: report.binarySha256, diagnostics: process.env.PORTHOLE_JIT_TELEMETRY === '1' });
   if (typeof emu.set_jit_validate_mode === 'function') emu.set_jit_validate_mode(Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)));
   else if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
   report.jit = { enabled: jitEnabled, validate: jitValidate, maxInstructions: maxInstructions || null };
@@ -276,6 +294,28 @@ async function main() {
     }
   }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
+  const cacheStart = performance.now();
+  await jit.initCache();
+  const cacheLoadMs = performance.now() - cacheStart;
+  const aotStart = performance.now();
+  const aotBlocks = typeof emu.aot_compile_text === 'function' ? emu.aot_compile_text() : 0;
+  await jit.drainPending();
+  await jit.flushCache();
+  const aotCompileMs = performance.now() - aotStart;
+  const aotStats = typeof emu.aot_stats_json === 'function' ? JSON.parse(emu.aot_stats_json()) : null;
+  report.startup = {
+    disk_read_time_ms: Number(diskReadMs.toFixed(3)),
+    aot_compilation_time_ms: Number(aotCompileMs.toFixed(3)),
+    cache_load_time_ms: Number(cacheLoadMs.toFixed(3)),
+    total_startup_lag_ms: Number((diskReadMs + aotCompileMs + cacheLoadMs).toFixed(3)),
+    aot_blocks_compiled: aotBlocks,
+    aot_cache_size_bytes: jit.cacheTelemetry.bytes,
+    cache_hit_count: jit.cacheTelemetry.hits,
+    cache_miss_count: jit.cacheTelemetry.misses,
+    jit_compile_time_ms: Number(jit.jitCompileMs.toFixed(3)),
+    aot: aotStats,
+  };
+  console.log(`STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup)}`);
   emu.set_exe_path?.('C:\\Game\\chocolate-doom.exe');
   emu.set_command_line(`C:\\Game\\chocolate-doom.exe ${guestArgs}`);
   report.load = load;
@@ -340,6 +380,12 @@ async function main() {
   const wallMs = Date.now() - started;
   report.jit.stats = jit.stats;
   report.jit.diagnostics = jit.diagnosticReport();
+  await jit.flushCache();
+  report.startup.jit_fallbacks_during_play = jit.stats.traps;
+  report.startup.jit_compile_time_ms = Number(jit.jitCompileMs.toFixed(3));
+  report.startup.cache_miss_count = jit.cacheTelemetry.misses;
+  report.startup.aot_cache_size_bytes = jit.cacheTelemetry.bytes;
+  console.log(`STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup)}`);
   if (process.env.PORTHOLE_JIT_TELEMETRY === '1') console.log(`JIT_DIAGNOSTICS_JSON=${JSON.stringify(report.jit.diagnostics)}`);
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';

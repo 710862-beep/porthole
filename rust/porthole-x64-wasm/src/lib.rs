@@ -71,6 +71,7 @@ pub struct BrowserX64Emulator {
     jit_last_failure: String,
     jit_unsupported: std::collections::HashMap<String, u64>,
     jit_unsupported_exits: u64,
+    jit_mem_fault: u32,
 }
 
 #[wasm_bindgen]
@@ -108,6 +109,7 @@ impl BrowserX64Emulator {
             jit_last_failure: String::new(),
             jit_unsupported: std::collections::HashMap::new(),
             jit_unsupported_exits: 0,
+            jit_mem_fault: 0,
         }
     }
 
@@ -1281,6 +1283,9 @@ impl BrowserX64Emulator {
         self.jit_ctx[19] = self.cpu.rflags;
         self.jit_ctx[20] = 0; // host writes the slice budget before run_block
         self.jit_ctx[21] = self.cpu.rip;
+        self.jit_ctx[22] = self.cpu.fs_base;
+        self.jit_ctx[23] = self.cpu.gs_base;
+        self.jit_ctx[24] = 0;
         self.jit_shadow = Some(self.cpu.clone());
         let meta = jit::HybridWasmJit::meta_json(&art, self.jit_context_ptr());
         self.jit_active = Some(art);
@@ -1308,8 +1313,20 @@ impl BrowserX64Emulator {
         let executed = self.jit_ctx[18];
         let status = self.jit_ctx[16];
         let exit_rip = self.jit_ctx[17];
-        if executed > 4_294_967_295 || (status != jit::JIT_STATUS_OK && status != jit::JIT_STATUS_BUDGET) {
+        if executed > 4_294_967_295 || status > jit::JIT_STATUS_INTERPRET {
             self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-context".into();
+        }
+        if status == jit::JIT_STATUS_INTERPRET {
+            // A memory helper faulted or an unsupported instruction was reached mid-block.
+            // Prior instructions' side effects are already in the VMM; flush locals and let
+            // the interpreter execute exactly exit_rip (reproducing the precise trap).
+            self.jit_active.take(); self.jit_shadow.take();
+            self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
+            self.cpu.rflags = self.jit_ctx[19];
+            self.cpu.rip = exit_rip;
+            self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(executed);
+            self.kernel.instructions = self.cpu.instructions_executed;
+            return "next".into();
         }
         if executed == 0 {
             // Budget exhausted before a whole block iteration. Commit nothing and let the host
@@ -1394,6 +1411,52 @@ impl BrowserX64Emulator {
         if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm) { return false; }
         self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm.to_vec())
     }
+
+    /// AOT-compile the loaded image's `.text` using the runtime JIT decoder. Called by the
+    /// host after load_pe64 so compilation lag is measured separately from disk/PE parsing.
+    pub fn aot_compile_text(&mut self) -> u32 {
+        let Some(info) = self.loaded.clone() else { return 0; };
+        let (blocks, bytes, scanned) = pe64::aot_scan_text(
+            &mut self.vmm, &mut self.jit, info.text_base, info.text_size, info.entry_point,
+        );
+        if let Some(loaded) = &mut self.loaded {
+            loaded.aot_blocks_compiled = blocks;
+            loaded.aot_bytes_compiled = bytes;
+            loaded.aot_instructions_scanned = scanned;
+        }
+        blocks as u32
+    }
+
+    pub fn aot_stats_json(&self) -> String {
+        match &self.loaded {
+            Some(i) => format!("{{\"blocks\":{},\"wasmBytes\":{},\"instructionsScanned\":{},\"textBase\":\"{}\",\"textSize\":{}}}",
+                i.aot_blocks_compiled, i.aot_bytes_compiled, i.aot_instructions_scanned, i.text_base, i.text_size),
+            None => "{\"blocks\":0,\"wasmBytes\":0,\"instructionsScanned\":0}".into(),
+        }
+    }
+
+    /// Memory helpers imported by JIT modules. A fault sets jit_mem_fault; the module flushes
+    /// locals and exits at the faulting RIP so the interpreter reproduces the precise trap.
+    pub fn jit_read_mem(&mut self, addr: u64, size: u32) -> u64 {
+        self.jit_mem_fault = 0;
+        let n = (size as usize).min(8);
+        let mut buf = [0u8; 8];
+        match self.vmm.read_bytes(addr, &mut buf[..n]) {
+            Ok(()) => u64::from_le_bytes(buf),
+            Err(_) => { self.jit_mem_fault = 1; 0 }
+        }
+    }
+    pub fn jit_write_mem(&mut self, addr: u64, value: u64, size: u32) -> u32 {
+        self.jit_mem_fault = 0;
+        let n = (size as usize).min(8);
+        let buf = value.to_le_bytes();
+        match self.vmm.write_bytes(addr, &buf[..n]) {
+            Ok(()) => 0,
+            Err(_) => { self.jit_mem_fault = 1; 1 }
+        }
+    }
+    pub fn jit_mem_fault(&self) -> u32 { self.jit_mem_fault }
+    pub fn jit_clear_mem_fault(&mut self) { self.jit_mem_fault = 0; }
 
     /// Instantaneous counters consumed by the browser telemetry panel.
     pub fn telemetry_json(&self) -> String {

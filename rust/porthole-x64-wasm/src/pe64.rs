@@ -1,4 +1,5 @@
 use crate::jit::HybridWasmJit;
+use iced_x86::{Decoder, DecoderOptions, FlowControl};
 use crate::vmm::{
     VirtualMemoryManager, MEM_COMMIT, MEM_IMAGE, MEM_PRIVATE, PAGE_EXECUTE_READ,
     PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
@@ -37,6 +38,8 @@ pub struct LoadedPe64Info {
     pub text_size: u64,
     pub import_count: usize,
     pub aot_blocks_compiled: usize,
+    pub aot_bytes_compiled: usize,
+    pub aot_instructions_scanned: usize,
     pub tls_callbacks: Vec<u64>,
     pub resources: Vec<PeResource>,
 }
@@ -502,20 +505,11 @@ where
         tls_array_ptr,
     );
 
-    // Conservative AOT entry-block pass. A 16-byte-aligned address is NOT an x86 basic-block
-    // boundary: the old heuristic decoded mid-instruction and cached semantically wrong Wasm.
-    // Additional blocks are discovered only at RIPs the interpreter actually executes.
-    let mut aot_blocks_compiled = 0usize;
-    if text_size >= 2 {
-        let mut scan_buf = [0u8; 64];
-        let cand_rip = image_base + entry_rva;
-        if vmm.host_read_bytes(cand_rip, &mut scan_buf).is_ok() {
-            let epoch = vmm.page_write_epoch(cand_rip & !0xFFF);
-            if jit.try_compile_block(cand_rip, epoch, &scan_buf).is_some() {
-                aot_blocks_compiled += 1;
-            }
-        }
-    }
+    // Full .text AOT scan is performed by BrowserX64Emulator::aot_compile_text after load,
+    // so the host can measure compilation lag separately from PE parsing/relocation.
+    let aot_blocks_compiled = 0usize;
+    let aot_bytes_compiled = 0usize;
+    let aot_instructions_scanned = 0usize;
 
     Ok((
         LoadedPe64Info {
@@ -526,11 +520,81 @@ where
             text_size,
             import_count: bindings.len(),
             aot_blocks_compiled,
+            aot_bytes_compiled,
+            aot_instructions_scanned,
             tls_callbacks,
             resources,
         },
         bindings,
     ))
+}
+
+/// Linear-sweep `.text` with the iced-x86 length/flow decoder to discover real instruction
+/// boundaries and branch targets, then compile each candidate basic block with the *same*
+/// JIT decoder used at runtime. Unsupported instructions terminate a block precisely; they
+/// never cause mid-instruction decoding. Returns (blocks_compiled, wasm_bytes, insns_scanned).
+pub fn aot_scan_text(
+    vmm: &mut VirtualMemoryManager,
+    jit: &mut HybridWasmJit,
+    text_base: u64,
+    text_size: u64,
+    entry_rip: u64,
+) -> (usize, usize, usize) {
+    if text_size == 0 || text_size > 64 * 1024 * 1024 { return (0, 0, 0); }
+    let mut text = vec![0u8; text_size as usize];
+    if vmm.host_read_bytes(text_base, &mut text).is_err() { return (0, 0, 0); }
+    let mut starts: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    if entry_rip >= text_base && entry_rip < text_base + text_size { starts.insert(entry_rip); }
+    let mut decoder = match Decoder::try_new(64, &text, DecoderOptions::NONE) {
+        Ok(d) => d,
+        Err(_) => return (0, 0, 0),
+    };
+    decoder.set_ip(text_base);
+    let end = text_base + text_size;
+    let mut scanned = 0usize;
+    while (decoder.position() as u64) < text_size {
+        let ins = decoder.decode();
+        scanned += 1;
+        if ins.is_invalid() {
+            // Resynchronize at the next byte; never compile an invalid instruction.
+            let pos = decoder.position().saturating_sub(ins.len().max(1));
+            let next = pos + 1;
+            if next >= text.len() { break; }
+            decoder.set_position(next);
+            decoder.set_ip(text_base + next as u64);
+            continue;
+        }
+        let next_ip = decoder.ip();
+        match ins.flow_control() {
+            FlowControl::Next => {}
+            FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch | FlowControl::Call => {
+                let target = ins.near_branch_target();
+                if target >= text_base && target < end { starts.insert(target); }
+                if next_ip >= text_base && next_ip < end { starts.insert(next_ip); }
+            }
+            FlowControl::Return | FlowControl::Interrupt | FlowControl::Exception => {
+                if next_ip >= text_base && next_ip < end { starts.insert(next_ip); }
+            }
+            _ => {
+                if next_ip >= text_base && next_ip < end { starts.insert(next_ip); }
+            }
+        }
+        if next_ip >= end { break; }
+    }
+    let mut blocks = 0usize;
+    let mut bytes = 0usize;
+    for rip in starts {
+        let off = (rip - text_base) as usize;
+        let len = 512usize.min(text.len() - off).min(4096 - (rip & 0xFFF) as usize);
+        if len < 1 { continue; }
+        let epoch = vmm.page_write_epoch(rip & !0xFFF);
+        if jit.get_valid_artifact(rip, epoch).is_some() { continue; }
+        if let Some(art) = jit.try_compile_block(rip, epoch, &text[off..off + len]) {
+            blocks += 1;
+            bytes += art.wasm_bytes.len();
+        }
+    }
+    (blocks, bytes, scanned)
 }
 
 pub fn init_teb(

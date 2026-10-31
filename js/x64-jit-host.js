@@ -19,6 +19,10 @@
       this.binding = binding;
       this.memory = options.memory || binding.memory || binding.__wasm?.memory;
       this.cache = options.cache || null;
+      this.exeSha256 = options.exeSha256 || null;
+      this.persistent = new Map();
+      this.cacheTelemetry = { hits: 0, misses: 0, loadMs: 0, saveMs: 0, bytes: 0 };
+      this.jitCompileMs = 0;
       this.modules = new Map();
       this.instances = new Map();
       this.artifacts = new Map(); // entryRip string -> meta
@@ -73,17 +77,41 @@
     }
 
     async initCache() {
-      if (!this.cache?.loadJitModules || typeof this.emu.jit_import_cached !== 'function') return;
-      const entries = await this.cache.loadJitModules(4096);
+      if (typeof this.emu.jit_import_cached !== 'function') return;
+      const t0 = performance.now();
+      let entries = [];
+      if (this.exeSha256 && this.cache?.loadJitCache) entries = await this.cache.loadJitCache(this.exeSha256);
+      else if (this.cache?.loadJitModules) entries = await this.cache.loadJitModules(4096);
       for (const { wasmBytes, meta } of entries) {
         if (!meta || meta.abi !== 2 || (meta.links || []).length || !WebAssembly.validate(wasmBytes)) continue;
         const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, !!meta.selfLoop, BigInt('0x' + meta.codeHash), wasmBytes);
         if (ok) {
           this.stats.loaded += 1;
+          this.cacheTelemetry.hits += 1;
           this.artifacts.set(String(meta.entryRip), meta);
+          this.persistent.set(meta.codeHash, { meta, wasmBytes });
+          const tc = performance.now();
           this.modules.set(meta.codeHash, await WebAssembly.compile(wasmBytes));
+          this.jitCompileMs += performance.now() - tc;
         }
       }
+      this.cacheTelemetry.loadMs = performance.now() - t0;
+      this.cacheTelemetry.bytes = [...this.persistent.values()].reduce((n, e) => n + e.wasmBytes.length, 0);
+    }
+
+    async flushCache() {
+      if (!this.exeSha256 || !this.cache?.saveJitCache || !this.persistent.size) return;
+      const t0 = performance.now();
+      const entries = [...this.persistent.values()];
+      try {
+        await this.cache.saveJitCache(this.exeSha256, entries);
+        this.stats.saved = entries.length;
+        this.cacheTelemetry.bytes = entries.reduce((n, e) => n + e.wasmBytes.length, 0);
+      } catch (error) {
+        this.stats.cacheErrors += 1;
+        this.stats.lastCacheError = String(error?.message || error);
+      }
+      this.cacheTelemetry.saveMs = performance.now() - t0;
     }
 
     async drainPending() {
@@ -102,8 +130,11 @@
         this.artifacts.set(String(meta.entryRip), meta);
         if (!this.modules.has(meta.codeHash)) {
           try {
+            const tc = performance.now();
             this.modules.set(meta.codeHash, await WebAssembly.compile(bytes));
+            this.jitCompileMs += performance.now() - tc;
             this.stats.compiled += 1;
+            this.persistent.set(meta.codeHash, { meta, wasmBytes: bytes });
           } catch (error) {
             this.stats.compileErrors += 1;
             this.stats.lastError = String(error?.message || error);
@@ -111,7 +142,7 @@
             continue;
           }
           // Linked modules are host-runtime specializations; persist only portable unlinked code.
-          if (this.cache?.saveJitModule && !(meta.links || []).length) {
+          if (!this.exeSha256 && this.cache?.saveJitModule && !(meta.links || []).length) {
             try {
               await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta);
               this.stats.saved += 1;
@@ -123,6 +154,7 @@
         }
       }
       this.emu.jit_clear_pending();
+      await this.flushCache();
     }
 
     async importCached(meta, wasmBytes) {
@@ -130,8 +162,14 @@
       const ok = this.emu.jit_import_cached(BigInt(meta.entryRip), meta.pageEpoch >>> 0, meta.byteLen >>> 0, meta.insnCount >>> 0, !!meta.endsWithRet, !!meta.selfLoop, BigInt('0x' + meta.codeHash), wasmBytes);
       if (!ok) return false;
       this.stats.loaded += 1;
+      this.cacheTelemetry.hits += 1;
       this.artifacts.set(String(meta.entryRip), meta);
-      if (!this.modules.has(meta.codeHash)) this.modules.set(meta.codeHash, await WebAssembly.compile(wasmBytes));
+      this.persistent.set(meta.codeHash, { meta, wasmBytes });
+      if (!this.modules.has(meta.codeHash)) {
+        const tc = performance.now();
+        this.modules.set(meta.codeHash, await WebAssembly.compile(wasmBytes));
+        this.jitCompileMs += performance.now() - tc;
+      }
       return true;
     }
 
@@ -142,6 +180,21 @@
       if (visiting.has(meta.codeHash)) throw new Error('JIT tail-call cycle');
       visiting.add(meta.codeHash);
       const env = { mem: this.memory };
+      const ctx = meta.ctx >>> 0;
+      if (typeof this.emu.jit_read_mem === 'function') {
+        env.read = (addr, size) => {
+          const v = this.emu.jit_read_mem(addr, size);
+          if (this.emu.jit_mem_fault && this.emu.jit_mem_fault()) {
+            new DataView(this.memory.buffer).setBigUint64(ctx + 24 * 8, 1n, true);
+          }
+          return v;
+        };
+        env.write = (addr, value, size) => {
+          const r = this.emu.jit_write_mem(addr, value, size);
+          if (r) new DataView(this.memory.buffer).setBigUint64(ctx + 24 * 8, 1n, true);
+          return r;
+        };
+      }
       for (const link of meta.links || []) {
         const targetMeta = this.artifacts.get(String(link.targetRip));
         if (!targetMeta) throw new Error(`JIT link target missing: ${link.targetRip}`);
@@ -161,12 +214,16 @@
       let mod = this.modules.get(meta.codeHash);
       if (mod) { this.stats.cacheHits += 1; return mod; }
       this.stats.cacheMisses += 1;
+      this.cacheTelemetry.misses += 1;
       const bytes = this.emu.jit_active_wasm();
       if (!bytes.length) throw new Error('JIT artifact missing');
+      const tc = performance.now();
       mod = await WebAssembly.compile(bytes);
+      this.jitCompileMs += performance.now() - tc;
       this.modules.set(meta.codeHash, mod);
       this.stats.compiled += 1;
-      if (this.cache?.saveJitModule && !(meta.links || []).length) {
+      this.persistent.set(meta.codeHash, { meta, wasmBytes: bytes });
+      if (!this.exeSha256 && this.cache?.saveJitModule && !(meta.links || []).length) {
         try {
           await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta);
           this.stats.saved += 1;
@@ -209,6 +266,8 @@
           const mod = await this.moduleFor(meta);
           const instance = await this.instanceFor(meta, mod);
           this.writeBudget(meta.ctx, remaining);
+          if (typeof this.emu.jit_clear_mem_fault === 'function') this.emu.jit_clear_mem_fault();
+          new DataView(this.memory.buffer).setBigUint64((meta.ctx >>> 0) + 24 * 8, 0n, true);
           const executedBig = instance.exports.run_block(meta.ctx >>> 0);
           const executed = Number(executedBig);
           if (!Number.isSafeInteger(executed) || executed < 0 || executed > remaining) throw new Error('JIT instruction count mismatch');
