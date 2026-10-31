@@ -107,6 +107,10 @@ pub enum UpcallState {
         resume_rip: u64,
         entry_rsp: u64,
     },
+    Callback {
+        resume_rip: u64,
+        result: u64,
+    },
     Exception {
         context_va: u64,
         pointers_va: u64,
@@ -1565,6 +1569,14 @@ impl Win32Kernel {
         cpu: &mut crate::cpu::CpuState,
     ) -> HleAction {
         *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
+        // A one-shot timer callback has returned to the sentinel; resume the original API stub
+        // and deliver its result instead of re-arming the timer.
+        if let Some(UpcallState::Callback { resume_rip, result }) = self.upcall_stack.last().cloned() {
+            if resume_rip == call_rip {
+                self.upcall_stack.pop();
+                return HleAction::Return(result);
+            }
+        }
         let a0 = args[0];
         let a1 = args[1];
         let a2 = args[2];
@@ -3777,6 +3789,43 @@ impl Win32Kernel {
                 if let Some(w) = self.waitables.get_mut(&a0) { w.signaled = false; }
                 1
             }
+            "timeGetDevCaps" => {
+                if a0 != 0 {
+                    let _ = vmm.write_u32(a0, 1);
+                    let _ = vmm.write_u32(a0 + 4, 1_000_000);
+                }
+                0
+            }
+            "timeSetEvent" => {
+                let target = a2;
+                if target == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                let id = self.alloc_handle();
+                self.ticks = self.ticks.wrapping_add(a0.min(60_000));
+                // LPTIMECALLBACK(uTimerID, uMsg, dwUser, dw1, dw2)
+                cpu.gpr[1] = id;
+                cpu.gpr[2] = 0;
+                cpu.gpr[8] = a3;
+                cpu.gpr[9] = 0;
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, result: id });
+                return HleAction::Upcall { target, resume_rip: call_rip, rax: 0 };
+            }
+            "timeKillEvent" | "timeEndPeriod" | "timeBeginPeriod" => 0,
+            "CreateTimerQueue" => self.alloc_handle(),
+            "CreateTimerQueueTimer" => {
+                let target = a2;
+                if target == 0 { self.set_last_error(ERROR_INVALID_PARAMETER); return HleAction::Return(0); }
+                let h = self.alloc_handle();
+                if a0 != 0 {
+                    if let Some(action) = self.host_write_or_fault(vmm, a0, &h.to_le_bytes()) { return action; }
+                }
+                self.ticks = self.ticks.wrapping_add(a4.min(60_000));
+                // WAITORTIMERCALLBACK(Parameter, TimerOrWaitFired)
+                cpu.gpr[1] = a3;
+                cpu.gpr[2] = 1;
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, result: 1 });
+                return HleAction::Upcall { target, resume_rip: call_rip, rax: 0 };
+            }
+            "DeleteTimerQueueEx" | "DeleteTimerQueueTimer" => 1,
             "CreateMutexA" | "CreateMutexW" => {
                 let h = self.alloc_handle();
                 self.waitables.insert(
@@ -6847,6 +6896,9 @@ impl Win32Kernel {
             return Some(UpcallStep::Fault(format!("unhandled guest exception 0x{code:08x}")));
         }
         match self.upcall_stack.last().cloned() {
+            Some(UpcallState::Callback { resume_rip, .. }) => {
+                return Some(UpcallStep::Resume(resume_rip));
+            }
             Some(UpcallState::Tls { callbacks, index, reason, resume_rip, entry_rsp }) => {
                 let image_base = self.image_base();
                 let next_index = index + 1;
