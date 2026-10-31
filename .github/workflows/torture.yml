@@ -58,13 +58,20 @@ jobs:
           fi
       - name: Build Wasm candidate
         working-directory: rust/porthole-x64-wasm
-        env:
-          RUSTFLAGS: "-C target-feature=+tail-call"
+        # JIT successor modules use return_call only after a runtime WebAssembly.validate
+        # probe. The core itself stays on the baseline feature set because wasm-bindgen
+        # 0.2.92 cannot parse a +tail-call core module.
         run: cargo build --release --target wasm32-unknown-unknown
       - name: Bind candidate
         run: |
-          wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
+          set -o pipefail
+          mkdir -p artifacts/torture
+          wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm 2>&1 | tee artifacts/torture/bind.log
           sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+      - name: Publish bind diagnostics
+        if: failure()
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: python3 scripts/publish-torture-blobs.py
       - name: Publish verified candidate for restricted-egress retest
         env: {GH_TOKEN: '${{ github.token }}'}
         run: |
