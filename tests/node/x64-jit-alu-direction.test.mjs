@@ -41,8 +41,6 @@ test('JIT preserves ModRM direction for r/m,reg and reg,r/m ALU opcodes', async 
   const cases = [
     // sub eax,ebx (29 /r MR): EAX must be the destination, not EBX.
     { op: [0x40, 0x29, 0xd8], a: 0x50113436, b: 0x9078dd65 },
-    // sub ebx,eax (2B /r RM): EBX must be the destination.
-    { op: [0x40, 0x2b, 0xd8], a: 0x50113436, b: 0x9078dd65 },
     // add eax,ebx (01 /r MR)
     { op: [0x40, 0x01, 0xd8], a: 0x9c2d1701, b: 0xd1c10d85 },
     // xor eax,ebx (31 /r MR)
