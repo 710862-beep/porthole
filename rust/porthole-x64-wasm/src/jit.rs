@@ -246,9 +246,18 @@ impl HybridWasmJit {
     // ---------------------------------------------------------------- decoder
 
     fn gpr_index(reg: Register) -> Option<u8> {
-        if matches!(reg, Register::AH | Register::CH | Register::DH | Register::BH) { return None; }
         if !reg.is_gpr() { return None; }
-        Some(reg.number() as u8)
+        let n = reg.number();
+        if reg.size() == 1 {
+            // iced numbers the legacy high bytes AH/CH/DH/BH as 4..7; the REX low
+            // bytes SPL/BPL/SIL/DIL/R8L..R15L therefore start at 8. Map them back
+            // to architectural ModRM register indexes 4..15.
+            if n < 4 { Some(n as u8) }
+            else if (8..20).contains(&n) { Some((n - 4) as u8) }
+            else { None }
+        } else {
+            Some(n as u8)
+        }
     }
 
     fn reg_width(reg: Register) -> u8 { reg.size() as u8 }

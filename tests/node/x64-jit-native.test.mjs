@@ -146,3 +146,18 @@ test('native store to unmapped page traps safely and falls back without corrupti
   assert.equal(jit.regs.rax, interp.regs.rax);
   assert.equal(jit.regs.rcx, interp.regs.rcx);
 });
+
+test('REX low-byte registers use architectural indexes for partial ALU and flags', async t => {
+  const probe = await newCore();
+  if (!probe || !WebAssembly.validate(Buffer.from([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,8,1,6,0,65,7,18,0,11]))) { t.skip('tail-call unsupported'); return; }
+  // mov r15,0x123456789abc006b; cmp r15b,0x6b; sete al; movzx eax,al; ret
+  const code = Buffer.from([0x49,0xbf,0x6b,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x41,0x80,0xff,0x6b,0x0f,0x94,0xc0,0x0f,0xb6,0xc0,0xc3]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.r15, interp.regs.r15);
+  assert.equal(jit.regs.rflags, interp.regs.rflags);
+  assert.equal(BigInt(jit.regs.rax), 1n);
+  assert.equal(jit.stats.traps, 0);
+});
