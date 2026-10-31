@@ -35,7 +35,7 @@ async function run(code, jit) {
   return { status, regs: JSON.parse(c.emu.register_json()), stats: host?.stats };
 }
 
-test('JIT preserves ModRM direction for r/m,reg and reg,r/m ALU opcodes', async t => {
+test('JIT preserves ALU ModRM direction and immediate-shift flag lowering', async t => {
   const probe = await newCore();
   if (!probe || typeof probe.emu.jit_context_slots !== 'function' || probe.emu.jit_context_slots() !== 32) { t.skip('core predates the 32-slot JIT ABI'); return; }
   const cases = [
@@ -45,6 +45,11 @@ test('JIT preserves ModRM direction for r/m,reg and reg,r/m ALU opcodes', async 
     { op: [0x40, 0x01, 0xd8], a: 0x9c2d1701, b: 0xd1c10d85 },
     // xor eax,ebx (31 /r MR)
     { op: [0x40, 0x31, 0xd8], a: 0x5a3bbe2e, b: 0x24a8f56a },
+    // immediate shifts must wrap/extend with the correct Wasm opcodes
+    { op: [0x40, 0xc1, 0xe0, 0x01], a: 0x5a3bbe2e, b: 0x24a8f56a }, // shl eax,1
+    { op: [0x40, 0xc1, 0xe8, 0x01], a: 0x5a3bbe2e, b: 0x24a8f56a }, // shr eax,1
+    { op: [0x40, 0xc1, 0xf8, 0x01], a: 0x5a3bbe2e, b: 0x24a8f56a }, // sar eax,1
+    { op: [0x48, 0xc1, 0xf8, 0x01], a: 0x5a3bbe2e, b: 0x24a8f56a }, // sar rax,1
   ];
   for (const { op, a, b } of cases) {
     const body = Buffer.from(op);
