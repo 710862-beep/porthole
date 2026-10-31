@@ -285,6 +285,21 @@ async function main() {
   ]) emu.vfs_mkdir(dir);
   emu.vfs_insert('C:\\Game\\chocolate-doom.exe', new Uint8Array(exeBytes));
   emu.vfs_insert('C:\\Game\\DOOM2.WAD', new Uint8Array(wadBytes));
+  // Chocolate Doom's -timedemo demo1 opens an external demo1.lmp file; extract the
+  // pinned IWAD's DEMO1 lump so the timedemo actually has input to play back.
+  try {
+    const dv = new DataView(wadBytes.buffer, wadBytes.byteOffset, wadBytes.byteLength);
+    const numLumps = dv.getUint32(4, true); const dirOff = dv.getUint32(8, true);
+    for (let i = 0; i < numLumps; i++) {
+      const e = dirOff + i * 16;
+      const name = Buffer.from(wadBytes.subarray(e + 8, e + 16)).toString('ascii').replace(/\0+$/, '');
+      if (name.toUpperCase() === 'DEMO1') {
+        const off = dv.getUint32(e, true); const size = dv.getUint32(e + 4, true);
+        emu.vfs_insert('C:\\Game\\demo1.lmp', new Uint8Array(wadBytes.subarray(off, off + size)));
+        break;
+      }
+    }
+  } catch { /* missing DEMO1 is reported by the guest console */ }
   if (process.env.PORTHOLE_DOOM_TRACE !== '0' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
     emu.enable_trace?.(200000);
     emu.set_hle_trace_only?.(true);
