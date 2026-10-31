@@ -88,7 +88,7 @@ jobs:
           PORTHOLE_X64_WASM_DIR: artifacts/porthole-x64-wasm
         run: |
           set -o pipefail
-          npm run test:unit 2>&1 | tee artifacts/torture/node-unit.log
+          timeout 300 npm run test:unit 2>&1 | tee artifacts/torture/node-unit.log
       - name: Publish Node core diagnostics
         if: always()
         env: {GH_TOKEN: '${{ github.token }}'}
