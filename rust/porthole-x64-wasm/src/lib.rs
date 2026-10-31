@@ -1546,7 +1546,7 @@ impl BrowserX64Emulator {
             let rec = &self.jit_undo[i * 4..i * 4 + 4];
             let ptr = rec[0] as usize;
             let size = rec[3] as usize;
-            if ptr == 0 || size == 0 || size > 16 { continue; }
+            if ptr == 0 || ptr == jit::JIT_INVALID_HOST_PTR as usize || size == 0 || size > 16 { continue; }
             let mut old = [0u8; 16];
             old[0..8].copy_from_slice(&rec[1].to_le_bytes());
             old[8..16].copy_from_slice(&rec[2].to_le_bytes());
