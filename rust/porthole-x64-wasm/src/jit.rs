@@ -676,13 +676,16 @@ impl HybridWasmJit {
         b.push(0x02); b.push(0x40); // $abort depth outer
         b.push(0x02); b.push(0x40); // $commit
         if self_loop { b.push(0x03); b.push(0x40); }
-        let commit_depth = if self_loop { 1 } else { 0 };
+        // Label depths: inside the loop, 0=loop,1=$commit,2=$abort. The budget check is
+        // nested one level deeper inside an `if`, so it needs +1. After the loop ends we
+        // are directly inside $commit, so the normal exit branches to depth 0.
+        let budget_br_depth = if self_loop { 2 } else { 1 };
         let abort_depth = if self_loop { 2 } else { 1 };
         // budget check
         Self::local_get(&mut b, 23); Self::i64_const(&mut b, block_insns); b.push(0x54);
         b.push(0x04); b.push(0x40);
         Self::ctx_store_const(&mut b, 16, JIT_STATUS_BUDGET as i64); Self::ctx_store_const(&mut b, 17, entry_rip as i64);
-        b.push(0x0C); Self::push_u32_leb(&mut b, commit_depth);
+        b.push(0x0C); Self::push_u32_leb(&mut b, budget_br_depth);
         b.push(0x0B);
         for op in &block.ops { Self::emit_op(&mut b, op, read_func, abort_depth); }
         // Count/budget advance by the whole static block (branch included). Memory-load
@@ -710,7 +713,7 @@ impl HybridWasmJit {
                 Self::ctx_store_local(&mut b, 17, 25);
             } else { Self::ctx_store_const(&mut b, 17, exit_rip as i64); }
         } else { Self::ctx_store_const(&mut b, 17, exit_rip as i64); }
-        b.push(0x0C); Self::push_u32_leb(&mut b, commit_depth);
+        b.push(0x0C); Self::push_u32_leb(&mut b, 0);
         b.push(0x0B); // end $commit
         for reg in 0..16u8 { if write_mask & (1 << reg) != 0 { Self::ctx_store_local(&mut b, reg as u32, reg + 1); } }
         Self::ctx_store_local(&mut b, 19, 17); Self::ctx_store_local(&mut b, 18, 24); Self::ctx_store_local(&mut b, 20, 23);

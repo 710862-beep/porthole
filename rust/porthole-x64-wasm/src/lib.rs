@@ -1403,13 +1403,13 @@ impl BrowserX64Emulator {
     pub fn jit_abort_block(&mut self) { if let Some(art) = self.jit_active.take() { self.jit.invalidate_entry(art.entry_rip); } }
 
     /// Imports a persisted artifact only after re-hashing the live guest bytes and epoch.
-    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, self_loop: bool, code_hash: u64, wasm: &[u8]) -> bool {
+    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, self_loop: bool, code_hash: u64, wasm_bytes: &[u8]) -> bool {
         if byte_len == 0 || byte_len > 4096 || insn_count == 0 || insn_count > 4096 { return false; }
         let mut live = vec![0u8; byte_len as usize];
         if self.vmm.host_read_bytes(entry_rip, &mut live).is_err() { return false; }
         if self.vmm.page_write_epoch(entry_rip & !0xFFF) != page_epoch { return false; }
-        if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm) { return false; }
-        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm.to_vec())
+        if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm_bytes) { return false; }
+        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm_bytes.to_vec())
     }
 
     /// AOT-compile the loaded image's `.text` using the runtime JIT decoder. Called by the
