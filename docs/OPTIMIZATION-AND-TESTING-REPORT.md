@@ -530,3 +530,12 @@ instructions, 0 compile errors, 9,786 validation fallbacks, 0 gametics. The
 authored microbench on the same candidate remains **~554 MIPS jit-fast /
 ~298 MIPS jit-validate** vs **~15 MIPS interpreter**. The JIT gate is cleared on
 the microbench; Doom remains a compatibility failure, not a throughput PASS.
+
+Final post-fix CI Doom A/B (`41160535076`, 900 s lanes): baseline **FAIL**
+`timeout-still-running`, 36M instructions / 936,665 ms / **0.04 MIPS**, 0
+gametics; JIT **FAIL** `exit:4294967295`, 32,110,042 instructions / 653,727 ms /
+**0.05 MIPS**, 0 gametics. The JIT executed 15,591,953 instructions in 7,522,397
+blocks with **0 Wasm compile errors**, 34,691 validation fallbacks, and 46,664
+interpreter fallback instructions. The SAR compile-error regression is closed,
+but Doom still does not reach timedemo gametics; the guest exit -1 and remaining
+validation fallbacks are reported as failures, not hidden.

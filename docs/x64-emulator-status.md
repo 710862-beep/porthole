@@ -582,3 +582,10 @@ The JIT now exceeds the interpreter's ~10–15 MIPS on the microbench by >40x.
 the candidate core. Chocolate Doom remains a separate compatibility gate: the
 guest still stalls in `NET_Init` before timedemo gametics, so Doom throughput is
 reported as a failure rather than a JIT PASS.
+
+### Final Phase 2 CI Doom A/B (`41160535076`)
+
+Core SUCCESS and Node unit/differential SUCCESS. Doom 900 s A/B remains FAIL:
+interpreter 0.04 MIPS (timeout, 0 gametics), JIT 0.05 MIPS (guest exit -1, 0
+gametics), 0 Wasm compile errors after the SAR opcode fix. The authored JIT
+microbench gate is cleared (hundreds of MIPS); Doom compatibility is not.
