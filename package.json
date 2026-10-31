@@ -30,7 +30,8 @@
     "build:vkd3d": "node scripts/build-vkd3d-tests.mjs",
     "test:vkd3d": "node tests/torture/run-vkd3d.mjs",
     "build:cts": "node scripts/build-vk-cts.mjs",
-    "test:cts": "node tests/torture/run-cts.mjs"
+    "test:cts": "node tests/torture/run-cts.mjs",
+    "bench:jit": "node tests/bench/jit-microbench.mjs"
   },
   "devDependencies": {
     "jsdom": "^24.1.3",

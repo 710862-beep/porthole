@@ -423,3 +423,44 @@ the common blocker in CTS and al-khaser startup; rerun is required before claimi
   wall budget; the JIT candidate hit a shadow-validation mismatch at `0x140007cfa`. The host now
   treats core validation faults as bad artifacts and replays the block in the interpreter.
   Startup TLS is limited to DLL_PROCESS_ATTACH until thread creation delivers DLL_THREAD_ATTACH.
+
+### CI run `41144826025` (`19419ba`) — measured compatibility and the JIT throughput wall
+
+Core gate SUCCESS; Wine d3d12 PASS (671 upstream assertions, 9 `todo_wine` successes).
+Expanded Wine is **2/16 PASS** (`d3d11`, `vulkan`), 10 FAIL, 3 GUEST_FAULT, 1 TIMEOUT.
+The new `msvcrt!printf`/`vprintf` paths produce real upstream summaries instead of empty
+console logs; the remaining faults are exact: `comdlg32 filedlg/printdlg` follow
+`FindResourceA("template_stc32", RT_DIALOG) -> 0`, `LoadResource(0) -> 0`,
+`LockResource(0) -> 0`; `dxgi` reaches `signal(SIGSEGV)` after factory/output failures;
+`user32 msg` times out waiting for hook/message delivery. VKD3D-Proton is **15 PASS /
+30 FAIL / 1 GUEST_FAULT / 1 TIMEOUT** across 47 internal tests (aggregate rebuilt from
+the verified per-test blobs). al-khaser reaches **133 checks** and reports 14 findings
+(TLS attach, PAGE_GUARD, SCM, WMI fan, ACPI ×4, VBox shared folders, four timer APIs,
+RDTSC Locky) before an anti-dump memory fault; `GetModuleHandleW(NULL)` now returns the
+real `0x140000000` image base and `VirtualProtect(base,4096,RW)` succeeds. pafish is
+58 checks with the same 3 interactive reverse-Turing findings.
+
+Chocolate Doom A/B on this run: interpreter baseline 38,000,000 instructions /
+937,565 ms = **0.04 MIPS**, 52 presented frames, 8 distinct checksums, timedemo
+incomplete. The JIT candidate reached 10,000,000 instructions / 167,212 ms =
+**0.06 MIPS** but terminated with the internal `jit` token because the JS host left
+`status='jit'` after a successful commit when the slice budget was exhausted. That host
+bug is fixed locally (`a7abea5`) with an exact-budget regression test.
+
+**Reproducible JIT microbench added:** `tests/bench/jit-microbench.mjs` (authored
+`mov rcx,N; sub rcx,1; jnz -6; ret`). Quick run at N=1,000,000 (2,000,002 instructions):
+interpreter **10.024 MIPS**, JIT shadow-validation **0.371 MIPS**, JIT fast path
+**0.476 MIPS**; compiled blocks = 1, executed blocks = 999,968, traps = 0. The earlier
+40,000,002-instruction run measured 11.19–11.35 MIPS interpreter vs 0.40/0.46 MIPS JIT.
+The decoder still stops at every branch, so hot loops become one-instruction artifacts
+and pay a Wasm call/commit per iteration. **No 300–500 MIPS result is claimed.** The
+next architectural step is branch-terminated multi-instruction blocks / block chaining
+or trace compilation, not disabling shadow validation: `PORTHOLE_JIT_VALIDATE=0` on Doom
+reproduced the original 5,671-instruction guest fault, so CI keeps validation enabled.
+
+Fixes committed after this run and awaiting the next CI compile: PE resource directory
+parsing + `FindResource/LoadResource/LockResource/SizeofResource/LoadStringA/W`
+(`605d0c5`); empty SCM enumeration, checksummed generic ACPI DSDT/FACP/APIC tables,
+`WNetGetProviderName` no-redirector failure, and virtual-time waitable timers
+(`b2c32b1`). These target the exact al-khaser/comdlg32/user32 failures above; they are
+not claimed as PASS until the real upstream suites rerun.
