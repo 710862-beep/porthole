@@ -1107,7 +1107,9 @@ impl HybridWasmJit {
             Self::local_get(&mut b, 0);
             if matches!(block.exit, BlockExit::Call { indirect: false }) {
                 b.push(0x10); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
-                Self::local_get(&mut b, 24); b.push(0x7C); b.push(0x0F);
+                // The callee initializes its executed counter from ctx[18], which already
+                // includes this caller's committed count, so return its total directly.
+                b.push(0x0F);
             } else {
                 b.push(0x12); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
             }
