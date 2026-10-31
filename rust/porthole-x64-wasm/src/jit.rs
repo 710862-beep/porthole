@@ -358,13 +358,13 @@ impl HybridWasmJit {
         match kind {
             4 => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x86); }
             5 => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x88); }
-            _ => { Self::local_get(b, 18); if width == 4 { b.push(0xAC); b.push(0xAD); } Self::local_get(b, 19); b.push(0x87); }
+            _ => { Self::local_get(b, 18); if width == 4 { b.push(0xA7); b.push(0xAC); } Self::local_get(b, 19); b.push(0x87); }
         }
         Self::mask_width(b, width); Self::local_set(b, 20); Self::local_get(b, 20); Self::local_set(b, dst + 1);
         if count == 0 { return; }
         Self::local_get(b, 17); Self::i64_const(b, !0x811i64); b.push(0x83); Self::local_set(b, 17);
         if kind == 4 { Self::local_get(b, 18); Self::i64_const(b, (bits - count) as i64); b.push(0x88); }
-        else if kind == 7 { Self::local_get(b, 18); if width == 4 { b.push(0xAC); b.push(0xAD); } Self::i64_const(b, (count - 1) as i64); b.push(0x87); }
+        else if kind == 7 { Self::local_get(b, 18); if width == 4 { b.push(0xA7); b.push(0xAC); } Self::i64_const(b, (count - 1) as i64); b.push(0x87); }
         else { Self::local_get(b, 18); Self::i64_const(b, (count - 1) as i64); b.push(0x88); }
         Self::i64_const(b, 1); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 1);
         if count == 1 {

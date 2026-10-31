@@ -514,7 +514,11 @@ jit-validate **307.527 MIPS**, jit-fast **629.648 MIPS**. This clears the >10 MI
 JIT gate on the microbench. The 300–500 MIPS target is reached on the authored
 hot loop, not on a full Win32 application.
 
-Chocolate Doom timedemo is still FAIL: the guest stalls in `NET_Init` before
-gametics. A local 60 s trace-disabled A/B measured baseline **0.08 MIPS** vs JIT
-**0.10 MIPS** with 3.09M JIT instructions executed and validation fallbacks; the
-900 s CI A/B is recorded below when complete. Doom is not claimed as a JIT PASS.
+Chocolate Doom timedemo is still FAIL in CI run `41158464780` (900 s lanes):
+baseline **0.06 MIPS** (58M insns, timeout, 0 gametics), JIT **0.10 MIPS**
+(25.2M insns, guest exit -1, 0 gametics). The JIT executed 12.64M instructions in
+6.33M blocks but recorded 31,296 validation fallbacks and 272 Wasm compile
+errors. The compile errors were traced to a wrong sign-extension opcode in
+32-bit SAR lowering (`i64.extend_i32_s` emitted without `i32.wrap_i64`); fixed
+after this run. Doom is not claimed as a JIT PASS; its pre-timedemo stall and
+the remaining validation fallbacks are separate compatibility work.
