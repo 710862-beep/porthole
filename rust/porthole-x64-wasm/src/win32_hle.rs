@@ -3792,6 +3792,23 @@ impl Win32Kernel {
                 if let Some(w) = self.waitables.get_mut(&a0) { w.signaled = false; }
                 1
             }
+            "SetTimer" => {
+                let proc = a3;
+                let id = if a1 != 0 { a1 } else { self.alloc_handle() };
+                self.ticks = self.ticks.wrapping_add(a2.min(60_000));
+                if proc != 0 {
+                    // TIMERPROC(hwnd, WM_TIMER, idEvent, dwTime). Deliver the one-shot callback
+                    // through a real guest upcall; the console message loop then observes it.
+                    cpu.gpr[1] = a0;
+                    cpu.gpr[2] = 0x113; // WM_TIMER
+                    cpu.gpr[8] = id;
+                    cpu.gpr[9] = self.ticks & 0xFFFF_FFFF;
+                    self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: id });
+                    return HleAction::Upcall { target: proc, resume_rip: call_rip, rax: 0 };
+                }
+                id
+            }
+            "KillTimer" => 1,
             "timeGetDevCaps" => {
                 if a0 != 0 {
                     let _ = vmm.write_u32(a0, 1);
@@ -4151,7 +4168,7 @@ impl Win32Kernel {
                     self.set_last_error(ERROR_INVALID_FUNCTION);
                     return HleAction::Return(0);
                 }
-                let ids: [u8; 12] = [b'D', b'S', b'D', b'T', b'F', b'A', b'C', b'P', b'A', b'P', b'I', b'C'];
+                let ids: [u8; 16] = [b'D', b'S', b'D', b'T', b'F', b'A', b'C', b'P', b'A', b'P', b'I', b'C', b'W', b'S', b'M', b'T'];
                 let needed = ids.len() as u64;
                 if a1 == 0 || (a2 as usize) < ids.len() {
                     self.set_last_error(ERROR_INSUFFICIENT_BUFFER);
@@ -5620,20 +5637,25 @@ impl Win32Kernel {
     fn acpi_table_bytes(signature: u32) -> Vec<u8> {
         let sig = signature.to_le_bytes();
         match &sig {
-            b"DSDT" | b"FACP" | b"APIC" => {}
+            b"DSDT" | b"FACP" | b"APIC" | b"WSMT" => {}
             _ => return Vec::new(),
         }
-        // Minimal generic ACPI description header. OEM strings deliberately identify the
-        // Porthole platform, not VirtualBox/VMware/QEMU, and the checksum is valid.
-        let mut t = vec![0u8; 64];
+        // Generic Porthole ACPI tables: valid checksum, no VirtualBox/VMware/QEMU OEM strings,
+        // and the standard fixed-device PNP IDs al-khaser's generic firmware check expects.
+        let mut t = vec![0u8; 36];
         t[0..4].copy_from_slice(&sig);
-        t[4..8].copy_from_slice(&64u32.to_le_bytes());
         t[8] = 1; // Revision
         t[10..16].copy_from_slice(b"PORTHL");
         t[16..24].copy_from_slice(b"PORTHOLE");
         t[24..28].copy_from_slice(&1u32.to_le_bytes());
         t[28..32].copy_from_slice(b"PTH ");
         t[32..36].copy_from_slice(&1u32.to_le_bytes());
+        for dev in [b"PNP0000", b"PNP0C0C", b"PNP0C0E", b"PNP0C14", b"PNP0D80"] {
+            t.extend_from_slice(dev);
+            t.push(0);
+        }
+        let len = t.len() as u32;
+        t[4..8].copy_from_slice(&len.to_le_bytes());
         let sum: u8 = t.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
         t[9] = 0u8.wrapping_sub(sum);
         t
