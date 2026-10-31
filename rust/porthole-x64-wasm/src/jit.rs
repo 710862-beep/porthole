@@ -281,9 +281,14 @@ impl HybridWasmJit {
         let index = Self::gpr_index(ins.memory_index());
         let seg = match ins.memory_segment() { Register::FS => 0x64, Register::GS => 0x65, _ => 0 };
         let disp = ins.memory_displacement64() as i64;
-        let rip = if ins.is_ip_rel_memory_operand() { Some(ins.next_ip().wrapping_add(disp as u64)) } else { None };
+        // iced-x86 already folds RIP into memory_displacement64 for IP-relative operands.
+        let rip = if ins.is_ip_rel_memory_operand() { Some(disp as u64) } else { None };
         if !ins.is_ip_rel_memory_operand() && ins.memory_base() != Register::None && base.is_none() { return None; }
         if ins.memory_index() != Register::None && index.is_none() { return None; }
+        // The native EA builder works on full 64-bit base/index registers. 32-bit
+        // address-size overrides (0x67) need zero-extension semantics; fall back.
+        if ins.memory_base() != Register::None && ins.memory_base().size() != 8 { return None; }
+        if ins.memory_index() != Register::None && ins.memory_index().size() != 8 { return None; }
         Some(MemAddr { base, index, scale: ins.memory_index_scale() as u8, disp, rip, seg })
     }
 
