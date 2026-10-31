@@ -122,6 +122,56 @@ typedef struct _TEB {
 #endif
 `;
 
+// Generated from the pinned Wine include/d3d9on12.idl (commit 0738d528). Zig
+// 0.13's Windows SDK headers do not ship d3d9on12.h; these are the exact IDL
+// declarations, not a behavioural stub.
+const D3D9ON12_HEADER = `#ifndef PORTHOLE_D3D9ON12_H
+#define PORTHOLE_D3D9ON12_H
+#include <d3d9.h>
+#include <d3d12.h>
+
+#define MAX_D3D9ON12_QUEUES 2
+
+typedef struct D3D9ON12_ARGS {
+    BOOL Enable9On12;
+    IUnknown *pD3D12Device;
+    IUnknown *ppD3D12Queues[MAX_D3D9ON12_QUEUES];
+    UINT NumQueues;
+    UINT NodeMask;
+} D3D9ON12_ARGS;
+
+typedef IDirect3D9 *(WINAPI *PFN_Direct3DCreate9On12)(UINT, D3D9ON12_ARGS *, UINT);
+IDirect3D9 *WINAPI Direct3DCreate9On12(UINT, D3D9ON12_ARGS *, UINT);
+
+typedef struct IDirect3DDevice9On12 IDirect3DDevice9On12;
+typedef IDirect3DDevice9On12 *LPDIRECT3DDEVICE9ON12, *PDIRECT3DDEVICE9ON12;
+
+static const GUID IID_IDirect3DDevice9On12 =
+    {0xe7fda234, 0xb589, 0x4049, {0x94, 0x0d, 0x88, 0x78, 0x97, 0x75, 0x31, 0xc8}};
+
+#define INTERFACE IDirect3DDevice9On12
+DECLARE_INTERFACE_(IDirect3DDevice9On12, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID, void **) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(GetD3D12Device)(THIS_ REFIID, void **) PURE;
+    STDMETHOD(UnwrapUnderlyingResource)(THIS_ IDirect3DResource9 *, ID3D12CommandQueue *, REFIID, void **) PURE;
+    STDMETHOD(ReturnUnderlyingResource)(THIS_ IDirect3DResource9 *, UINT, UINT64 *, ID3D12Fence **) PURE;
+};
+#undef INTERFACE
+
+#if !defined(__cplusplus) || defined(CINTERFACE)
+#define IDirect3DDevice9On12_QueryInterface(p, a, b) (p)->lpVtbl->QueryInterface(p, a, b)
+#define IDirect3DDevice9On12_AddRef(p) (p)->lpVtbl->AddRef(p)
+#define IDirect3DDevice9On12_Release(p) (p)->lpVtbl->Release(p)
+#define IDirect3DDevice9On12_GetD3D12Device(p, a, b) (p)->lpVtbl->GetD3D12Device(p, a, b)
+#define IDirect3DDevice9On12_UnwrapUnderlyingResource(p, a, b, c, d) (p)->lpVtbl->UnwrapUnderlyingResource(p, a, b, c, d)
+#define IDirect3DDevice9On12_ReturnUnderlyingResource(p, a, b, c, d) (p)->lpVtbl->ReturnUnderlyingResource(p, a, b, c, d)
+#endif
+#endif
+`;
+
 export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, toolchain = process.env.PORTHOLE_WINE_TOOLCHAIN || 'zig' } = {}) {
   const wineSha = fetchWine('vendor/wine-source');
   const zig = toolchain === 'zig' ? findZig() : null;
@@ -138,8 +188,17 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
     ['vendor/wine-source/include/dxcore.h', path.join(incDir, 'dxcore.h')],
     ['vendor/wine-source/include/dxcore_interface.h', path.join(incDir, 'dxcore_interface.h')],
     ['vendor/wine-source/include/dxva.h', path.join(incDir, 'dxva.h')],
+    ['vendor/wine-source/include/d3dukmdt.h', path.join(incDir, 'd3dukmdt.h')],
   ]) {
     fs.copyFileSync(src, dst);
+  }
+  // Upstream tests also include namespaced internal Wine headers (wine/*.h,
+  // ddk/*.h, ...). Copy those directories into the overlay include dir instead
+  // of putting the whole Wine include tree on the search path, which would
+  // shadow the toolchain SDK's top-level headers.
+  for (const entry of fs.readdirSync('vendor/wine-source/include', { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    fs.cpSync(path.join('vendor/wine-source/include', entry.name), path.join(incDir, entry.name), { recursive: true });
   }
   fs.writeFileSync(path.join(incDir, 'winternl.h'), WINTERNL_OVERLAY);
   if (toolchain === 'mingw') {
@@ -150,6 +209,11 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       const r = spawnSync(widl, ['-I', 'vendor/wine-source/include', '-h', '-H', path.join(incDir, out), `vendor/wine-source/include/${idl}`], { encoding: 'utf8', timeout: 180000 });
       if (r.status !== 0) throw new Error(`widl failed for ${out} (install wine64-tools): ${r.stderr || r.stdout || r.error}`);
     }
+  } else {
+    // Zig 0.13 ships dxva2api.h/dxvahd.h but not d3d9on12.h. Emit the exact
+    // declarations from the pinned Wine include/d3d9on12.idl so the upstream
+    // d3d9 device.c compiles unmodified.
+    fs.writeFileSync(path.join(incDir, 'd3d9on12.h'), D3D9ON12_HEADER);
   }
   const testHeaderPath = path.join(incDir, 'wine/test.h');
   let testHeader = fs.readFileSync(testHeaderPath, 'utf8');
@@ -241,16 +305,24 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
     },
   ];
 
-  // MinGW lacks libd3d10_1.a; generate a real import library from the upstream Wine export spec.
-  if (toolchain === 'mingw') {
-    for (const [dll, specFile] of [['d3d10_1', 'vendor/wine-source/dlls/d3d10_1/d3d10_1.spec'], ['vulkan-1', 'vendor/wine-source/dlls/vulkan-1/vulkan-1.spec']]) {
-      if (!fs.existsSync(specFile)) continue;
-      const names = [...fs.readFileSync(specFile, 'utf8').matchAll(/^@ (?:stdcall|cdecl) (\w+)\(?/gm)].map(m => m[1]);
-      const defPath = path.join(outDir, `${dll}.def`);
-      fs.writeFileSync(defPath, `LIBRARY ${dll}.dll\nEXPORTS\n${names.join('\n')}\n`);
-      const dlltool = spawnSync('x86_64-w64-mingw32-dlltool', ['-d', defPath, '-l', path.join(outDir, `lib${dll}.a`)], { encoding: 'utf8' });
-      if (dlltool.status !== 0) throw new Error(`dlltool failed for ${dll}: ${dlltool.stderr || dlltool.error}`);
-    }
+  // Generate real import libraries from the upstream Wine export specs for any
+  // DLL the chosen toolchain does not ship (MinGW lacks d3d10_1; Zig also lacks
+  // d3dcompiler). This changes the link-time stub only, not the upstream tests.
+  for (const [dll, specFile] of [
+    ['d3d10_1', 'vendor/wine-source/dlls/d3d10_1/d3d10_1.spec'],
+    ['d3dcompiler', 'vendor/wine-source/dlls/d3dcompiler_47/d3dcompiler_47.spec'],
+    ['vulkan-1', 'vendor/wine-source/dlls/vulkan-1/vulkan-1.spec'],
+  ]) {
+    if (!fs.existsSync(specFile)) continue;
+    const names = [...fs.readFileSync(specFile, 'utf8').matchAll(/^@ (?:stdcall|cdecl) (\w+)\(?/gm)].map(m => m[1]);
+    if (!names.length) continue;
+    const defPath = path.join(outDir, `${dll}.def`);
+    fs.writeFileSync(defPath, `LIBRARY ${dll}.dll\nEXPORTS\n${names.join('\n')}\n`);
+    const libPath = path.join(outDir, `lib${dll}.a`);
+    const dlltool = toolchain === 'zig'
+      ? spawnSync(zig, ['dlltool', '-d', defPath, '-l', libPath], { encoding: 'utf8' })
+      : spawnSync('x86_64-w64-mingw32-dlltool', ['-d', defPath, '-l', libPath], { encoding: 'utf8' });
+    if (dlltool.status !== 0) throw new Error(`dlltool failed for ${dll}: ${dlltool.stderr || dlltool.error}`);
   }
 
   const built = [];
@@ -278,7 +350,7 @@ export function buildWine64Suite({ outDir = 'tests/assets/wine64', only = null, 
       '-DENABLE_VIRTUAL_TERMINAL_PROCESSING=4',
       '-Ddebugstr_a=wine_dbgstr_a', '-Ddebugstr_w=wine_dbgstr_w',
       '-Ddebugstr_an=wine_dbgstr_an', '-Ddebugstr_wn=wine_dbgstr_wn', '-Ddebugstr_guid=wine_dbgstr_guid',
-      '-include', 'windows.h', `-I${incDir}`, ...(toolchain === 'mingw' ? ['-idirafter', 'vendor/wine-source/include'] : []),
+      '-include', 'windows.h', '-include', 'stddef.h', `-I${incDir}`, ...(toolchain === 'mingw' ? ['-idirafter', 'vendor/wine-source/include'] : []),
       '-Wno-format', '-Wno-int-conversion', '-Wno-incompatible-pointer-types', '-Wno-macro-redefined',
       ...spec.cflags, ...spec.sources, testlistPath, `-L${outDir}`, ...spec.libs, ...objects,
       '-Wl,--subsystem,console', '-o', exePath,
