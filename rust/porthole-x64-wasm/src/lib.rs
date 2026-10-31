@@ -1305,7 +1305,7 @@ impl BrowserX64Emulator {
                 }
             }
             let mut ctx_rsp = self.jit_ctx[4];
-            let expected_rip = if art.ends_with_ret { ctx_rsp = ctx_rsp.wrapping_add(8); shadow.rip } else { exit_rip };
+            let expected_rip = if art.ends_with_ret { ctx_rsp = ctx_rsp.wrapping_add(8); self.jit_ctx[4] = ctx_rsp; shadow.rip } else { exit_rip };
             if !ok || shadow.gpr[..] != self.jit_ctx[..16] || ctx_rsp != shadow.gpr[4] || self.jit_ctx[19] != shadow.rflags || shadow.rip != expected_rip {
                 self.jit_active.take(); self.jit_shadow.take(); self.jit.invalidate_entry(art.entry_rip);
                 return format!("fault:jit-validation:0x{:x}", art.entry_rip);
@@ -1479,7 +1479,7 @@ mod tests {
         emu.jit_ctx[0] = 0;
         emu.jit_ctx[18] = 2; // xor + nop
         emu.jit_ctx[17] = code + 3;
-        emu.jit_ctx[19] = 0x46; // ZF|PF|reserved bit1
+        emu.jit_ctx[19] = 0x246; // IF|ZF|PF|reserved bit1
         assert_eq!(emu.jit_commit_block(), "next");
         assert_eq!(emu.cpu.gpr[0], 0);
         assert_ne!(emu.cpu.rflags & 0x40, 0); // ZF

@@ -109,7 +109,7 @@ impl HybridWasmJit {
         let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
         let window = &bytes[..bytes.len().min(page_remain)];
         let block = Self::decode_block(entry_rip, window)?;
-        if block.ops.is_empty() || block.insn_count == 0 { return None; }
+        if block.insn_count == 0 { return None; }
         let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
         let mut links = Vec::new();
         if self.tail_calls && block.exit == BlockExit::Jump && !self_loop {
