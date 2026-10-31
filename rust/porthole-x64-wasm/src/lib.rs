@@ -95,8 +95,8 @@ impl BrowserX64Emulator {
             audit_seq: 0,
             audit_dropped: 0,
             jit_enabled: false,
-            // 0..15 GPRs; 16 flag-op kind; 17 width; 18 lhs; 19 rhs; 20 result.
-            jit_ctx: vec![0; 21],
+            // ABI v2: 0..15 GPRs; 16 status; 17 exit RIP; 18 executed; 19 RFLAGS; 20 budget; 21 entry.
+            jit_ctx: vec![0; jit::JIT_CONTEXT_SLOTS],
             jit_active: None,
             jit_shadow: None,
             jit_validate: true,
@@ -899,7 +899,8 @@ impl BrowserX64Emulator {
         if self.jit.get_valid_artifact(insn_rip, epoch).is_some() {
             return;
         }
-        let mut window = [0u8; 64];
+        let len = 512usize.min(4096 - (insn_rip & 0xFFF) as usize);
+        let mut window = vec![0u8; len];
         if self.vmm.host_read_bytes(insn_rip, &mut window).is_ok() {
             let _ = self.jit.try_compile_block(insn_rip, epoch, &window);
         }
@@ -1220,6 +1221,9 @@ impl BrowserX64Emulator {
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
     /// When true (default), each JIT commit is shadow-validated against the interpreter.
     pub fn set_jit_validate(&mut self, on: bool) { self.jit_validate = on; }
+    /// Host WebAssembly tail-call feature probe. Rust +tail-call only permits the opcode;
+    /// the runtime validator must also accept it before we link cross-module edges.
+    pub fn set_jit_tail_calls(&mut self, on: bool) { self.jit.set_tail_calls(on); }
 
     /// JIT context ABI version (number of i64 slots). Hosts/tests use this to reject old
     /// cores that lack flag-materialization slots instead of silently miscomputing RFLAGS.
@@ -1235,96 +1239,107 @@ impl BrowserX64Emulator {
     pub fn jit_active_wasm(&self) -> Vec<u8> { self.jit_active.as_ref().map(|a| a.wasm_bytes.clone()).unwrap_or_default() }
     pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
 
-    /// Copies GPRs into the shared context and arms the artifact at current RIP.
+    /// Copies GPRs/RFLAGS into the shared v2 context and arms the artifact at current RIP.
     pub fn jit_enter_block(&mut self) -> String {
         let epoch = self.vmm.page_write_epoch(self.cpu.rip & !0xFFF);
         let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
         self.jit_ctx[..16].copy_from_slice(&self.cpu.gpr);
-        self.jit_ctx[16] = 0; // no flag-writing op committed yet
+        self.jit_ctx[16] = jit::JIT_STATUS_OK;
+        self.jit_ctx[17] = self.cpu.rip;
+        self.jit_ctx[18] = 0;
+        self.jit_ctx[19] = self.cpu.rflags;
+        self.jit_ctx[20] = 0; // host writes the slice budget before run_block
+        self.jit_ctx[21] = self.cpu.rip;
         self.jit_shadow = Some(self.cpu.clone());
-        let meta = format!("{{\"entryRip\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\",\"ctx\":{}}}",
-            art.entry_rip, art.page_epoch, art.byte_len, art.insn_count, art.ends_with_ret, art.code_hash, self.jit_context_ptr());
+        let meta = jit::HybridWasmJit::meta_json(&art, self.jit_context_ptr());
         self.jit_active = Some(art);
         meta
     }
 
-    /// Atomically commits a completed host-executed Wasm block. On any epoch/entry mismatch the
-    /// block is discarded and the interpreter resumes at the unchanged RIP (safe SMC fallback).
+    /// Atomically commits a completed host-executed Wasm block. Dynamic instruction counts
+    /// come from the context (self-loops/chains), not the static artifact length.
     pub fn jit_commit_block(&mut self) -> String {
         let Some(art) = self.jit_active.clone() else { return "fault:no active JIT block".into(); };
         let epoch = self.vmm.page_write_epoch(art.entry_rip & !0xFFF);
         if art.entry_rip != self.cpu.rip || art.page_epoch != epoch {
-            self.jit_active.take();
-            self.jit.invalidate_entry(art.entry_rip);
+            self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip);
             return "fault:jit-stale".into();
         }
-        // Safety net: re-execute the pure-GPR block in a shadow interpreter and compare.
-        // A miscompile is invalidated and replayed by the host fallback instead of corrupting
-        // the guest. Once an artifact class is differential-proven it can skip this via
-        // set_jit_validate(false); correctness lanes keep it on.
-        if self.jit_validate {
+        // Linked successors must still have the epochs captured at link time.
+        let mut stack: Vec<u64> = art.links.iter().map(|l| l.target_rip).collect();
+        let mut seen = 0usize;
+        while let Some(rip) = stack.pop() {
+            seen += 1; if seen > 256 { self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-link-depth".into(); }
+            let Some(target) = self.jit.artifact(rip) else { self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-link-missing".into(); };
+            if self.vmm.page_write_epoch(target.page_base) != target.page_epoch { self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-link-stale".into(); }
+            stack.extend(target.links.iter().map(|l| l.target_rip));
+        }
+        let executed = self.jit_ctx[18];
+        let status = self.jit_ctx[16];
+        let exit_rip = self.jit_ctx[17];
+        if executed > 1_000_000_000 || (executed > 0 && status != jit::JIT_STATUS_OK) {
+            self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-context".into();
+        }
+        if executed == 0 {
+            // Budget exhausted before a whole block iteration. Commit nothing and let the host
+            // interpret the remaining slice with JIT disabled for that slice.
+            self.jit_active.take(); self.jit_shadow.take();
+            self.cpu.rip = exit_rip;
+            return "next".into();
+        }
+        if !art.self_loop && executed != art.insn_count as u64 {
+            self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-count".into();
+        }
+        if art.self_loop && executed % art.insn_count as u64 != 0 {
+            self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-loop-count".into();
+        }
+        // Correctness lanes shadow-validate the first execution of each artifact/epoch. Once
+        // proven, subsequent commits are atomic register writeback; SMC invalidates the proof.
+        if self.jit_validate && !self.jit.is_proven(art.entry_rip) {
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
             let mut ok = true;
-            for _ in 0..art.insn_count {
+            for _ in 0..executed {
                 match shadow.step_one(&mut self.vmm) {
                     Ok(cpu::ExecOutcome::Next) | Ok(cpu::ExecOutcome::Branch(_)) => {}
                     _ => { ok = false; break; }
                 }
             }
-            // The shadow interpreter executed `ret` and already popped the return address;
-            // the JIT context intentionally holds the pre-ret RSP (the non-validating commit
-            // path applies the pop after reading the target). Normalize before comparing.
-            if art.ends_with_ret {
-                self.jit_ctx[4] = self.jit_ctx[4].wrapping_add(8);
-            }
-            let mut flag_cpu = self.cpu.clone();
-            if self.jit_ctx[16] != 0 {
-                flag_cpu.apply_jit_flags(self.jit_ctx[16], self.jit_ctx[17], self.jit_ctx[18], self.jit_ctx[19]);
-            }
-            if !ok || shadow.gpr[..] != self.jit_ctx[..16] || flag_cpu.rflags != shadow.rflags {
-                self.jit_active.take();
-                self.jit_shadow.take();
-                self.jit.invalidate_entry(art.entry_rip);
+            let mut ctx_rsp = self.jit_ctx[4];
+            let expected_rip = if art.ends_with_ret { ctx_rsp = ctx_rsp.wrapping_add(8); shadow.rip } else { exit_rip };
+            if !ok || shadow.gpr[..] != self.jit_ctx[..16] || ctx_rsp != shadow.gpr[4] || self.jit_ctx[19] != shadow.rflags || shadow.rip != expected_rip {
+                self.jit_active.take(); self.jit_shadow.take(); self.jit.invalidate_entry(art.entry_rip);
                 return format!("fault:jit-validation:0x{:x}", art.entry_rip);
             }
             self.jit_active.take();
             let base_insns = self.cpu.instructions_executed;
             self.cpu = shadow;
-            self.cpu.instructions_executed = base_insns + art.insn_count as u64;
+            self.cpu.instructions_executed = base_insns.wrapping_add(executed);
+            self.kernel.instructions = self.cpu.instructions_executed;
+            self.jit.mark_proven(art.entry_rip);
             return "next".into();
         }
-        // Resolve the return target BEFORE committing registers/instruction count. A swapped
-        // stack page must replay the whole block, not commit it and then execute it twice.
+        self.jit_shadow.take();
+        // Resolve RET target before committing registers. Use the JIT's pre-ret RSP, not the
+        // stale core RSP, because the block may have adjusted the stack (add rsp,imm; ret).
         let ret_target = if art.ends_with_ret {
-            match self.vmm.read_u64(self.cpu.gpr[4]) {
+            match self.vmm.read_u64(self.jit_ctx[4]) {
                 Ok(ret) => Some(ret),
-                Err(MemoryTrap::PageFault(a)) => {
-                    self.jit_active.take();
-                    self.jit.invalidate_entry(art.entry_rip);
-                    return format!("page-fault:{a}");
-                }
+                Err(MemoryTrap::PageFault(a)) => { self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return format!("page-fault:{a}"); }
                 Err(MemoryTrap::AccessViolation(a)) => {
-                    self.jit_active.take();
-                    self.jit.invalidate_entry(art.entry_rip);
-                    self.status = RunStatus::Fault;
-                    self.fault_message = format!("JIT ret read access violation at 0x{a:x}");
+                    self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip);
+                    self.status = RunStatus::Fault; self.fault_message = format!("JIT ret read access violation at 0x{a:x}");
                     return format!("fault:{}", self.fault_message);
                 }
             }
         } else { None };
         self.jit_active.take();
         self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
-        if self.jit_ctx[16] != 0 {
-            self.cpu.apply_jit_flags(self.jit_ctx[16], self.jit_ctx[17], self.jit_ctx[18], self.jit_ctx[19]);
-        }
-        if let Some(ret) = ret_target {
-            self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(8);
-            self.cpu.rip = ret;
-        } else {
-            self.cpu.rip = art.entry_rip.wrapping_add(art.byte_len as u64);
-        }
-        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(art.insn_count as u64);
+        self.cpu.rflags = self.jit_ctx[19];
+        if let Some(ret) = ret_target { self.cpu.gpr[4] = self.cpu.gpr[4].wrapping_add(8); self.cpu.rip = ret; }
+        else { self.cpu.rip = exit_rip; }
+        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(executed);
         self.kernel.instructions = self.cpu.instructions_executed;
+        self.jit.mark_proven(art.entry_rip);
         "next".into()
     }
 
@@ -1333,13 +1348,13 @@ impl BrowserX64Emulator {
     pub fn jit_abort_block(&mut self) { if let Some(art) = self.jit_active.take() { self.jit.invalidate_entry(art.entry_rip); } }
 
     /// Imports a persisted artifact only after re-hashing the live guest bytes and epoch.
-    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, code_hash: u64, wasm: &[u8]) -> bool {
+    pub fn jit_import_cached(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, self_loop: bool, code_hash: u64, wasm: &[u8]) -> bool {
         if byte_len == 0 || byte_len > 4096 || insn_count == 0 || insn_count > 4096 { return false; }
         let mut live = vec![0u8; byte_len as usize];
         if self.vmm.host_read_bytes(entry_rip, &mut live).is_err() { return false; }
         if self.vmm.page_write_epoch(entry_rip & !0xFFF) != page_epoch { return false; }
         if !jit::HybridWasmJit::validate_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, &live, wasm) { return false; }
-        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, code_hash, wasm.to_vec())
+        self.jit.import_cached_artifact(entry_rip, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm.to_vec())
     }
 
     /// Instantaneous counters consumed by the browser telemetry panel.
@@ -1404,6 +1419,8 @@ mod tests {
         emu.set_jit_validate(false); // exercise the ret-before-commit ordering path directly
         assert!(!emu.jit_enter_block().is_empty());
         emu.jit_ctx[0] = 0x88;
+        emu.jit_ctx[18] = 2; // mov + ret
+        emu.jit_ctx[17] = 0;
         let before = emu.cpu.instructions_executed;
         assert_eq!(emu.jit_commit_block(), format!("page-fault:{stack}"));
         assert_eq!(emu.cpu.instructions_executed, before);
@@ -1432,8 +1449,11 @@ mod tests {
         emu.cpu.gpr[4] = stack;
         emu.cpu.gpr[0] = 0x77;
         assert!(!emu.jit_enter_block().is_empty());
-        // Simulate the Wasm block's pre-ret register result.
+        // Simulate the Wasm block's pre-ret register result and materialized RFLAGS.
+        let mut probe = emu.cpu.clone();
+        let _ = probe.step_one(&mut emu.vmm); let _ = probe.step_one(&mut emu.vmm);
         emu.jit_ctx[4] = stack + 0x38;
+        emu.jit_ctx[18] = 2; emu.jit_ctx[17] = 0; emu.jit_ctx[19] = probe.rflags;
         let before = emu.cpu.instructions_executed;
         assert_eq!(emu.jit_commit_block(), "next");
         assert_eq!(emu.cpu.rip, 0x1234);
@@ -1457,10 +1477,9 @@ mod tests {
         emu.cpu.gpr[0] = 0xFFFF_FFFF_1234_5678;
         assert!(!emu.jit_enter_block().is_empty());
         emu.jit_ctx[0] = 0;
-        emu.jit_ctx[16] = 5; // xor
-        emu.jit_ctx[17] = 4; // 32-bit
-        emu.jit_ctx[18] = 0x1234_5678;
-        emu.jit_ctx[19] = 0x1234_5678;
+        emu.jit_ctx[18] = 2; // xor + nop
+        emu.jit_ctx[17] = code + 3;
+        emu.jit_ctx[19] = 0x46; // ZF|PF|reserved bit1
         assert_eq!(emu.jit_commit_block(), "next");
         assert_eq!(emu.cpu.gpr[0], 0);
         assert_ne!(emu.cpu.rflags & 0x40, 0); // ZF

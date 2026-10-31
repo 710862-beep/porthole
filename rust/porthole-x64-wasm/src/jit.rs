@@ -1,4 +1,29 @@
-use std::collections::HashMap;
+//! Basic-block x86-64 -> WebAssembly compiler.
+//!
+//! ABI v2 exports `run_block(ctx:i32)->i64`. The context is 32 i64 slots in the core's
+//! exported memory: 0..15 GPRs, 16 status, 17 exit RIP, 18 executed instructions,
+//! 19 RFLAGS, 20 instruction budget, 21 entry RIP. Registers and RFLAGS are Wasm locals
+//! for the whole block; the context is read once and written on exit. A backward branch
+//! to the block entry is lowered to a native Wasm loop so hot loops do not cross JS.
+//! Static forward JMP edges can be linked with `return_call` when the host enables the
+//! tail-call feature and the target artifact already exists. Unsupported instructions,
+//! CALL, and page boundaries terminate the artifact and resume the interpreter at the
+//! exact next RIP. Memory-writing instructions are deliberately not translated yet:
+//! they terminate the block before their side effect, so SMC/page faults stay precise.
+
+use std::collections::{HashMap, HashSet};
+
+pub const JIT_ABI_V2: u32 = 2;
+pub const JIT_CONTEXT_SLOTS: usize = 32;
+pub const JIT_STATUS_OK: u64 = 0;
+pub const JIT_STATUS_BUDGET: u64 = 1;
+
+#[derive(Debug, Clone)]
+pub struct JitLink {
+    pub target_rip: u64,
+    pub page_epoch: u32,
+    pub import_name: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct CompiledJitArtifact {
@@ -6,33 +31,43 @@ pub struct CompiledJitArtifact {
     pub page_base: u64,
     pub page_epoch: u32,
     pub byte_len: u32,
+    /// Static instructions in one pass. Self-loop artifacts execute a dynamic multiple.
     pub insn_count: u32,
     pub ends_with_ret: bool,
+    pub self_loop: bool,
     pub code_hash: u64,
     pub wasm_bytes: Vec<u8>,
+    pub links: Vec<JitLink>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AluKind { Add, Or, And, Sub, Xor, Cmp, Test, Imul }
 
 #[derive(Debug, Clone, Copy)]
 enum JitOp {
-    MovImm64 { dst: u8, imm: u64 },
-    MovReg64 { dst: u8, src: u8 },
-    MovReg32 { dst: u8, src: u8 },
-    XorReg32 { dst: u8, src: u8 },
-    AddReg64 { dst: u8, src: u8 },
-    SubReg64 { dst: u8, src: u8 },
-    AndReg64 { dst: u8, src: u8 },
-    OrReg64 { dst: u8, src: u8 },
-    XorReg64 { dst: u8, src: u8 },
-    AddImm64 { dst: u8, imm: i64 },
-    SubImm64 { dst: u8, imm: i64 },
-    AndImm64 { dst: u8, imm: i64 },
-    OrImm64 { dst: u8, imm: i64 },
-    XorImm64 { dst: u8, imm: i64 },
-    ImulReg64 { dst: u8, src: u8 },
-    ImulImm64 { dst: u8, src: u8, imm: i64 },
-    ShlImm64 { dst: u8, count: u8 },
-    ShrImm64 { dst: u8, count: u8 },
-    SarImm64 { dst: u8, count: u8 },
+    Nop,
+    MovImm { dst: u8, width: u8, imm: u64 },
+    MovReg { dst: u8, src: u8, width: u8 },
+    Alu { kind: AluKind, dst: u8, src: Option<u8>, imm: i64, width: u8 },
+    Shift { kind: u8, dst: u8, count: u8, width: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockExit {
+    Fallthrough,
+    Jump,
+    Branch { cc: u8 },
+    Ret,
+    Interpret,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecodedBlock {
+    pub ops: Vec<JitOp>,
+    pub byte_len: usize,
+    pub insn_count: u32,
+    pub exit: BlockExit,
+    pub target: u64,
 }
 
 pub struct HybridWasmJit {
@@ -41,70 +76,57 @@ pub struct HybridWasmJit {
     pub modules_emitted: u64,
     pub cache_hits: u64,
     pub invalidations: u64,
+    tail_calls: bool,
+    proven: HashSet<u64>,
 }
 
 impl HybridWasmJit {
     pub fn new() -> Self {
-        Self {
-            artifacts: HashMap::new(),
-            pending_export_rips: Vec::new(),
-            modules_emitted: 0,
-            cache_hits: 0,
-            invalidations: 0,
-        }
+        Self { artifacts: HashMap::new(), pending_export_rips: Vec::new(), modules_emitted: 0, cache_hits: 0, invalidations: 0, tail_calls: false, proven: HashSet::new() }
     }
+
+    /// Host feature probe. Rust target-feature flags do not enable tail calls in the
+    /// browser's validator; only emit return_call when the actual host accepts it.
+    pub fn set_tail_calls(&mut self, on: bool) { self.tail_calls = on; }
+    pub fn tail_calls(&self) -> bool { self.tail_calls }
+    pub fn is_proven(&self, rip: u64) -> bool { self.proven.contains(&rip) }
+    pub fn mark_proven(&mut self, rip: u64) { self.proven.insert(rip); }
 
     pub fn fnv1a_64(bytes: &[u8]) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x0100_0000_01b3);
-        }
+        for &b in bytes { h ^= b as u64; h = h.wrapping_mul(0x0100_0000_01b3); }
         h
     }
 
     pub fn get_valid_artifact(&mut self, rip: u64, current_page_epoch: u32) -> Option<&CompiledJitArtifact> {
-        let stale = if let Some(art) = self.artifacts.get(&rip) {
-            art.page_epoch != current_page_epoch
-        } else {
-            return None;
-        };
-        if stale {
-            self.artifacts.remove(&rip);
-            self.invalidations += 1;
-            return None;
-        }
-        self.cache_hits += 1;
+        let stale = self.artifacts.get(&rip).map(|a| a.page_epoch != current_page_epoch).unwrap_or(false);
+        if stale { self.invalidate_entry(rip); return None; }
+        if self.artifacts.contains_key(&rip) { self.cache_hits += 1; }
         self.artifacts.get(&rip)
     }
 
-    pub fn try_compile_block(
-        &mut self,
-        entry_rip: u64,
-        page_epoch: u32,
-        bytes: &[u8],
-    ) -> Option<CompiledJitArtifact> {
-        let (ops, mut byte_len, insn_count, ends_with_ret) = Self::decode_pure_gpr_block(bytes)?;
+    pub fn try_compile_block(&mut self, entry_rip: u64, page_epoch: u32, bytes: &[u8]) -> Option<CompiledJitArtifact> {
         let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
-        if byte_len > page_remain {
-            // Never cache a block whose code epoch is only validated on its first page.
-            byte_len = page_remain;
-            return None;
+        let window = &bytes[..bytes.len().min(page_remain)];
+        let block = Self::decode_block(entry_rip, window)?;
+        if block.ops.is_empty() || block.insn_count == 0 { return None; }
+        let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
+        let mut links = Vec::new();
+        if self.tail_calls && block.exit == BlockExit::Jump && !self_loop {
+            if let Some(target) = self.artifacts.get(&block.target) {
+                // Do not create cross-module cycles; self-loops are already native loops.
+                let cyclic = target.links.iter().any(|l| l.target_rip == entry_rip) || target.entry_rip == entry_rip;
+                if !cyclic {
+                    links.push(JitLink { target_rip: block.target, page_epoch: target.page_epoch, import_name: format!("b{:016x}", block.target) });
+                }
+            }
         }
-        if ops.is_empty() {
-            return None;
-        }
-        let wasm_bytes = Self::emit_wasm_module(&ops, insn_count);
-        let code_hash = Self::fnv1a_64(&bytes[..byte_len]);
+        let wasm_bytes = Self::emit_wasm_module(entry_rip, &block, &links);
+        let code_hash = Self::fnv1a_64(&window[..block.byte_len]);
         let artifact = CompiledJitArtifact {
-            entry_rip,
-            page_base: entry_rip & !0xFFF,
-            page_epoch,
-            byte_len: byte_len as u32,
-            insn_count,
-            ends_with_ret,
-            code_hash,
-            wasm_bytes,
+            entry_rip, page_base: entry_rip & !0xFFF, page_epoch,
+            byte_len: block.byte_len as u32, insn_count: block.insn_count,
+            ends_with_ret: block.exit == BlockExit::Ret, self_loop, code_hash, wasm_bytes, links,
         };
         self.artifacts.insert(entry_rip, artifact.clone());
         self.pending_export_rips.push(entry_rip);
@@ -112,667 +134,341 @@ impl HybridWasmJit {
         Some(artifact)
     }
 
-    /// Treat OPFS as untrusted storage: a cached module is accepted only if it is exactly
-    /// what the current compiler emits for the live, epoch-checked guest bytes.
-    pub fn validate_cached_artifact(
-        entry_rip: u64,
-        page_epoch: u32,
-        byte_len: u32,
-        insn_count: u32,
-        ends_with_ret: bool,
-        code_hash: u64,
-        live: &[u8],
-        wasm: &[u8],
-    ) -> bool {
-        if live.len() != byte_len as usize { return false; }
-        if Self::fnv1a_64(live) != code_hash { return false; }
-        let Some((ops, len, count, ret)) = Self::decode_pure_gpr_block(live) else { return false; };
-        if len != byte_len as usize || count != insn_count || ret != ends_with_ret { return false; }
-        let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
-        if len > page_remain { return false; }
-        let _ = page_epoch; // epoch equality is checked by the caller against the live VMM
-        Self::emit_wasm_module(&ops, count).as_slice() == wasm
+    /// OPFS is untrusted: accept only the exact portable module the current compiler emits.
+    pub fn validate_cached_artifact(entry_rip: u64, _page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, code_hash: u64, live: &[u8], wasm: &[u8]) -> bool {
+        if live.len() != byte_len as usize || Self::fnv1a_64(live) != code_hash { return false; }
+        let Some(block) = Self::decode_block(entry_rip, live) else { return false; };
+        if block.byte_len != byte_len as usize || block.insn_count != insn_count || (block.exit == BlockExit::Ret) != ends_with_ret { return false; }
+        if block.byte_len > 4096 - (entry_rip & 0xFFF) as usize { return false; }
+        Self::emit_wasm_module(entry_rip, &block, &[]).as_slice() == wasm
     }
 
-    pub fn import_cached_artifact(
-        &mut self,
-        entry_rip: u64,
-        page_epoch: u32,
-        byte_len: u32,
-        insn_count: u32,
-        ends_with_ret: bool,
-        code_hash: u64,
-        wasm_bytes: Vec<u8>,
-    ) -> bool {
-        if wasm_bytes.len() < 8 || &wasm_bytes[0..8] != b"\0asm\x01\0\0\0" {
-            return false;
-        }
-        self.artifacts.insert(
-            entry_rip,
-            CompiledJitArtifact {
-                entry_rip,
-                page_base: entry_rip & !0xFFF,
-                page_epoch,
-                byte_len,
-                insn_count,
-                ends_with_ret,
-                code_hash,
-                wasm_bytes,
-            },
-        );
+    pub fn import_cached_artifact(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, self_loop: bool, code_hash: u64, wasm_bytes: Vec<u8>) -> bool {
+        if wasm_bytes.len() < 8 || &wasm_bytes[0..8] != b"\0asm\x01\0\0\0" { return false; }
+        self.artifacts.insert(entry_rip, CompiledJitArtifact { entry_rip, page_base: entry_rip & !0xFFF, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm_bytes, links: Vec::new() });
         true
     }
 
     pub fn drain_pending_exports(&mut self) -> Vec<CompiledJitArtifact> {
         let rips = std::mem::take(&mut self.pending_export_rips);
-        let mut out = Vec::new();
-        for rip in rips {
-            if let Some(a) = self.artifacts.get(&rip) {
-                out.push(a.clone());
-            }
-        }
-        out
+        rips.iter().filter_map(|rip| self.artifacts.get(rip).cloned()).collect()
     }
-
     pub fn pending_count(&self) -> usize { self.pending_export_rips.len() }
     pub fn pending_meta(&self, index: usize) -> Option<String> {
         let rip = *self.pending_export_rips.get(index)?;
         let a = self.artifacts.get(&rip)?;
-        Some(format!("{{\"entryRip\":{},\"pageBase\":{},\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"codeHash\":\"{:016x}\"}}",
-            a.entry_rip, a.page_base, a.page_epoch, a.byte_len, a.insn_count, a.ends_with_ret, a.code_hash))
+        Some(Self::meta_json(a, 0))
+    }
+    pub fn meta_json(a: &CompiledJitArtifact, ctx: u32) -> String {
+        let links: Vec<String> = a.links.iter().map(|l| format!("{{\"targetRip\":\"{}\",\"pageEpoch\":{},\"importName\":\"{}\"}}", l.target_rip, l.page_epoch, l.import_name)).collect();
+        format!("{{\"abi\":{},\"entryRip\":\"{}\",\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"selfLoop\":{},\"codeHash\":\"{:016x}\",\"ctx\":{},\"links\":[{}]}}",
+            JIT_ABI_V2, a.entry_rip, a.page_epoch, a.byte_len, a.insn_count, a.ends_with_ret, a.self_loop, a.code_hash, ctx, links.join(","))
     }
     pub fn pending_wasm(&self, index: usize) -> Option<Vec<u8>> {
         let rip = *self.pending_export_rips.get(index)?;
         self.artifacts.get(&rip).map(|a| a.wasm_bytes.clone())
     }
     pub fn clear_pending(&mut self) { self.pending_export_rips.clear(); }
-    pub fn invalidate_entry(&mut self, rip: u64) { if self.artifacts.remove(&rip).is_some() { self.invalidations += 1; } }
-
-    pub fn artifact_count(&self) -> usize {
-        self.artifacts.len()
+    pub fn invalidate_entry(&mut self, rip: u64) {
+        if self.artifacts.remove(&rip).is_some() { self.invalidations += 1; }
+        self.proven.remove(&rip);
+        // A linked predecessor is only as valid as its successor epoch.
+        let dependents: Vec<u64> = self.artifacts.iter().filter(|(_, a)| a.links.iter().any(|l| l.target_rip == rip)).map(|(k, _)| *k).collect();
+        for dep in dependents { self.invalidate_entry(dep); }
     }
+    pub fn artifact_count(&self) -> usize { self.artifacts.len() }
+    pub fn artifact(&self, rip: u64) -> Option<&CompiledJitArtifact> { self.artifacts.get(&rip) }
 
-    fn decode_pure_gpr_block(bytes: &[u8]) -> Option<(Vec<JitOp>, usize, u32, bool)> {
+    // ---------------------------------------------------------------- decoder
+    pub fn decode_block(entry_rip: u64, bytes: &[u8]) -> Option<DecodedBlock> {
         let mut ops = Vec::new();
         let mut pc = 0usize;
         let mut insns = 0u32;
-        let mut ends_with_ret = false;
-
-        while pc < bytes.len() && insns < 64 {
+        let mut exit = BlockExit::Fallthrough;
+        let mut target = entry_rip;
+        while pc < bytes.len() && insns < 256 {
             let start = pc;
-            // Optional REX prefix (0x40..=0x4F)
-            let mut rex: u8 = 0;
-            if bytes[pc] >= 0x40 && bytes[pc] <= 0x4F {
-                rex = bytes[pc];
-                pc += 1;
-                if pc >= bytes.len() {
-                    pc = start;
-                    break;
-                }
-            }
-            let rex_w = (rex & 0x08) != 0;
-            let rex_r = (rex & 0x04) != 0;
-            let rex_b = (rex & 0x01) != 0;
-
-            let op = bytes[pc];
-            pc += 1;
-
+            let mut rex = 0u8;
+            if bytes[pc] >= 0x40 && bytes[pc] <= 0x4F { rex = bytes[pc]; pc += 1; if pc >= bytes.len() { pc = start; break; } }
+            let w = (rex & 8) != 0;
+            let r = (rex & 4) != 0;
+            let b = (rex & 1) != 0;
+            let width = if w { 8 } else { 4 };
+            let op = bytes[pc]; pc += 1;
+            macro_rules! need { ($n:expr) => { if pc + $n > bytes.len() { pc = start; break; } } }
+            macro_rules! modrm_reg { () => {{ need!(1); let m = bytes[pc]; pc += 1; if m >> 6 != 3 { pc = start; break; } (((m >> 3) & 7) | if r { 8 } else { 0 }, (m & 7) | if b { 8 } else { 0 }, (m >> 3) & 7) }} }
             match op {
-                // 0x90 is XCHG rAX, r8 when REX.B=1; only REX.W/empty REX is a true NOP.
-                0x90 if (rex & !0x08) == 0 => {
-                    insns += 1;
-                }
-                0xC3 if rex == 0 => {
-                    insns += 1;
-                    ends_with_ret = true;
-                    break;
-                }
+                0x90 if (rex & !8) == 0 => { ops.push(JitOp::Nop); insns += 1; }
                 0xB8..=0xBF => {
-                    let rd = (op - 0xB8) | if rex_b { 8 } else { 0 };
-                    if rex_w {
-                        if pc + 8 > bytes.len() {
-                            pc = start;
-                            break;
-                        }
-                        let imm = u64::from_le_bytes(bytes[pc..pc + 8].try_into().ok()?);
-                        pc += 8;
-                        ops.push(JitOp::MovImm64 { dst: rd, imm });
-                    } else {
-                        if pc + 4 > bytes.len() {
-                            pc = start;
-                            break;
-                        }
-                        let imm = u32::from_le_bytes(bytes[pc..pc + 4].try_into().ok()?) as u64;
-                        pc += 4;
-                        ops.push(JitOp::MovImm64 { dst: rd, imm });
-                    }
-                    insns += 1;
+                    let dst = (op - 0xB8) | if b { 8 } else { 0 };
+                    let imm = if w { need!(8); let v = u64::from_le_bytes(bytes[pc..pc+8].try_into().ok()?); pc += 8; v }
+                              else { need!(4); let v = u32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as u64; pc += 4; v };
+                    ops.push(JitOp::MovImm { dst, width, imm }); insns += 1;
                 }
-                0x89 | 0x8B | 0x01 | 0x03 | 0x29 | 0x2B | 0x21 | 0x23 | 0x09 | 0x0B | 0x31 | 0x33 => {
-                    if pc >= bytes.len() {
-                        pc = start;
-                        break;
-                    }
-                    let modrm = bytes[pc];
-                    if (modrm >> 6) != 3 {
-                        pc = start;
-                        break;
-                    }
-                    pc += 1;
-                    let reg = ((modrm >> 3) & 7) | if rex_r { 8 } else { 0 };
-                    let rm = (modrm & 7) | if rex_b { 8 } else { 0 };
-                    if !rex_w && op == 0x89 {
-                        ops.push(JitOp::MovReg32 { dst: rm, src: reg });
-                    } else if !rex_w && op == 0x8B {
-                        ops.push(JitOp::MovReg32 { dst: reg, src: rm });
-                    } else if !rex_w && (op == 0x31 || op == 0x33) {
-                        let (dst, src) = if (op & 2) == 0 { (rm, reg) } else { (reg, rm) };
-                        ops.push(JitOp::XorReg32 { dst, src });
-                    } else if !rex_w {
-                        pc = start;
-                        break;
-                    } else {
-                        let (dst, src) = if (op & 2) == 0 { (rm, reg) } else { (reg, rm) };
-                        match op & 0xFC {
-                            0x88 => ops.push(JitOp::MovReg64 { dst, src }),
-                            0x00 => ops.push(JitOp::AddReg64 { dst, src }),
-                            0x28 => ops.push(JitOp::SubReg64 { dst, src }),
-                            0x20 => ops.push(JitOp::AndReg64 { dst, src }),
-                            0x08 => ops.push(JitOp::OrReg64 { dst, src }),
-                            0x30 => ops.push(JitOp::XorReg64 { dst, src }),
-                            _ => {
-                                pc = start;
-                                break;
-                            }
-                        }
-                    }
-                    insns += 1;
+                0x88..=0x8B => {
+                    let (reg, rm, _) = modrm_reg!();
+                    // 88/8A are byte ops; leave them to the interpreter for now.
+                    if op == 0x88 || op == 0x8A { pc = start; break; }
+                    let (dst, src) = if op == 0x89 { (rm, reg) } else { (reg, rm) };
+                    ops.push(JitOp::MovReg { dst, src, width }); insns += 1;
                 }
-                0x05 | 0x2D | 0x25 | 0x0D | 0x35 if rex_w => {
-                    if pc + 4 > bytes.len() {
-                        pc = start;
-                        break;
-                    }
-                    let imm = i32::from_le_bytes(bytes[pc..pc + 4].try_into().ok()?) as i64;
-                    pc += 4;
-                    match op {
-                        0x05 => ops.push(JitOp::AddImm64 { dst: 0, imm }),
-                        0x2D => ops.push(JitOp::SubImm64 { dst: 0, imm }),
-                        0x25 => ops.push(JitOp::AndImm64 { dst: 0, imm }),
-                        0x0D => ops.push(JitOp::OrImm64 { dst: 0, imm }),
-                        0x35 => ops.push(JitOp::XorImm64 { dst: 0, imm }),
-                        _ => unreachable!(),
-                    }
-                    insns += 1;
-                }
-                0x81 | 0x83 if rex_w => {
-                    if pc >= bytes.len() {
-                        pc = start;
-                        break;
-                    }
-                    let modrm = bytes[pc];
-                    if (modrm >> 6) != 3 {
-                        pc = start;
-                        break;
-                    }
-                    pc += 1;
-                    let subop = (modrm >> 3) & 7;
-                    let dst = (modrm & 7) | if rex_b { 8 } else { 0 };
-                    let imm = if op == 0x83 {
-                        if pc >= bytes.len() {
-                            pc = start;
-                            break;
-                        }
-                        let v = (bytes[pc] as i8) as i64;
-                        pc += 1;
-                        v
+                0x00..=0x3D if (op & 7) <= 5 && (op & 0xF8) <= 0x38 => {
+                    let group = op >> 3;
+                    let kind = match group { 0 => AluKind::Add, 1 => AluKind::Or, 4 => AluKind::And, 5 => AluKind::Sub, 6 => AluKind::Xor, 7 => AluKind::Cmp, _ => { pc = start; break; } };
+                    let form = op & 7;
+                    if form >= 4 { pc = start; break; } // byte ops / push-pop seg
+                    let (dst, src) = if form <= 1 {
+                        let (reg, rm, _) = modrm_reg!();
+                        if form == 0 { (rm, reg) } else { (reg, rm) }
                     } else {
-                        if pc + 4 > bytes.len() {
-                            pc = start;
-                            break;
-                        }
-                        let v = i32::from_le_bytes(bytes[pc..pc + 4].try_into().ok()?) as i64;
-                        pc += 4;
-                        v
+                        need!(4); let imm = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4;
+                        ops.push(JitOp::Alu { kind, dst: 0, src: None, imm, width }); insns += 1; continue;
                     };
-                    match subop {
-                        0 => ops.push(JitOp::AddImm64 { dst, imm }),
-                        1 => ops.push(JitOp::OrImm64 { dst, imm }),
-                        4 => ops.push(JitOp::AndImm64 { dst, imm }),
-                        5 => ops.push(JitOp::SubImm64 { dst, imm }),
-                        6 => ops.push(JitOp::XorImm64 { dst, imm }),
-                        _ => {
-                            pc = start;
-                            break;
-                        }
-                    }
-                    insns += 1;
+                    ops.push(JitOp::Alu { kind, dst, src: Some(src), imm: 0, width }); insns += 1;
                 }
-                0x69 | 0x6B if rex_w => {
-                    if pc >= bytes.len() {
-                        pc = start;
-                        break;
-                    }
-                    let modrm = bytes[pc];
-                    if (modrm >> 6) != 3 {
-                        pc = start;
-                        break;
-                    }
-                    pc += 1;
-                    let dst = ((modrm >> 3) & 7) | if rex_r { 8 } else { 0 };
-                    let src = (modrm & 7) | if rex_b { 8 } else { 0 };
-                    let imm = if op == 0x6B {
-                        if pc >= bytes.len() {
-                            pc = start;
-                            break;
-                        }
-                        let v = (bytes[pc] as i8) as i64;
-                        pc += 1;
-                        v
-                    } else {
-                        if pc + 4 > bytes.len() {
-                            pc = start;
-                            break;
-                        }
-                        let v = i32::from_le_bytes(bytes[pc..pc + 4].try_into().ok()?) as i64;
-                        pc += 4;
-                        v
-                    };
-                    ops.push(JitOp::ImulImm64 { dst, src, imm });
-                    insns += 1;
+                0x84 | 0x85 => {
+                    let (reg, rm, _) = modrm_reg!();
+                    if op == 0x84 { pc = start; break; }
+                    ops.push(JitOp::Alu { kind: AluKind::Test, dst: rm, src: Some(reg), imm: 0, width }); insns += 1;
                 }
-                0xC1 if rex_w => {
-                    if pc + 2 > bytes.len() {
-                        pc = start;
-                        break;
-                    }
-                    let modrm = bytes[pc];
-                    if (modrm >> 6) != 3 {
-                        pc = start;
-                        break;
-                    }
-                    let subop = (modrm >> 3) & 7;
-                    let dst = (modrm & 7) | if rex_b { 8 } else { 0 };
-                    let count = bytes[pc + 1] & 63;
-                    pc += 2;
-                    match subop {
-                        4 => ops.push(JitOp::ShlImm64 { dst, count }),
-                        5 => ops.push(JitOp::ShrImm64 { dst, count }),
-                        7 => ops.push(JitOp::SarImm64 { dst, count }),
-                        _ => {
-                            pc = start;
-                            break;
-                        }
-                    }
-                    insns += 1;
+                0x81 | 0x83 => {
+                    let (_, rm, sub) = modrm_reg!();
+                    let imm = if op == 0x83 { need!(1); let v = bytes[pc] as i8 as i64; pc += 1; v }
+                              else { need!(4); let v = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4; v };
+                    let kind = match sub { 0 => AluKind::Add, 1 => AluKind::Or, 4 => AluKind::And, 5 => AluKind::Sub, 6 => AluKind::Xor, 7 => AluKind::Cmp, _ => { pc = start; break; } };
+                    ops.push(JitOp::Alu { kind, dst: rm, src: None, imm, width }); insns += 1;
                 }
-                0x0F if rex_w => {
-                    if pc + 2 > bytes.len() || bytes[pc] != 0xAF {
-                        pc = start;
-                        break;
-                    }
-                    let modrm = bytes[pc + 1];
-                    if (modrm >> 6) != 3 {
-                        pc = start;
-                        break;
-                    }
-                    pc += 2;
-                    let dst = ((modrm >> 3) & 7) | if rex_r { 8 } else { 0 };
-                    let src = (modrm & 7) | if rex_b { 8 } else { 0 };
-                    ops.push(JitOp::ImulReg64 { dst, src });
-                    insns += 1;
+                0xF7 => {
+                    let (_, rm, sub) = modrm_reg!();
+                    if sub == 0 { need!(4); let imm = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4; ops.push(JitOp::Alu { kind: AluKind::Test, dst: rm, src: None, imm, width }); insns += 1; }
+                    else { pc = start; break; }
                 }
-                _ => {
-                    pc = start;
-                    break;
+                0xC7 => {
+                    let (_, rm, sub) = modrm_reg!();
+                    if sub != 0 { pc = start; break; }
+                    need!(4); let imm = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64 as u64; pc += 4;
+                    ops.push(JitOp::MovImm { dst: rm, width, imm }); insns += 1;
                 }
+                0xC1 => {
+                    let (_, rm, sub) = modrm_reg!(); need!(1); let count = bytes[pc] & if w { 63 } else { 31 }; pc += 1;
+                    if !matches!(sub, 4 | 5 | 7) || count == 0 || count >= if w { 64 } else { 32 } { pc = start; break; }
+                    ops.push(JitOp::Shift { kind: sub, dst: rm, count, width }); insns += 1;
+                }
+                0xC3 if rex == 0 => { insns += 1; exit = BlockExit::Ret; target = 0; break; }
+                0xE9 | 0xEB => {
+                    let disp = if op == 0xE9 { need!(4); let v = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4; v }
+                               else { need!(1); let v = bytes[pc] as i8 as i64; pc += 1; v };
+                    insns += 1; exit = BlockExit::Jump; target = entry_rip.wrapping_add(pc as u64).wrapping_add(disp as u64); break;
+                }
+                0x70..=0x7F => { need!(1); let disp = bytes[pc] as i8 as i64; pc += 1; insns += 1; exit = BlockExit::Branch { cc: op - 0x70 }; target = entry_rip.wrapping_add(pc as u64).wrapping_add(disp as u64); break; }
+                0x0F if pc < bytes.len() && (0x80..=0x8F).contains(&bytes[pc]) => {
+                    let cc = bytes[pc] - 0x80; pc += 1; need!(4); let disp = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4;
+                    insns += 1; exit = BlockExit::Branch { cc }; target = entry_rip.wrapping_add(pc as u64).wrapping_add(disp as u64); break;
+                }
+                // CALL/RET-imm/memory-writing/unknown: stop before the instruction. The
+                // interpreter executes exactly that RIP, preserving faults and SMC epochs.
+                _ => { pc = start; exit = BlockExit::Interpret; target = entry_rip.wrapping_add(pc as u64); break; }
             }
         }
+        if insns == 0 { return None; }
+        if exit == BlockExit::Fallthrough { target = entry_rip.wrapping_add(pc as u64); }
+        if exit == BlockExit::Interpret { target = entry_rip.wrapping_add(pc as u64); }
+        Some(DecodedBlock { ops, byte_len: pc, insn_count: insns, exit, target })
+    }
 
-        if pc == 0 || insns == 0 {
-            None
-        } else {
-            Some((ops, pc, insns, ends_with_ret))
+    // ---------------------------------------------------------------- emitter
+    fn push_u32_leb(out: &mut Vec<u8>, mut val: u32) { loop { let mut b = (val & 0x7F) as u8; val >>= 7; if val != 0 { b |= 0x80; } out.push(b); if val == 0 { break; } } }
+    fn push_i64_sleb(out: &mut Vec<u8>, mut val: i64) { loop { let b = (val & 0x7F) as u8; val >>= 7; let done = (val == 0 && (b & 0x40) == 0) || (val == -1 && (b & 0x40) != 0); if done { out.push(b); break; } out.push(b | 0x80); } }
+    fn push_section(wasm: &mut Vec<u8>, id: u8, payload: &[u8]) { wasm.push(id); Self::push_u32_leb(wasm, payload.len() as u32); wasm.extend_from_slice(payload); }
+    fn local_get(b: &mut Vec<u8>, i: u8) { b.extend_from_slice(&[0x20, i]); }
+    fn local_set(b: &mut Vec<u8>, i: u8) { b.extend_from_slice(&[0x21, i]); }
+    fn local_tee(b: &mut Vec<u8>, i: u8) { b.extend_from_slice(&[0x22, i]); }
+    fn i64_const(b: &mut Vec<u8>, v: i64) { b.push(0x42); Self::push_i64_sleb(b, v); }
+    fn ctx_load(b: &mut Vec<u8>, slot: u32) { b.extend_from_slice(&[0x20, 0x00, 0x29, 0x03]); Self::push_u32_leb(b, slot * 8); }
+    fn ctx_store_local(b: &mut Vec<u8>, slot: u32, local: u8) { b.extend_from_slice(&[0x20, 0x00]); Self::local_get(b, local); b.extend_from_slice(&[0x37, 0x03]); Self::push_u32_leb(b, slot * 8); }
+    fn ctx_store_const(b: &mut Vec<u8>, slot: u32, v: i64) { b.extend_from_slice(&[0x20, 0x00]); Self::i64_const(b, v); b.extend_from_slice(&[0x37, 0x03]); Self::push_u32_leb(b, slot * 8); }
+    fn mask_width(b: &mut Vec<u8>, width: u8) { if width == 4 { Self::i64_const(b, 0xFFFF_FFFF); b.push(0x83); } }
+
+    fn reg_masks(ops: &[JitOp]) -> (u16, u16) {
+        let mut rd = 0u16; let mut wr = 0u16;
+        for op in ops { match *op {
+            JitOp::Nop => {}
+            JitOp::MovImm { dst, .. } => wr |= 1 << dst,
+            JitOp::MovReg { dst, src, .. } => { rd |= 1 << src; wr |= 1 << dst; }
+            JitOp::Alu { kind, dst, src, .. } => { rd |= 1 << dst; if let Some(s) = src { rd |= 1 << s; } if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
+            JitOp::Shift { dst, .. } => { rd |= 1 << dst; wr |= 1 << dst; }
+        }}
+        (rd | wr, wr)
+    }
+
+    fn or_flag(b: &mut Vec<u8>, mask: i64) {
+        b.push(0xAD); // i64.extend_i32_u
+        Self::i64_const(b, mask); b.push(0x7E); // mul
+        Self::local_get(b, 17); b.push(0x84); Self::local_set(b, 17);
+    }
+
+    fn emit_szp(b: &mut Vec<u8>, width: u8) {
+        // Clear ZF/SF/PF, then OR each condition*mask.
+        Self::local_get(b, 17); Self::i64_const(b, !0xC4i64); b.push(0x83); Self::local_set(b, 17);
+        Self::local_get(b, 20); b.push(0x50); Self::or_flag(b, 0x40); // ZF
+        Self::local_get(b, 20); Self::i64_const(b, 1i64 << (width * 8 - 1)); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 0x80); // SF
+        // PF over low byte: x ^= x>>4; x ^= x>>2; x ^= x>>1; PF = !(x&1).
+        Self::local_get(b, 20); Self::local_get(b, 20); Self::i64_const(b, 4); b.push(0x88); b.push(0x85); Self::local_set(b, 21);
+        Self::local_get(b, 21); Self::local_get(b, 21); Self::i64_const(b, 2); b.push(0x88); b.push(0x85); Self::local_set(b, 21);
+        Self::local_get(b, 21); Self::local_get(b, 21); Self::i64_const(b, 1); b.push(0x88); b.push(0x85); Self::i64_const(b, 1); b.push(0x83); b.push(0x50); Self::or_flag(b, 4);
+    }
+
+    fn emit_alu(b: &mut Vec<u8>, kind: AluKind, dst: u8, src: Option<u8>, imm: i64, width: u8) {
+        Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+        if let Some(s) = src { Self::local_get(b, s + 1); } else { Self::i64_const(b, imm); }
+        Self::mask_width(b, width); Self::local_set(b, 19);
+        match kind {
+            AluKind::Add => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7C); }
+            AluKind::Sub | AluKind::Cmp => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7D); }
+            AluKind::And | AluKind::Test => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x83); }
+            AluKind::Or => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x84); }
+            AluKind::Xor => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x85); }
+            AluKind::Imul => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7E); }
+        }
+        Self::mask_width(b, width); Self::local_set(b, 20);
+        if !matches!(kind, AluKind::Cmp | AluKind::Test) { Self::local_get(b, 20); Self::local_set(b, dst + 1); }
+        Self::local_get(b, 17); Self::i64_const(b, !0x811i64); b.push(0x83); Self::local_set(b, 17);
+        match kind {
+            AluKind::Add => {
+                Self::local_get(b, 20); Self::local_get(b, 18); b.push(0x54); Self::or_flag(b, 1); // CF
+                Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x85); Self::i64_const(b, -1); b.push(0x85);
+                Self::local_get(b, 18); Self::local_get(b, 20); b.push(0x85); b.push(0x83); Self::i64_const(b, 1i64 << (width*8-1)); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 0x800);
+            }
+            AluKind::Sub | AluKind::Cmp => {
+                Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x54); Self::or_flag(b, 1); // CF
+                Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x85); Self::local_get(b, 18); Self::local_get(b, 20); b.push(0x85); b.push(0x83); Self::i64_const(b, 1i64 << (width*8-1)); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 0x800);
+            }
+            _ => {}
+        }
+        if matches!(kind, AluKind::Add | AluKind::Sub | AluKind::Cmp) {
+            Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x85); Self::local_get(b, 20); b.push(0x85); Self::i64_const(b, 0x10); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 0x10);
+        }
+        Self::emit_szp(b, width);
+    }
+
+    fn emit_shift(b: &mut Vec<u8>, kind: u8, dst: u8, count: u8, width: u8) {
+        let bits = width * 8;
+        Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+        Self::i64_const(b, count as i64); Self::local_set(b, 19);
+        match kind {
+            4 => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x86); }
+            5 => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x88); }
+            _ => { Self::local_get(b, 18); if width == 4 { b.push(0xAC); b.push(0xAD); } Self::local_get(b, 19); b.push(0x87); }
+        }
+        Self::mask_width(b, width); Self::local_set(b, 20); Self::local_get(b, 20); Self::local_set(b, dst + 1);
+        if count == 0 { return; }
+        Self::local_get(b, 17); Self::i64_const(b, !0x811i64); b.push(0x83); Self::local_set(b, 17);
+        if kind == 4 { Self::local_get(b, 18); Self::i64_const(b, (bits - count) as i64); b.push(0x88); }
+        else if kind == 7 { Self::local_get(b, 18); if width == 4 { b.push(0xAC); b.push(0xAD); } Self::i64_const(b, (count - 1) as i64); b.push(0x87); }
+        else { Self::local_get(b, 18); Self::i64_const(b, (count - 1) as i64); b.push(0x88); }
+        Self::i64_const(b, 1); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 1);
+        if count == 1 {
+            if kind == 5 { Self::local_get(b, 18); Self::i64_const(b, 1i64 << (bits-1)); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 0x800); }
+            else if kind == 4 {
+                Self::local_get(b, 20); Self::i64_const(b, 1i64 << (bits-1)); b.push(0x83); Self::i64_const(b, 0); b.push(0x52);
+                Self::local_get(b, 17); Self::i64_const(b, 1); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); b.push(0x73); Self::or_flag(b, 0x800);
+            } else { Self::local_get(b, 17); Self::i64_const(b, !0x800i64); b.push(0x83); Self::local_set(b, 17); }
+        }
+        Self::emit_szp(b, width);
+    }
+
+    fn emit_cc(b: &mut Vec<u8>, cc: u8) {
+        let bit = |b: &mut Vec<u8>, mask: i64| { Self::local_get(b, 17); Self::i64_const(b, mask); b.push(0x83); b.push(0x50); };
+        match cc & 15 {
+            0 => bit(b, 0x800), 1 => { bit(b, 0x800); b.push(0x45); }
+            2 => bit(b, 1), 3 => { bit(b, 1); b.push(0x45); }
+            4 => bit(b, 0x40), 5 => { bit(b, 0x40); b.push(0x45); }
+            6 => { bit(b, 1); bit(b, 0x40); b.push(0x72); }
+            7 => { bit(b, 1); b.push(0x45); bit(b, 0x40); b.push(0x45); b.push(0x71); }
+            8 => bit(b, 0x80), 9 => { bit(b, 0x80); b.push(0x45); }
+            0xA => bit(b, 4), 0xB => { bit(b, 4); b.push(0x45); }
+            0xC => { bit(b, 0x80); bit(b, 0x800); b.push(0x51); }
+            0xD => { bit(b, 0x80); bit(b, 0x800); b.push(0x52); }
+            0xE => { bit(b, 0x40); bit(b, 0x80); bit(b, 0x800); b.push(0x51); b.push(0x72); }
+            _ => { bit(b, 0x40); b.push(0x45); bit(b, 0x80); bit(b, 0x800); b.push(0x52); b.push(0x71); }
         }
     }
 
-    fn push_u32_leb(out: &mut Vec<u8>, mut val: u32) {
-        loop {
-            let mut b = (val & 0x7F) as u8;
-            val >>= 7;
-            if val != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if val == 0 {
-                break;
-            }
-        }
-    }
-
-    fn push_i64_sleb(out: &mut Vec<u8>, mut val: i64) {
-        loop {
-            let b = (val & 0x7F) as u8;
-            val >>= 7;
-            let done = (val == 0 && (b & 0x40) == 0) || (val == -1 && (b & 0x40) != 0);
-            if done {
-                out.push(b);
-                break;
-            } else {
-                out.push(b | 0x80);
-            }
-        }
-    }
-
-    fn push_section(wasm: &mut Vec<u8>, id: u8, payload: &[u8]) {
-        wasm.push(id);
-        Self::push_u32_leb(wasm, payload.len() as u32);
-        wasm.extend_from_slice(payload);
-    }
-
-    /// Emits a complete, valid WebAssembly binary module exporting:
-    /// `(func (export "run_block") (param $ctx i32) (result i64))`
-    /// where `$ctx` points to `[u64; 21]` (GPRs + final-flag metadata) in `(import "env" "mem" (memory 1))`,
-    /// updates the register file in place, and returns `(i64.const insn_count)`.
-    /// (kind, width, result-reg, lhs-reg, rhs-reg?, rhs-imm) for the final flag writer.
-    fn flag_operands(op: &JitOp) -> Option<(u64, u64, u8, u8, Option<u8>, i64)> {
+    fn emit_op(b: &mut Vec<u8>, op: &JitOp) {
         match *op {
-            JitOp::AddReg64 { dst, src } => Some((1, 8, dst, dst, Some(src), 0)),
-            JitOp::SubReg64 { dst, src } => Some((4, 8, dst, dst, Some(src), 0)),
-            JitOp::AndReg64 { dst, src } => Some((3, 8, dst, dst, Some(src), 0)),
-            JitOp::OrReg64 { dst, src } => Some((2, 8, dst, dst, Some(src), 0)),
-            JitOp::XorReg64 { dst, src } => Some((5, 8, dst, dst, Some(src), 0)),
-            JitOp::XorReg32 { dst, src } => Some((5, 4, dst, dst, Some(src), 0)),
-            JitOp::ImulReg64 { dst, src } => Some((6, 8, dst, dst, Some(src), 0)),
-            JitOp::AddImm64 { dst, imm } => Some((1, 8, dst, dst, None, imm)),
-            JitOp::SubImm64 { dst, imm } => Some((4, 8, dst, dst, None, imm)),
-            JitOp::AndImm64 { dst, imm } => Some((3, 8, dst, dst, None, imm)),
-            JitOp::OrImm64 { dst, imm } => Some((2, 8, dst, dst, None, imm)),
-            JitOp::XorImm64 { dst, imm } => Some((5, 8, dst, dst, None, imm)),
-            JitOp::ImulImm64 { dst, src, imm } => Some((6, 8, dst, src, None, imm)),
-            JitOp::ShlImm64 { dst, count } => Some((7, 8, dst, dst, None, count as i64)),
-            JitOp::ShrImm64 { dst, count } => Some((8, 8, dst, dst, None, count as i64)),
-            JitOp::SarImm64 { dst, count } => Some((9, 8, dst, dst, None, count as i64)),
-            _ => None,
+            JitOp::Nop => {}
+            JitOp::MovImm { dst, width, imm } => { Self::i64_const(b, imm as i64); Self::mask_width(b, width); Self::local_set(b, dst + 1); }
+            JitOp::MovReg { dst, src, width } => { Self::local_get(b, src + 1); Self::mask_width(b, width); Self::local_set(b, dst + 1); }
+            JitOp::Alu { kind, dst, src, imm, width } => Self::emit_alu(b, kind, dst, src, imm, width),
+            JitOp::Shift { kind, dst, count, width } => Self::emit_shift(b, kind, dst, count, width),
         }
     }
 
-    fn emit_ctx_store_local(body: &mut Vec<u8>, offset: u32, local: u8) {
-        body.extend_from_slice(&[0x20, 0x00, 0x20, local, 0x37, 0x03]);
-        Self::push_u32_leb(body, offset);
-    }
-
-    fn emit_ctx_store_const(body: &mut Vec<u8>, offset: u32, value: i64) {
-        body.extend_from_slice(&[0x20, 0x00, 0x42]);
-        Self::push_i64_sleb(body, value);
-        body.extend_from_slice(&[0x37, 0x03]);
-        Self::push_u32_leb(body, offset);
-    }
-
-    fn emit_wasm_module(ops: &[JitOp], insn_count: u32) -> Vec<u8> {
-        let mut wasm = Vec::with_capacity(256);
+    pub fn emit_wasm_module(entry_rip: u64, block: &DecodedBlock, links: &[JitLink]) -> Vec<u8> {
+        let mut wasm = Vec::with_capacity(512);
         wasm.extend_from_slice(b"\0asm\x01\0\0\0");
+        Self::push_section(&mut wasm, 1, &[1, 0x60, 1, 0x7F, 1, 0x7E]);
+        let mut imp = Vec::new();
+        Self::push_u32_leb(&mut imp, 1 + links.len() as u32);
+        imp.push(3); imp.extend_from_slice(b"env"); imp.push(3); imp.extend_from_slice(b"mem"); imp.extend_from_slice(&[2, 0, 1]);
+        for l in links { imp.push(3); imp.extend_from_slice(b"env"); Self::push_u32_leb(&mut imp, l.import_name.len() as u32); imp.extend_from_slice(l.import_name.as_bytes()); imp.push(0); imp.push(0); }
+        Self::push_section(&mut wasm, 2, &imp);
+        Self::push_section(&mut wasm, 3, &[1, 0]);
+        let mut exp = Vec::new(); exp.push(1); exp.push(9); exp.extend_from_slice(b"run_block"); exp.push(0); Self::push_u32_leb(&mut exp, links.len() as u32); Self::push_section(&mut wasm, 7, &exp);
 
-        // Section 1: Type [(param i32) -> (result i64)]
-        let type_sec = [0x01u8, 0x60, 0x01, 0x7F, 0x01, 0x7E];
-        Self::push_section(&mut wasm, 1, &type_sec);
-
-        // Section 2: Import (import "env" "mem" (memory 1))
-        let mut import_sec = Vec::new();
-        import_sec.push(1); // 1 import
-        import_sec.push(3);
-        import_sec.extend_from_slice(b"env");
-        import_sec.push(3);
-        import_sec.extend_from_slice(b"mem");
-        import_sec.push(0x02); // memory
-        import_sec.push(0x00); // limits: min only
-        import_sec.push(0x01); // min 1 page
-        Self::push_section(&mut wasm, 2, &import_sec);
-
-        // Section 3: Function [type 0]
-        Self::push_section(&mut wasm, 3, &[0x01, 0x00]);
-
-        // Section 7: Export "run_block" -> func 0
-        let mut export_sec = Vec::new();
-        export_sec.push(1);
-        export_sec.push(9);
-        export_sec.extend_from_slice(b"run_block");
-        export_sec.push(0x00);
-        export_sec.push(0x00);
-        Self::push_section(&mut wasm, 7, &export_sec);
-
-        // Track which registers are read/written so we only load/store touched GPRs!
-        let mut read_mask = 0u16;
-        let mut write_mask = 0u16;
-        for &op in ops {
-            match op {
-                JitOp::MovImm64 { dst, .. } => {
-                    write_mask |= 1 << dst;
-                }
-                JitOp::MovReg64 { dst, src } | JitOp::MovReg32 { dst, src } => {
-                    read_mask |= 1 << src;
-                    write_mask |= 1 << dst;
-                }
-                JitOp::AddReg64 { dst, src }
-                | JitOp::SubReg64 { dst, src }
-                | JitOp::AndReg64 { dst, src }
-                | JitOp::OrReg64 { dst, src }
-                | JitOp::XorReg64 { dst, src }
-                | JitOp::XorReg32 { dst, src }
-                | JitOp::ImulReg64 { dst, src } => {
-                    read_mask |= (1 << dst) | (1 << src);
-                    write_mask |= 1 << dst;
-                }
-                JitOp::ImulImm64 { dst, src, .. } => {
-                    read_mask |= 1 << src;
-                    write_mask |= 1 << dst;
-                }
-                JitOp::AddImm64 { dst, .. }
-                | JitOp::SubImm64 { dst, .. }
-                | JitOp::AndImm64 { dst, .. }
-                | JitOp::OrImm64 { dst, .. }
-                | JitOp::XorImm64 { dst, .. }
-                | JitOp::ShlImm64 { dst, .. }
-                | JitOp::ShrImm64 { dst, .. }
-                | JitOp::SarImm64 { dst, .. } => {
-                    read_mask |= 1 << dst;
-                    write_mask |= 1 << dst;
-                }
-            }
+        let (load_mask, write_mask) = Self::reg_masks(&block.ops);
+        let mut b = Vec::with_capacity(512);
+        b.push(2); b.push(16); b.push(0x7E); b.push(9); b.push(0x7E); // 16 GPR + rflags/lhs/rhs/res/tmp/tmp2/budget/count/exit = 25 locals
+        for reg in 0..16u8 { if load_mask & (1 << reg) != 0 { Self::ctx_load(&mut b, reg as u32); Self::local_set(&mut b, reg + 1); } }
+        Self::ctx_load(&mut b, 19); Self::local_set(&mut b, 17);
+        Self::ctx_load(&mut b, 20); Self::local_set(&mut b, 23);
+        Self::ctx_load(&mut b, 18); Self::local_set(&mut b, 24);
+        let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
+        let block_insns = block.insn_count as i64;
+        // block $exit
+        b.push(0x02); b.push(0x40);
+        if self_loop { b.push(0x03); b.push(0x40); }
+        // budget check: if budget < block_insns, status=budget, rip=entry, br exit
+        Self::local_get(&mut b, 23); Self::i64_const(&mut b, block_insns); b.push(0x54);
+        b.push(0x04); b.push(0x40);
+        Self::ctx_store_const(&mut b, 16, JIT_STATUS_BUDGET as i64); Self::ctx_store_const(&mut b, 17, entry_rip as i64);
+        b.push(0x0C); Self::push_u32_leb(&mut b, if self_loop { 2 } else { 1 });
+        b.push(0x0B);
+        for op in &block.ops { Self::emit_op(&mut b, op); }
+        Self::local_get(&mut b, 23); Self::i64_const(&mut b, block_insns); b.push(0x7D); Self::local_set(&mut b, 23);
+        Self::local_get(&mut b, 24); Self::i64_const(&mut b, block_insns); b.push(0x7C); Self::local_set(&mut b, 24);
+        match block.exit {
+            BlockExit::Branch { cc } if self_loop => { Self::emit_cc(&mut b, cc); b.push(0x0D); Self::push_u32_leb(&mut b, 0); }
+            BlockExit::Jump if self_loop => { b.push(0x0C); Self::push_u32_leb(&mut b, 0); }
+            _ => {}
         }
-        let load_mask = read_mask | write_mask;
-
-        // Body: local 0 = param i32 ($ctx); locals 1..=16 = i64 GPRs (RAX..R15)
-        let mut body = Vec::with_capacity(192);
-        body.push(1); // 1 local declaration group
-        body.push(16); // count = 16
-        body.push(0x7E); // type = i64
-
-        for reg in 0..16u8 {
-            if (load_mask & (1 << reg)) != 0 {
-                body.push(0x20); // local.get 0 ($ctx)
-                body.push(0x00);
-                body.push(0x29); // i64.load
-                body.push(0x03); // align = 8 (2^3)
-                Self::push_u32_leb(&mut body, (reg as u32) * 8);
-                body.push(0x21); // local.set (reg + 1)
-                body.push(reg + 1);
-            }
+        if self_loop { b.push(0x0B); } // end loop
+        // Normal exit: store status/rip. For self-loop Jcc the fallthrough is entry+byte_len.
+        let exit_rip = match block.exit {
+            BlockExit::Ret => 0,
+            BlockExit::Branch { .. } if self_loop => entry_rip.wrapping_add(block.byte_len as u64),
+            _ => block.target,
+        };
+        Self::ctx_store_const(&mut b, 16, JIT_STATUS_OK as i64);
+        if let BlockExit::Branch { cc } = block.exit {
+            if !self_loop {
+                // select(fallthrough, target, condition)
+                Self::i64_const(&mut b, entry_rip.wrapping_add(block.byte_len as u64) as i64);
+                Self::i64_const(&mut b, block.target as i64);
+                Self::emit_cc(&mut b, cc); b.push(0x1B); Self::local_set(&mut b, 25);
+                Self::ctx_store_local(&mut b, 17, 25);
+            } else { Self::ctx_store_const(&mut b, 17, exit_rip as i64); }
+        } else { Self::ctx_store_const(&mut b, 17, exit_rip as i64); }
+        b.push(0x0B); // end block
+        for reg in 0..16u8 { if write_mask & (1 << reg) != 0 { Self::ctx_store_local(&mut b, reg as u32, reg + 1); } }
+        Self::ctx_store_local(&mut b, 19, 17); Self::ctx_store_local(&mut b, 18, 24); Self::ctx_store_local(&mut b, 20, 23);
+        if !links.is_empty() && block.exit == BlockExit::Jump {
+            Self::local_get(&mut b, 0); b.push(0x12); Self::push_u32_leb(&mut b, 0); // return_call first linked import
+        } else {
+            Self::local_get(&mut b, 24); b.push(0x0F); // return count
         }
-
-        let last_flag_idx = ops.iter().enumerate().rev()
-            .find(|(_, op)| Self::flag_operands(op).is_some())
-            .map(|(i, _)| i);
-        for (op_idx, &op) in ops.iter().enumerate() {
-            let flag_meta = if last_flag_idx == Some(op_idx) { Self::flag_operands(&op) } else { None };
-            if let Some((kind, width, _dst, lhs, rhs_reg, rhs_imm)) = flag_meta {
-                // Store the pre-operation operands. Only the final flag writer is materialized;
-                // supported JIT ops never consume flags internally.
-                Self::emit_ctx_store_const(&mut body, 16 * 8, kind as i64);
-                Self::emit_ctx_store_const(&mut body, 17 * 8, width as i64);
-                Self::emit_ctx_store_local(&mut body, 18 * 8, lhs + 1);
-                if let Some(reg) = rhs_reg {
-                    Self::emit_ctx_store_local(&mut body, 19 * 8, reg + 1);
-                } else {
-                    Self::emit_ctx_store_const(&mut body, 19 * 8, rhs_imm);
-                }
-            }
-            match op {
-                JitOp::MovImm64 { dst, imm } => {
-                    body.push(0x42); // i64.const
-                    Self::push_i64_sleb(&mut body, imm as i64);
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::MovReg64 { dst, src } => {
-                    body.push(0x20);
-                    body.push(src + 1);
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::MovReg32 { dst, src } => {
-                    body.push(0x20);
-                    body.push(src + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, 0xFFFF_FFFF);
-                    body.push(0x83); // i64.and
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::XorReg32 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x85]);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, 0xFFFF_FFFF);
-                    body.extend_from_slice(&[0x83, 0x21, dst + 1]);
-                }
-                JitOp::AddReg64 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x7C, 0x21, dst + 1]);
-                }
-                JitOp::SubReg64 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x7D, 0x21, dst + 1]);
-                }
-                JitOp::AndReg64 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x83, 0x21, dst + 1]);
-                }
-                JitOp::OrReg64 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x84, 0x21, dst + 1]);
-                }
-                JitOp::XorReg64 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x85, 0x21, dst + 1]);
-                }
-                JitOp::ImulReg64 { dst, src } => {
-                    body.extend_from_slice(&[0x20, dst + 1, 0x20, src + 1, 0x7E, 0x21, dst + 1]);
-                }
-                JitOp::ImulImm64 { dst, src, imm } => {
-                    body.push(0x20);
-                    body.push(src + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, imm);
-                    body.push(0x7E); // i64.mul
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::AddImm64 { dst, imm } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, imm);
-                    body.push(0x7C); // i64.add
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::SubImm64 { dst, imm } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, imm);
-                    body.push(0x7D); // i64.sub
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::AndImm64 { dst, imm } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, imm);
-                    body.push(0x83); // i64.and
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::OrImm64 { dst, imm } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, imm);
-                    body.push(0x84); // i64.or
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::XorImm64 { dst, imm } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, imm);
-                    body.push(0x85); // i64.xor
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::ShlImm64 { dst, count } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, count as i64);
-                    body.push(0x86); // i64.shl
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::ShrImm64 { dst, count } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, count as i64);
-                    body.push(0x88); // i64.shr_u
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-                JitOp::SarImm64 { dst, count } => {
-                    body.push(0x20);
-                    body.push(dst + 1);
-                    body.push(0x42);
-                    Self::push_i64_sleb(&mut body, count as i64);
-                    body.push(0x87); // i64.shr_s
-                    body.push(0x21);
-                    body.push(dst + 1);
-                }
-            }
-            if let Some((_kind, _width, dst, _lhs, _rhs_reg, _rhs_imm)) = flag_meta {
-                Self::emit_ctx_store_local(&mut body, 20 * 8, dst + 1);
-            }
-        }
-
-        for reg in 0..16u8 {
-            if (write_mask & (1 << reg)) != 0 {
-                body.push(0x20); // local.get 0 ($ctx)
-                body.push(0x00);
-                body.push(0x20); // local.get (reg + 1)
-                body.push(reg + 1);
-                body.push(0x37); // i64.store
-                body.push(0x03); // align = 8
-                Self::push_u32_leb(&mut body, (reg as u32) * 8);
-            }
-        }
-
-        // Return executed instruction count as i64
-        body.push(0x42);
-        Self::push_i64_sleb(&mut body, insn_count as i64);
-        body.push(0x0B); // end
-
-        let mut code_sec = Vec::with_capacity(body.len() + 8);
-        code_sec.push(1); // 1 function body
-        Self::push_u32_leb(&mut code_sec, body.len() as u32);
-        code_sec.extend_from_slice(&body);
-        Self::push_section(&mut wasm, 10, &code_sec);
-
+        b.push(0x0B);
+        let mut code = Vec::new(); code.push(1); Self::push_u32_leb(&mut code, b.len() as u32); code.extend_from_slice(&b); Self::push_section(&mut wasm, 10, &code);
         wasm
     }
 }
@@ -780,24 +476,30 @@ impl HybridWasmJit {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_compile_runtime_x64_block_to_valid_wasm() {
+    fn decodes_multi_instruction_block_and_self_loop() {
+        let code = [0x48,0x83,0xe9,0x01,0x75,0xfa,0xc3];
+        let b = HybridWasmJit::decode_block(0x1000, &code).unwrap();
+        assert_eq!(b.insn_count, 2); assert_eq!(b.byte_len, 6); assert_eq!(b.target, 0x1000);
+        assert!(matches!(b.exit, BlockExit::Branch { cc: 5 }));
+    }
+    #[test]
+    fn stops_before_call_and_unsupported_store() {
+        let code = [0x90,0xe8,0,0,0,0];
+        let b = HybridWasmJit::decode_block(0x1000, &code).unwrap();
+        assert_eq!(b.insn_count, 1); assert_eq!(b.exit, BlockExit::Interpret); assert_eq!(b.target, 0x1001);
+    }
+    #[test]
+    fn epoch_invalidation_and_tail_link_emission() {
         let mut jit = HybridWasmJit::new();
-        let x64_code: [u8; 16] = [
-            0x48, 0x89, 0xC8, // mov rax, rcx
-            0x48, 0x6B, 0xC0, 0x06, // imul rax, rax, 6
-            0x48, 0x01, 0xD0, // add rax, rdx
-            0x48, 0x35, 0xAA, 0x55, 0x00, 0x00, // xor rax, 0x55aa
-        ];
-        let art = jit.try_compile_block(0x5000_0000, 1, &x64_code).unwrap();
-        assert_eq!(&art.wasm_bytes[0..8], b"\0asm\x01\0\0\0");
-        assert_eq!(art.byte_len, 16);
-        assert_eq!(art.insn_count, 4);
-
-        // Verify self-modifying epoch invalidation
-        assert!(jit.get_valid_artifact(0x5000_0000, 1).is_some());
-        assert!(jit.get_valid_artifact(0x5000_0000, 2).is_none());
-        assert_eq!(jit.invalidations, 1);
+        let target = jit.try_compile_block(0x2000, 1, &[0x90,0xc3]).unwrap();
+        assert_eq!(target.insn_count, 2);
+        jit.set_tail_calls(true);
+        let src = jit.try_compile_block(0x1000, 1, &[0xe9,0xfb,0x0f,0,0]).unwrap();
+        assert_eq!(src.links.len(), 1);
+        assert!(src.wasm_bytes.windows(2).any(|w| w[0] == 0x12));
+        assert!(jit.get_valid_artifact(0x1000, 1).is_some());
+        jit.invalidate_entry(0x2000);
+        assert!(jit.artifact(0x1000).is_none());
     }
 }

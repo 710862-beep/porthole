@@ -58,6 +58,8 @@ jobs:
           fi
       - name: Build Wasm candidate
         working-directory: rust/porthole-x64-wasm
+        env:
+          RUSTFLAGS: "-C target-feature=+tail-call"
         run: cargo build --release --target wasm32-unknown-unknown
       - name: Bind candidate
         run: |
