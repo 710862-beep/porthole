@@ -109,6 +109,7 @@ pub enum UpcallState {
     },
     Callback {
         resume_rip: u64,
+        api_symbol: String,
         result: u64,
     },
     Exception {
@@ -1571,8 +1572,8 @@ impl Win32Kernel {
         *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
         // A one-shot timer callback has returned to the sentinel; resume the original API stub
         // and deliver its result instead of re-arming the timer.
-        if let Some(UpcallState::Callback { resume_rip, result }) = self.upcall_stack.last().cloned() {
-            if resume_rip == call_rip {
+        if let Some(UpcallState::Callback { api_symbol, result, .. }) = self.upcall_stack.last().cloned() {
+            if api_symbol == symbol {
                 self.upcall_stack.pop();
                 return HleAction::Return(result);
             }
@@ -3806,7 +3807,7 @@ impl Win32Kernel {
                 cpu.gpr[2] = 0;
                 cpu.gpr[8] = a3;
                 cpu.gpr[9] = 0;
-                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, result: id });
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: id });
                 return HleAction::Upcall { target, resume_rip: call_rip, rax: 0 };
             }
             "timeKillEvent" | "timeEndPeriod" | "timeBeginPeriod" => 0,
@@ -3822,7 +3823,7 @@ impl Win32Kernel {
                 // WAITORTIMERCALLBACK(Parameter, TimerOrWaitFired)
                 cpu.gpr[1] = a3;
                 cpu.gpr[2] = 1;
-                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, result: 1 });
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 1 });
                 return HleAction::Upcall { target, resume_rip: call_rip, rax: 0 };
             }
             "DeleteTimerQueueEx" | "DeleteTimerQueueTimer" => 1,
