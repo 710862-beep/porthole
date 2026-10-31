@@ -1404,6 +1404,7 @@ impl BrowserX64Emulator {
             return "next".into();
         }
         if art.has_stores { self.jit_apply_memory(); }
+        self.jit_active.take();
         self.jit_shadow.take();
         self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
         self.cpu.rflags = self.jit_ctx[19];
