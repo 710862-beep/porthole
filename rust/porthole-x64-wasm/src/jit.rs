@@ -219,7 +219,7 @@ impl HybridWasmJit {
                     if form >= 4 { pc = start; break; } // byte ops / push-pop seg
                     let (dst, src) = if form <= 1 {
                         let (reg, rm, _) = modrm_reg!();
-                        if form == 0 { (rm, reg) } else { (reg, rm) }
+                        if form <= 1 { (rm, reg) } else { (reg, rm) }
                     } else {
                         need!(4); let imm = i32::from_le_bytes(bytes[pc..pc+4].try_into().ok()?) as i64; pc += 4;
                         ops.push(JitOp::Alu { kind, dst: 0, src: None, imm, width }); insns += 1; continue;
