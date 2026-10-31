@@ -108,10 +108,45 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   emu.vfs_insert(`C:\\WineTests\\${manifestEntry.name}`, new Uint8Array(bytes));
 
   for (const [k, v] of Object.entries({ WINETEST_DEBUG: '1', WINETEST_COLOR: '0', WINETEST_MUTE_THRESHOLD: '0', WINETEST_REPORT_FLAKY: '1', WINETEST_INTERACTIVE: '0' })) emu.set_environment_variable(k, v);
-  emu.enable_api_audit(100000);
+  emu.enable_api_audit(1000000);
   emu.enable_trace(4096);
   emu.set_hle_trace_only(true);
-  const audit = [];
+  // Stream the full API audit to disk as it is produced. Keeping every parsed
+  // entry in memory made long upstream suites (e.g. kernel32 atom) exhaust the
+  // V8 heap even though the report only needs a bounded tail + assertions.
+  const auditTail = [];
+  const assertions = [];
+  const auditOverflow = [];
+  const apiWindow = [];
+  let apiAuditCount = 0;
+  let auditFd = null;
+  let auditStem = null;
+  if (options.auditDir) {
+    fs.mkdirSync(options.auditDir, { recursive: true });
+    auditStem = path.join(options.auditDir, item.name.replace(/[^a-z0-9_.-]/gi, '_'));
+    auditFd = fs.openSync(`${auditStem}.api.jsonl`, 'w');
+  }
+  const consumeAudit = (chunk) => {
+    if (!chunk) return;
+    if (auditFd !== null) fs.writeSync(auditFd, chunk.endsWith('\n') ? chunk : `${chunk}\n`);
+    for (const line of chunk.split('\n')) {
+      if (!line) continue;
+      const entry = JSON.parse(line);
+      apiAuditCount += 1;
+      auditTail.push(entry);
+      if (auditTail.length > 200) auditTail.shift();
+      if (entry.kind === 'audit-overflow') auditOverflow.push(entry);
+      if (entry.debugString?.startsWith('PORTHOLE_ASSERT ')) {
+        const assertion = JSON.parse(entry.debugString.slice('PORTHOLE_ASSERT '.length));
+        assertions.push({ ...assertion, instruction: entry.instruction, apiCandidates: apiWindow.slice(-12),
+          correlation: 'preceding-call-window; not a proof of causality' });
+      }
+      if (entry.kind === 'api' && !entry.api?.endsWith('!OutputDebugStringA')) {
+        apiWindow.push(entry);
+        if (apiWindow.length > 12) apiWindow.shift();
+      }
+    }
+  };
   const loadInfo = JSON.parse(emu.load_pe(new Uint8Array(bytes)));
   item.load = loadInfo;
   // winetest binaries take the subtest name as argv[1]; without it they print usage and exit(1).
@@ -130,8 +165,7 @@ async function runOne(binding, manifestEntry, options, testName = null) {
       break;
     }
     const status = emu.run_slice(options.slice);
-    const chunk = emu.take_api_audit();
-    if (chunk) audit.push(...chunk.split('\n').filter(Boolean).map(l => JSON.parse(l)));
+    consumeAudit(emu.take_api_audit());
     sliceCount += 1;
     const drained = emu.drain_evicted_pages();
     const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
@@ -184,23 +218,18 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   item.telemetry = JSON.parse(emu.telemetry_json());
   item.faultSnapshot = emu.fault_snapshot();
   item.trace = emu.take_trace();
-  item.apiAuditCount = audit.length;
+  // Drain any audit produced by the final slice before closing the sidecar.
+  consumeAudit(emu.take_api_audit());
+  if (auditFd !== null) { fs.closeSync(auditFd); auditFd = null; }
+  item.apiAuditCount = apiAuditCount;
   // Full audit is preserved in the raw .api.jsonl sidecar; the JSON report keeps only a
   // bounded tail so multi-test expanded Wine runs cannot exceed V8's maximum string length.
-  item.apiAudit = audit.slice(-200);
-  item.assertions = audit.filter(e => e.debugString?.startsWith('PORTHOLE_ASSERT ')).map(e => {
-    const assertion = JSON.parse(e.debugString.slice('PORTHOLE_ASSERT '.length));
-    const preceding = audit.filter(x => x.kind === 'api' && x.seq < e.seq && !x.api.endsWith('!OutputDebugStringA')).slice(-12);
-    return { ...assertion, instruction: e.instruction, apiCandidates: preceding,
-      correlation: 'preceding-call-window; not a proof of causality' };
-  });
-  item.auditOverflow = audit.filter(e => e.kind === 'audit-overflow');
-  if (options.auditDir) {
-    fs.mkdirSync(options.auditDir, { recursive: true });
-    const stem = path.join(options.auditDir, item.name.replace(/[^a-z0-9_.-]/gi, '_'));
-    fs.writeFileSync(`${stem}.console.log`, item.console);
-    writeJsonl(`${stem}.api.jsonl`, audit);
-    fs.writeFileSync(`${stem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
+  item.apiAudit = auditTail;
+  item.assertions = assertions;
+  item.auditOverflow = auditOverflow;
+  if (auditStem) {
+    fs.writeFileSync(`${auditStem}.console.log`, item.console);
+    fs.writeFileSync(`${auditStem}.trace.log`, `${item.faultSnapshot}\n${item.trace}\n`);
   }
 
   const summary = WINE_SUMMARY.exec(item.console);

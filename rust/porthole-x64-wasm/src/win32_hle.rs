@@ -951,6 +951,50 @@ impl Win32Kernel {
         }
     }
 
+    /// `SetEnvironmentStrings{A,W}` replaces the whole environment block. The
+    /// input is a sequence of NUL-terminated `name=value` strings followed by an
+    /// extra NUL. An entry without `=`, or with an empty name, is invalid and
+    /// must leave the existing environment untouched (kernel32 environ.c).
+    fn env_set_strings(&mut self, vmm: &mut VirtualMemoryManager, ptr: u64, wide: bool) -> bool {
+        if ptr == 0 {
+            self.set_last_error(ERROR_INVALID_PARAMETER);
+            return false;
+        }
+        let mut entries: Vec<(String, String)> = Vec::new();
+        let mut cur = String::new();
+        let mut addr = ptr;
+        let step = if wide { 2u64 } else { 1u64 };
+        loop {
+            if addr.saturating_sub(ptr) > 0x10_0000 {
+                self.set_last_error(ERROR_INVALID_PARAMETER);
+                return false;
+            }
+            let ch = if wide {
+                vmm.read_u16(addr).unwrap_or(0)
+            } else {
+                vmm.read_u8(addr).unwrap_or(0) as u16
+            };
+            addr = addr.wrapping_add(step);
+            if ch == 0 {
+                if cur.is_empty() {
+                    break;
+                }
+                match cur.find('=') {
+                    Some(0) | None => {
+                        self.set_last_error(ERROR_INVALID_PARAMETER);
+                        return false;
+                    }
+                    Some(eq) => entries.push((cur[..eq].to_string(), cur[eq + 1..].to_string())),
+                }
+                cur.clear();
+            } else {
+                cur.push(char::from_u32(ch as u32).unwrap_or('\u{fffd}'));
+            }
+        }
+        self.env = entries;
+        true
+    }
+
     /// Faithful port of wine's `RtlExpandEnvironmentStrings` (dlls/ntdll/env.c).
     ///
     /// Returns `(destination, required_length_including_terminator)`. The destination is `count`
@@ -2073,6 +2117,12 @@ impl Win32Kernel {
                 va
             }
             "FreeEnvironmentStringsW" | "FreeEnvironmentStringsA" => 1,
+            "SetEnvironmentStringsW" => {
+                if self.env_set_strings(vmm, a0, true) { 1 } else { 0 }
+            }
+            "SetEnvironmentStringsA" => {
+                if self.env_set_strings(vmm, a0, false) { 1 } else { 0 }
+            }
             "ExpandEnvironmentStringsW" => {
                 if a0 == 0 {
                     return HleAction::Return(if a1 == 0 || a2 == 0 { 1 } else { 0 });
@@ -2428,11 +2478,13 @@ impl Win32Kernel {
                 if a2 != 0 {
                     let _ = vmm.write_u32(a2, 512);
                 }
+                // Keep GetDiskFreeSpace and GetDiskFreeSpaceEx consistent: 4096-byte
+                // clusters over the same 512 GiB volume (256 GiB free) modelled below.
                 if a3 != 0 {
-                    let _ = vmm.write_u32(a3, 700);
+                    let _ = vmm.write_u32(a3, 67_108_864);
                 }
                 if a4 != 0 {
-                    let _ = vmm.write_u32(a4, 1000);
+                    let _ = vmm.write_u32(a4, 134_217_728);
                 }
                 1
             }

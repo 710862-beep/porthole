@@ -282,7 +282,7 @@ jobs:
             echo "::warning::artifacts/game-report.txt missing"
           fi
       - name: Run Wine conformance inside the Wasm x86-64 emulator
-        run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64
+        run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64 --timeout-ms 600000
       - name: Preserve JS regressions for the existing runtime
         run: |
           npm run check:syntax
