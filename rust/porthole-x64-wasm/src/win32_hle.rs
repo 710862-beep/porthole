@@ -4031,8 +4031,9 @@ impl Win32Kernel {
                     return HleAction::Return(0);
                 }
                 let wide = symbol.ends_with('W');
-                let ty = self.resource_key_from_guest(vmm, a1, wide);
-                let nm = self.resource_key_from_guest(vmm, a2, wide);
+                // FindResource(hModule, lpName, lpType): name is the second argument.
+                let nm = self.resource_key_from_guest(vmm, a1, wide);
+                let ty = self.resource_key_from_guest(vmm, a2, wide);
                 let lang = if symbol.contains("Ex") { a3 as u16 } else { 0 };
                 match self.find_resource_index(&ty, &nm, lang) {
                     Some(i) => {
@@ -5646,10 +5647,18 @@ impl Win32Kernel {
         }
     }
 
+    fn resource_key_matches(a: &ResourceKey, b: &ResourceKey) -> bool {
+        match (a, b) {
+            (ResourceKey::Id(x), ResourceKey::Id(y)) => x == y,
+            (ResourceKey::Name(x), ResourceKey::Name(y)) => x.eq_ignore_ascii_case(y),
+            _ => false,
+        }
+    }
+
     fn find_resource_index(&self, ty: &ResourceKey, nm: &ResourceKey, lang: u16) -> Option<usize> {
         let mut fallback = None;
         for (i, r) in self.exe_resources.iter().enumerate() {
-            if &r.type_key == ty && &r.name_key == nm {
+            if Self::resource_key_matches(&r.type_key, ty) && Self::resource_key_matches(&r.name_key, nm) {
                 if lang == 0 || r.language == lang {
                     return Some(i);
                 }
