@@ -12,7 +12,7 @@
 //! they terminate the block before their side effect, so SMC/page faults stay precise.
 
 use std::collections::{HashMap, HashSet};
-use iced_x86::{Decoder, DecoderOptions, FlowControl, Mnemonic, OpKind, Register};
+use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V2: u32 = 2;
 pub const JIT_COMPILER_VERSION: u64 = 3;
