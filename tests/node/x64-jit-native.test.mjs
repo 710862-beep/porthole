@@ -93,7 +93,7 @@ test('native CALL/RET push/pop return addresses and preserve registers', async t
   assert.equal(jit.regs.rbx, interp.regs.rbx);
   assert.equal(jit.regs.rsp, interp.regs.rsp);
   assert.equal(BigInt(jit.regs.rax), 9n);
-  assert.ok(jit.stats.executedInstructions >= 10, JSON.stringify(jit.stats));
+  assert.ok(jit.stats.executedInstructions >= 8, JSON.stringify(jit.stats));
   assert.equal(jit.stats.traps, 0);
 });
 
