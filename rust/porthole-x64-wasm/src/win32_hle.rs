@@ -1699,7 +1699,9 @@ impl Win32Kernel {
         // SDL-family DLLs are dispatched by the SDL subsystem (Gate 2): their symbol names are
         // unique to those DLLs, and the object model (windows/renderers/textures/surfaces)
         // lives in sdl_hle.rs. This is also where guest-presented frames are captured.
-        if matches!(
+        let winmm_timer = dll == "winmm.dll"
+            && matches!(symbol, "timeSetEvent" | "timeGetDevCaps" | "timeKillEvent" | "timeEndPeriod" | "timeBeginPeriod");
+        if !winmm_timer && matches!(
             dll,
             "sdl2.dll"
                 | "sdl2_mixer.dll"
