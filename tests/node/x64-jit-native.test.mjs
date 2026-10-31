@@ -31,6 +31,7 @@ async function run(code, jit, validate = true) {
   c.emu.load_pe(pe64(code)); c.emu.set_jit_enabled(jit);
   if (jit) c.emu.set_jit_validate_mode(validate ? 1 : 0);
   const host = jit ? new X64JitHost(c.emu, c.mod, { memory: c.memory }) : null;
+  if (jit) { c.emu.aot_compile_text(); await host.drainPending(); }
   let status; let n = 0;
   do { status = host ? await host.runSlice(4096) : c.emu.run_slice(4096); n += 1; } while (status === 'next' && n < 200);
   const regs = JSON.parse(c.emu.register_json());

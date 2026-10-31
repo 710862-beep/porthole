@@ -820,13 +820,13 @@ impl HybridWasmJit {
         // rec.size
         Self::local_get(b, Self::L_UNDO); Self::i64_const(b, size as i64); b.extend_from_slice(&[0x37, 0x03, 0x18]);
         // undo_len++
-        Self::local_get(b, 0); Self::ctx_load(b, 28); Self::i64_const(b, 1); b.push(0x7C); b.extend_from_slice(&[0x37, 0x03, 28 * 8]);
+        Self::local_get(b, 0); Self::ctx_load(b, 28); Self::i64_const(b, 1); b.push(0x7C); b.extend_from_slice(&[0x37, 0x03]); Self::push_u32_leb(b, 28 * 8);
         // touched[touched_len++] = page
         Self::ctx_load(b, 30); b.push(0xA7);
         Self::ctx_load(b, 31); b.push(0xA7); Self::i32_const(b, 3); b.push(0x74); b.push(0x6A);
         Self::local_set(b, Self::L_TOUCH);
         Self::local_get(b, Self::L_TOUCH); Self::local_get(b, Self::L_PAGE); b.extend_from_slice(&[0x37, 0x03, 0x00]);
-        Self::local_get(b, 0); Self::ctx_load(b, 31); Self::i64_const(b, 1); b.push(0x7C); b.extend_from_slice(&[0x37, 0x03, 31 * 8]);
+        Self::local_get(b, 0); Self::ctx_load(b, 31); Self::i64_const(b, 1); b.push(0x7C); b.extend_from_slice(&[0x37, 0x03]); Self::push_u32_leb(b, 31 * 8);
     }
 
     fn emit_store_native(b: &mut Vec<u8>, size: u8, vector: bool) {
