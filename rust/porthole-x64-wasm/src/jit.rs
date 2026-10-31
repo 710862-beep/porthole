@@ -684,12 +684,12 @@ impl HybridWasmJit {
         Self::ctx_store_const(&mut b, 16, JIT_STATUS_BUDGET as i64); Self::ctx_store_const(&mut b, 17, entry_rip as i64);
         b.push(0x0C); Self::push_u32_leb(&mut b, commit_depth);
         b.push(0x0B);
-        for op in &block.ops {
-            Self::emit_op(&mut b, op, read_func, abort_depth);
-            // per-instruction count/budget so a mid-block fault resumes precisely
-            Self::local_get(&mut b, 24); Self::i64_const(&mut b, 1); b.push(0x7C); Self::local_set(&mut b, 24);
-            Self::local_get(&mut b, 23); Self::i64_const(&mut b, 1); b.push(0x7D); Self::local_set(&mut b, 23);
-        }
+        for op in &block.ops { Self::emit_op(&mut b, op, read_func, abort_depth); }
+        // Count/budget advance by the whole static block (branch included). Memory-load
+        // faults abort with executed=0 and re-execute from entry, so per-op counting is
+        // unnecessary and would desynchronize self-loop multiples (branch has no JitOp).
+        Self::local_get(&mut b, 24); Self::i64_const(&mut b, block_insns); b.push(0x7C); Self::local_set(&mut b, 24);
+        Self::local_get(&mut b, 23); Self::i64_const(&mut b, block_insns); b.push(0x7D); Self::local_set(&mut b, 23);
         match block.exit {
             BlockExit::Branch { cc } if self_loop => { Self::emit_cc(&mut b, cc); b.push(0x0D); Self::push_u32_leb(&mut b, 0); }
             BlockExit::Jump if self_loop => { b.push(0x0C); Self::push_u32_leb(&mut b, 0); }
