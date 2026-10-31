@@ -483,3 +483,17 @@ not claimed as PASS until the real upstream suites rerun.
   the SDL fallback, so `timeSetEvent` returned 0 before the callback arm ran (`e779c22`).
   ACPI firmware now includes WSMT + fixed PNP device IDs, and `SetTimer` delivers a real
   WM_TIMER upcall (`8854705`); rerun pending.
+
+### CI run `41151456381` (`d805451`) — al-khaser reduced to five deep findings
+
+Core SUCCESS; Wine d3d12 PASS. al-khaser exits cleanly with **133 checks and only 5
+findings**: TLS process attach, TLS thread attach, PAGE_GUARD memory breakpoints, WMI
+CPU fan, and RDTSC Locky. The ACPI firmware profile (WSMT + fixed PNP devices) and
+`SetTimer` WM_TIMER upcall are verified GOOD; `timeSetEvent` now returns its timer id
+after the real guest callback (`winmm` routing fix). pafish remains 58 checks with the
+same 3 interactive reverse-Turing findings (click, double-click, plausible dialog
+confirmation), which are intentionally not synthesized as fake human input.
+
+The remaining al-khaser findings are architectural, not stubbed PASSes: loader TLS
+attach ordering, guard-page SEH unwinding, a WBEM/WMI class provider, and cycle-accurate
+RDTSC timing. They are reported BAD rather than hidden.
