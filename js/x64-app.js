@@ -184,6 +184,10 @@ async function tick() {
     $('m-swapped').textContent = String(telemetry.swappedPages);
     $('m-jit').textContent = String(telemetry.jitArtifacts);
   }
+  if (state.startupTelemetry && state.jit) {
+    state.startupTelemetry.jit_fallbacks_during_play = state.jit.stats.traps;
+    state.startupTelemetry.jit_compile_time_ms = Number(state.jit.jitCompileMs.toFixed(3));
+  }
   void started;
   state.rafId = requestAnimationFrame(tick);
 }
@@ -223,10 +227,6 @@ async function loadExecutable() {
     for (const file of files) emu.vfs_insert(file.path, file.bytes);
     log(`VFS: ${files.length} arquivo(s) carregado(s) de C:\\Game (${(files.reduce((n, f) => n + f.bytes.length, 0) / 1048576).toFixed(1)} MB).`);
 
-    // Restore persisted JIT blocks before loading the image.
-    const cached = await state.vfs.loadJitModules(256);
-    log(`JIT cache: ${cached.length} módulo(s) WebAssembly recuperado(s) do NVMe.`);
-
     const guestPath = $('exe-path').value.trim();
     const target = files.find((f) => f.path.toLowerCase() === guestPath.toLowerCase())
       || files.find((f) => f.path.toLowerCase().endsWith('.exe'));
@@ -234,11 +234,36 @@ async function loadExecutable() {
       log(`Executável não encontrado: ${guestPath}`);
       return;
     }
+    const startupT0 = performance.now();
+    const digest = await crypto.subtle.digest('SHA-256', target.bytes);
+    const exeSha256 = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+    state.jit.exeSha256 = exeSha256;
+    state.jit.cache = state.vfs;
     const info = JSON.parse(emu.load_pe(target.bytes));
-    for (const m of cached) {
-      try { await state.jit.importCached(m.meta, m.wasmBytes); } catch { /* stale artifact rejected by core */ }
-    }
-    log(`PE32+ mapeado: ${target.path} base=0x${info.imageBase.toString(16)} entry=0x${info.entryPoint.toString(16)} imports=${info.imports} AOT=${info.aotBlocks}`);
+    const cacheT0 = performance.now();
+    await state.jit.initCache();
+    const cacheLoadMs = performance.now() - cacheT0;
+    const aotT0 = performance.now();
+    const aotBlocks = typeof emu.aot_compile_text === 'function' ? emu.aot_compile_text() : 0;
+    await state.jit.drainPending();
+    await state.jit.flushCache();
+    const aotCompileMs = performance.now() - aotT0;
+    const startup = {
+      disk_read_time_ms: 0,
+      aot_compilation_time_ms: Number(aotCompileMs.toFixed(3)),
+      cache_load_time_ms: Number(cacheLoadMs.toFixed(3)),
+      total_startup_lag_ms: Number((performance.now() - startupT0).toFixed(3)),
+      aot_blocks_compiled: aotBlocks,
+      aot_cache_size_bytes: state.jit.cacheTelemetry.bytes,
+      cache_hit_count: state.jit.cacheTelemetry.hits,
+      cache_miss_count: state.jit.cacheTelemetry.misses,
+      jit_compile_time_ms: Number(state.jit.jitCompileMs.toFixed(3)),
+      jit_fallbacks_during_play: 0,
+    };
+    state.startupTelemetry = startup;
+    console.log(`STARTUP_TELEMETRY_JSON=${JSON.stringify(startup)}`);
+    log(`JIT cache: ${startup.cache_hit_count} hit(s), ${startup.cache_miss_count} miss(es); AOT=${aotBlocks} bloco(s) em ${aotCompileMs.toFixed(1)} ms.`);
+    log(`PE32+ mapeado: ${target.path} base=0x${info.imageBase.toString(16)} entry=0x${info.entryPoint.toString(16)} imports=${info.imports}`);
     $('run').disabled = false;
   } catch (error) {
     log(`Falha ao carregar PE: ${error.message}`);
