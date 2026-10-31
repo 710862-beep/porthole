@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 pub const JIT_ABI_V2: u32 = 2;
+pub const JIT_COMPILER_VERSION: u64 = 3;
 pub const JIT_CONTEXT_SLOTS: usize = 32;
 pub const JIT_STATUS_OK: u64 = 0;
 pub const JIT_STATUS_BUDGET: u64 = 1;
@@ -36,6 +37,8 @@ pub struct CompiledJitArtifact {
     pub ends_with_ret: bool,
     pub self_loop: bool,
     pub code_hash: u64,
+    /// RIP of the first unsupported instruction (BlockExit::Interpret), or 0.
+    pub interpret_rip: u64,
     pub wasm_bytes: Vec<u8>,
     pub links: Vec<JitLink>,
 }
@@ -122,11 +125,19 @@ impl HybridWasmJit {
             }
         }
         let wasm_bytes = Self::emit_wasm_module(entry_rip, &block, &links);
-        let code_hash = Self::fnv1a_64(&window[..block.byte_len]);
+        // The module embeds absolute entry/target RIPs. Hashing only the x86 bytes made
+        // identical byte sequences at different RIPs collide in the host module/instance
+        // maps, so a block could execute another block's constants (Doom: 34k validation
+        // fallbacks with wrong exit RIPs). Include entry RIP + compiler version.
+        let mut hash_input = entry_rip.to_le_bytes().to_vec();
+        hash_input.extend_from_slice(&JIT_COMPILER_VERSION.to_le_bytes());
+        hash_input.extend_from_slice(&window[..block.byte_len]);
+        let code_hash = Self::fnv1a_64(&hash_input);
+        let interpret_rip = if block.exit == BlockExit::Interpret { block.target } else { 0 };
         let artifact = CompiledJitArtifact {
             entry_rip, page_base: entry_rip & !0xFFF, page_epoch,
             byte_len: block.byte_len as u32, insn_count: block.insn_count,
-            ends_with_ret: block.exit == BlockExit::Ret, self_loop, code_hash, wasm_bytes, links,
+            interpret_rip, ends_with_ret: block.exit == BlockExit::Ret, self_loop, code_hash, wasm_bytes, links,
         };
         self.artifacts.insert(entry_rip, artifact.clone());
         self.pending_export_rips.push(entry_rip);
@@ -136,7 +147,10 @@ impl HybridWasmJit {
 
     /// OPFS is untrusted: accept only the exact portable module the current compiler emits.
     pub fn validate_cached_artifact(entry_rip: u64, _page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, code_hash: u64, live: &[u8], wasm: &[u8]) -> bool {
-        if live.len() != byte_len as usize || Self::fnv1a_64(live) != code_hash { return false; }
+        let mut hash_input = entry_rip.to_le_bytes().to_vec();
+        hash_input.extend_from_slice(&JIT_COMPILER_VERSION.to_le_bytes());
+        hash_input.extend_from_slice(live);
+        if live.len() != byte_len as usize || Self::fnv1a_64(&hash_input) != code_hash { return false; }
         let Some(block) = Self::decode_block(entry_rip, live) else { return false; };
         if block.byte_len != byte_len as usize || block.insn_count != insn_count || (block.exit == BlockExit::Ret) != ends_with_ret { return false; }
         if block.byte_len > 4096 - (entry_rip & 0xFFF) as usize { return false; }
@@ -145,7 +159,7 @@ impl HybridWasmJit {
 
     pub fn import_cached_artifact(&mut self, entry_rip: u64, page_epoch: u32, byte_len: u32, insn_count: u32, ends_with_ret: bool, self_loop: bool, code_hash: u64, wasm_bytes: Vec<u8>) -> bool {
         if wasm_bytes.len() < 8 || &wasm_bytes[0..8] != b"\0asm\x01\0\0\0" { return false; }
-        self.artifacts.insert(entry_rip, CompiledJitArtifact { entry_rip, page_base: entry_rip & !0xFFF, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, wasm_bytes, links: Vec::new() });
+        self.artifacts.insert(entry_rip, CompiledJitArtifact { entry_rip, page_base: entry_rip & !0xFFF, page_epoch, byte_len, insn_count, ends_with_ret, self_loop, code_hash, interpret_rip: 0, wasm_bytes, links: Vec::new() });
         true
     }
 
@@ -161,8 +175,8 @@ impl HybridWasmJit {
     }
     pub fn meta_json(a: &CompiledJitArtifact, ctx: u32) -> String {
         let links: Vec<String> = a.links.iter().map(|l| format!("{{\"targetRip\":\"{}\",\"pageEpoch\":{},\"importName\":\"{}\"}}", l.target_rip, l.page_epoch, l.import_name)).collect();
-        format!("{{\"abi\":{},\"entryRip\":\"{}\",\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"selfLoop\":{},\"codeHash\":\"{:016x}\",\"ctx\":{},\"links\":[{}]}}",
-            JIT_ABI_V2, a.entry_rip, a.page_epoch, a.byte_len, a.insn_count, a.ends_with_ret, a.self_loop, a.code_hash, ctx, links.join(","))
+        format!("{{\"abi\":{},\"entryRip\":\"{}\",\"pageEpoch\":{},\"byteLen\":{},\"insnCount\":{},\"endsWithRet\":{},\"selfLoop\":{},\"interpretRip\":\"{}\",\"codeHash\":\"{:016x}\",\"ctx\":{},\"links\":[{}]}}",
+            JIT_ABI_V2, a.entry_rip, a.page_epoch, a.byte_len, a.insn_count, a.ends_with_ret, a.self_loop, a.interpret_rip, a.code_hash, ctx, links.join(","))
     }
     pub fn pending_wasm(&self, index: usize) -> Option<Vec<u8>> {
         let rip = *self.pending_export_rips.get(index)?;

@@ -67,6 +67,10 @@ pub struct BrowserX64Emulator {
     jit_active: Option<jit::CompiledJitArtifact>,
     jit_shadow: Option<cpu::CpuState>,
     jit_validate: bool,
+    jit_validate_always: bool,
+    jit_last_failure: String,
+    jit_unsupported: std::collections::HashMap<String, u64>,
+    jit_unsupported_exits: u64,
 }
 
 #[wasm_bindgen]
@@ -100,6 +104,10 @@ impl BrowserX64Emulator {
             jit_active: None,
             jit_shadow: None,
             jit_validate: true,
+            jit_validate_always: false,
+            jit_last_failure: String::new(),
+            jit_unsupported: std::collections::HashMap::new(),
+            jit_unsupported_exits: 0,
         }
     }
 
@@ -902,7 +910,10 @@ impl BrowserX64Emulator {
         let len = 512usize.min(4096 - (insn_rip & 0xFFF) as usize);
         let mut window = vec![0u8; len];
         if self.vmm.host_read_bytes(insn_rip, &mut window).is_ok() {
-            let _ = self.jit.try_compile_block(insn_rip, epoch, &window);
+            match self.jit.try_compile_block(insn_rip, epoch, &window) {
+                Some(art) => { if art.interpret_rip != 0 { self.record_unsupported(art.interpret_rip); } }
+                None => self.record_unsupported(insn_rip),
+            }
         }
     }
 
@@ -1221,6 +1232,26 @@ impl BrowserX64Emulator {
     pub fn set_jit_enabled(&mut self, on: bool) { self.jit_enabled = on; }
     /// When true (default), each JIT commit is shadow-validated against the interpreter.
     pub fn set_jit_validate(&mut self, on: bool) { self.jit_validate = on; }
+    /// 0 = off, 1 = shadow-validate first use (default), 2 = validate every commit.
+    pub fn set_jit_validate_mode(&mut self, mode: u32) {
+        self.jit_validate = mode != 0;
+        self.jit_validate_always = mode == 2;
+    }
+    pub fn jit_failure_json(&self) -> String { self.jit_last_failure.clone() }
+    pub fn jit_unsupported_json(&self) -> String {
+        let mut entries: Vec<_> = self.jit_unsupported.iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let items: Vec<String> = entries.iter().take(256).map(|(k, v)| format!("\"{}\":{}", k, v)).collect();
+        format!("{{\"exits\":{},\"byOpcode\":{{{}}}}}", self.jit_unsupported_exits, items.join(","))
+    }
+    fn record_unsupported(&mut self, rip: u64) {
+        let mut bytes = [0u8; 4];
+        let key = if self.vmm.host_read_bytes(rip, &mut bytes).is_ok() {
+            format!("{:02x}{:02x}{:02x}{:02x}", bytes[0], bytes[1], bytes[2], bytes[3])
+        } else { format!("unmapped:{:x}", rip) };
+        *self.jit_unsupported.entry(key).or_insert(0) += 1;
+        self.jit_unsupported_exits += 1;
+    }
     /// Host WebAssembly tail-call feature probe. Rust +tail-call only permits the opcode;
     /// the runtime validator must also accept it before we link cross-module edges.
     pub fn set_jit_tail_calls(&mut self, on: bool) { self.jit.set_tail_calls(on); }
@@ -1295,7 +1326,7 @@ impl BrowserX64Emulator {
         }
         // Correctness lanes shadow-validate the first execution of each artifact/epoch. Once
         // proven, subsequent commits are atomic register writeback; SMC invalidates the proof.
-        if self.jit_validate && !self.jit.is_proven(art.entry_rip) {
+        if self.jit_validate && (self.jit_validate_always || !self.jit.is_proven(art.entry_rip)) {
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
             let mut ok = true;
             for _ in 0..executed {
@@ -1307,6 +1338,13 @@ impl BrowserX64Emulator {
             let mut ctx_rsp = self.jit_ctx[4];
             let expected_rip = if art.ends_with_ret { ctx_rsp = ctx_rsp.wrapping_add(8); self.jit_ctx[4] = ctx_rsp; shadow.rip } else { exit_rip };
             if !ok || shadow.gpr[..] != self.jit_ctx[..16] || ctx_rsp != shadow.gpr[4] || self.jit_ctx[19] != shadow.rflags || shadow.rip != expected_rip {
+                let actual: Vec<String> = self.jit_ctx[..16].iter().map(|v| format!("\"{}\"", v)).collect();
+                let expected: Vec<String> = shadow.gpr.iter().map(|v| format!("\"{}\"", v)).collect();
+                let mut code = [0u8; 16]; let _ = self.vmm.host_read_bytes(art.entry_rip, &mut code);
+                let hex: String = code.iter().map(|b| format!("{:02x}", b)).collect();
+                self.jit_last_failure = format!(
+                    "{{\"entryRip\":\"{}\",\"executed\":{},\"bytes\":\"{}\",\"stepOk\":{},\"expectedRip\":\"{}\",\"actualRip\":\"{}\",\"expectedFlags\":\"{}\",\"actualFlags\":\"{}\",\"expectedGpr\":[{}],\"actualGpr\":[{}]}}",
+                    art.entry_rip, executed, hex, ok, shadow.rip, expected_rip, shadow.rflags, self.jit_ctx[19], expected.join(","), actual.join(","));
                 self.jit_active.take(); self.jit_shadow.take(); self.jit.invalidate_entry(art.entry_rip);
                 return format!("fault:jit-validation:0x{:x}", art.entry_rip);
             }

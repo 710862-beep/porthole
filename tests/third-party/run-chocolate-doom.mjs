@@ -256,8 +256,9 @@ async function main() {
   report.wasmSha256 = binding.wasmSha256;
 
   const emu = new mod.BrowserX64Emulator(residentPages);
-  const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory });
-  if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
+  const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory, diagnostics: process.env.PORTHOLE_JIT_TELEMETRY === '1' });
+  if (typeof emu.set_jit_validate_mode === 'function') emu.set_jit_validate_mode(Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)));
+  else if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
   report.jit = { enabled: jitEnabled, validate: jitValidate, maxInstructions: maxInstructions || null };
   for (const dir of [
     'C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE',
@@ -338,6 +339,8 @@ async function main() {
   if (Date.now() > deadline && terminal === 'slice-budget') terminal = 'timeout-still-running';
   const wallMs = Date.now() - started;
   report.jit.stats = jit.stats;
+  report.jit.diagnostics = jit.diagnosticReport();
+  if (process.env.PORTHOLE_JIT_TELEMETRY === '1') console.log(`JIT_DIAGNOSTICS_JSON=${JSON.stringify(report.jit.diagnostics)}`);
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
   if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {

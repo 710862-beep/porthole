@@ -23,12 +23,53 @@
       this.instances = new Map();
       this.artifacts = new Map(); // entryRip string -> meta
       this.stats = { compiled: 0, executedBlocks: 0, executedInstructions: 0, traps: 0, cacheHits: 0, cacheMisses: 0, saved: 0, loaded: 0, fallbackInstructions: 0, discarded: 0, compileErrors: 0, cacheErrors: 0, commitPageFaults: 0, tailCalls: false };
+      this.diagnosticsEnabled = options.diagnostics === true;
+      this.diagnostics = { validation: 0, traps: 0, unsupported: 0, byReason: Object.create(null), byOpcode: Object.create(null), samples: [], droppedSamples: 0 };
       this.enabled = options.enabled !== false;
       if (typeof this.emu.set_jit_enabled === 'function') this.emu.set_jit_enabled(this.enabled);
       try {
         this.stats.tailCalls = WebAssembly.validate(TAIL_CALL_PROBE);
         if (typeof this.emu.set_jit_tail_calls === 'function') this.emu.set_jit_tail_calls(this.stats.tailCalls);
       } catch { this.stats.tailCalls = false; }
+    }
+
+    recordFallback(meta, reason, commit) {
+      const d = this.diagnostics;
+      if (reason.startsWith('fault:jit-validation')) d.validation += 1;
+      else if (reason === 'unsupported') d.unsupported += 1;
+      else d.traps += 1;
+      d.byReason[reason] = (d.byReason[reason] || 0) + 1;
+      if (!this.diagnosticsEnabled || !meta) return;
+      let detail = null;
+      try { if (typeof this.emu.jit_failure_json === 'function') detail = JSON.parse(this.emu.jit_failure_json() || 'null'); } catch { /* diagnostics never change guest execution */ }
+      let bytes = '';
+      try {
+        if (typeof this.emu.peek_qwords === 'function') {
+          const text = this.emu.peek_qwords(BigInt(meta.entryRip), 4);
+          bytes = [...text.matchAll(/0x([0-9a-f]{16})/g)].map(m => {
+            const v = BigInt('0x' + m[1]); let s = '';
+            for (let i = 0n; i < 8n; i++) s += Number((v >> (i * 8n)) & 255n).toString(16).padStart(2, '0');
+            return s;
+          }).join('');
+        }
+      } catch { /* unavailable in host-contract fakes */ }
+      const opcode = detail?.opcode || bytes.slice(0, 4) || 'unknown';
+      d.byOpcode[opcode] = (d.byOpcode[opcode] || 0) + 1;
+      if (d.samples.length < 256) {
+        let ctx = null;
+        try {
+          const dv = new DataView(this.memory.buffer); const out = [];
+          for (let i = 0; i < 22; i++) out.push(dv.getBigUint64((meta.ctx >>> 0) + i * 8, true).toString());
+          ctx = out;
+        } catch { /* memory unavailable */ }
+        d.samples.push({ reason, commit, entryRip: String(meta.entryRip), codeHash: meta.codeHash, opcode, bytes, ctx, detail });
+      } else d.droppedSamples += 1;
+    }
+
+    diagnosticReport() {
+      let unsupported = null;
+      try { if (typeof this.emu.jit_unsupported_json === 'function') unsupported = JSON.parse(this.emu.jit_unsupported_json() || 'null'); } catch { /* optional core export */ }
+      return { ...this.diagnostics, byOpcode: { ...this.diagnostics.byOpcode }, byReason: { ...this.diagnostics.byReason }, unsupported };
     }
 
     async initCache() {
@@ -192,6 +233,7 @@
           } else {
             this.stats.traps += 1;
             this.stats.lastTrap = commit;
+            this.recordFallback(meta, commit.startsWith('fault:jit-validation') ? 'validation' : 'commit', commit);
             this.emu.jit_abort_block();
             const beforeFallback = Number(this.emu.instructions_executed());
             const fallbackBudget = Math.max(1, Math.min(remaining || 1, meta.insnCount));
@@ -205,6 +247,7 @@
         } catch (error) {
           this.stats.traps += 1;
           this.stats.lastTrap = String(error?.message || error);
+          this.recordFallback(meta, 'trap', this.stats.lastTrap);
           this.emu.jit_abort_block();
           const beforeFallback = Number(this.emu.instructions_executed());
           const fallbackBudget = Math.max(1, Math.min(remaining || 1, meta.insnCount));
