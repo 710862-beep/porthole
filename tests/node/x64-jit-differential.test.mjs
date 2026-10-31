@@ -79,5 +79,5 @@ test('JIT and interpreter agree on RFLAGS across a native self-loop sub/nop/jnz 
   await host.drainPending();
   const actual = regs(jit);
   assert.deepEqual(actual, expected, 'JIT must materialize flags consumed by the interpreter after the block');
-  assert.ok(host.stats.executedBlocks > 0, `expected JIT execution, got ${JSON.stringify(host.stats)}`);
+  assert.ok(host.stats.executedInstructions > 1000, `expected native JIT loop execution, got ${JSON.stringify(host.stats)}`);
 });
