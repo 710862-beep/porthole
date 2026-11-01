@@ -85,9 +85,9 @@ task('pinned Wine x86 build programs', () => {
       if (manifest.assets.some(a => a.path === `tests/assets/${name}`)) continue;
       // Prefer the 32-bit Windows program directory, never the Linux ELF tree.
       const member = members.find(p => re.test(p) && /i386-windows|lib\/wine\/i386|bin\//.test(p)) || members.find(p => re.test(p));
-      if (!member) throw new Error(`No ${name} member in pinned Wine archive`);
+      if (!member) { manifest.errors.push({ asset: name, reason: `No ${name} member in pinned Wine archive` }); continue; }
       const r = spawnSync('tar', ['-xJOf', file, member], { maxBuffer: 64 * 1024 * 1024 });
-      if (r.status !== 0) throw new Error(`tar extract ${member} failed`);
+      if (r.status !== 0) { manifest.errors.push({ asset: name, reason: `tar extract ${member} failed` }); continue; }
       save(name, r.stdout, { url, repository: 'Kron4ek/Wine-Builds', tag: '11.21', member, archiveSha256: crypto.createHash('sha256').update(bytes).digest('hex') }, min);
     }
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
