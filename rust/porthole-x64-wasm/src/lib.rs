@@ -248,9 +248,23 @@ impl BrowserX64Emulator {
             0,
         );
 
-        // TLS callbacks are parsed and reported, but execution is deferred until the loader
-        // can deliver them with the same CRT/TEB initialization order Windows uses. Running
-        // them before the CRT entry regressed CTS startup (null dereference at insn 17).
+        // Windows loader order: PE TLS callbacks run before the executable entry point,
+        // with DLL_PROCESS_ATTACH. Stage them on the startup stack through the same upcall
+        // sentinel used for CRT initializer tables; finish_upcall restores the entry RSP.
+        if !info.tls_callbacks.is_empty() {
+            let entry_rsp = self.cpu.gpr[4];
+            if let Some(first) = self.kernel.begin_tls(info.tls_callbacks.clone(), info.entry_point, entry_rsp) {
+                let rsp = entry_rsp.wrapping_sub(8);
+                let _ = self.vmm.write_u64(rsp, UPCALL_RETURN_THUNK);
+                self.cpu.gpr[4] = rsp;
+                self.cpu.gpr[0] = info.image_base; // RCX = image base
+                self.cpu.gpr[1] = 1;               // RDX = DLL_PROCESS_ATTACH
+                self.cpu.gpr[2] = 0;               // R8  = reserved
+                self.cpu.rip = first;
+                self.pending_upcall = true;
+                self.trace_event(format!("L TLS process-attach callback=0x{first:x}"));
+            }
+        }
 
         let summary = format!(
             "{{\"imageBase\":{},\"entryPoint\":{},\"sizeOfImage\":{},\"textSize\":{},\"imports\":{},\"aotBlocks\":{},\"bindings\":{},\"tlsCallbacks\":{}}}",
@@ -631,6 +645,20 @@ impl BrowserX64Emulator {
                         self.trace_instruction(insn_rip, rsp_before);
                     }
                     return format!("page-fault:{}", addr);
+                }
+                Err(MemoryTrap::GuardPage(addr)) => {
+                    if let Some(snapshot) = exception_snapshot {
+                        if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0x8000_0001, 0, insn_rip, snapshot.gpr[4], &[0, addr]) {
+                            self.cpu = snapshot;
+                            self.stage_exception(action);
+                            executed += 1;
+                            continue;
+                        }
+                    }
+                    self.status = RunStatus::Fault;
+                    self.fault_message = format!("guard page violation at 0x{addr:x}");
+                    self.console.extend_from_slice(&self.kernel.drain_stdout());
+                    return format!("fault:{}", self.fault_message);
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
                     if let Some(snapshot) = exception_snapshot {
@@ -1333,14 +1361,13 @@ impl BrowserX64Emulator {
         }
         if status == jit::JIT_STATUS_INTERPRET {
             // Native load/store trapped or a cross-page access needs the interpreter. Roll back
-            // any native stores from this block so the interpreter re-executes from entry precisely.
+            // every native store in the (possibly tail-call-linked) transaction and restore the
+            // exact entry CPU. A successor trap must not commit predecessor register writes while
+            // rolling back predecessor stores, so re-execute from the original entry RIP.
             self.jit_rollback_memory();
-            self.jit_active.take(); self.jit_shadow.take();
-            self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);
-            self.cpu.rflags = self.jit_ctx[19];
-            self.cpu.rip = exit_rip;
-            self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(executed);
-            self.kernel.instructions = self.cpu.instructions_executed;
+            self.jit_active.take();
+            if let Some(shadow) = self.jit_shadow.take() { self.cpu = shadow; }
+            else { self.cpu.rip = art.entry_rip; }
             return "next".into();
         }
         if executed == 0 {
@@ -1363,7 +1390,10 @@ impl BrowserX64Emulator {
         // store blocks are rolled back to pre-block memory, then the interpreter re-executes and
         // its memory becomes the committed truth. On mismatch we restore the pre-block pages.
         if self.jit_validate && (self.jit_validate_always || !self.jit.is_proven(art.entry_rip)) {
-            let touched: Vec<u64> = if art.has_stores {
+            // Linked successors may store even when the entry block does not. The undo log is
+            // the authoritative transaction boundary for the whole native chain.
+            let native_stores = self.jit_ctx[28] != 0;
+            let touched: Vec<u64> = if native_stores {
                 let n = self.jit_ctx[31] as usize;
                 let v = self.jit_touched[..n.min(jit::JIT_TOUCHED_CAP)].to_vec();
                 self.jit_rollback_memory();
@@ -1406,7 +1436,7 @@ impl BrowserX64Emulator {
             self.jit.mark_proven(art.entry_rip);
             return "next".into();
         }
-        if art.has_stores { self.jit_apply_memory(); }
+        if self.jit_ctx[28] != 0 { self.jit_apply_memory(); }
         self.jit_active.take();
         self.jit_shadow.take();
         self.cpu.gpr.copy_from_slice(&self.jit_ctx[..16]);

@@ -19,6 +19,9 @@ pub const PAGE_EXECUTE: u32 = 0x10;
 pub const PAGE_EXECUTE_READ: u32 = 0x20;
 pub const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 pub const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
+pub const PAGE_GUARD: u32 = 0x100;
+pub const PAGE_NOCACHE: u32 = 0x200;
+pub const PAGE_WRITECOMBINE: u32 = 0x400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryTrap {
@@ -26,6 +29,8 @@ pub enum MemoryTrap {
     PageFault(u64),
     /// Guest touched an unmapped or access-protected virtual address.
     AccessViolation(u64),
+    /// One-shot PAGE_GUARD consumption. The guard bit has already been cleared.
+    GuardPage(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -530,11 +535,12 @@ impl VirtualMemoryManager {
 
     fn check_committed(&self, page_base: u64, is_write: bool) -> Result<(), MemoryTrap> {
         if let Some(reg) = self.find_region(page_base) {
-            if (reg.state & MEM_COMMIT) == 0 || reg.protect == PAGE_NOACCESS {
+            let base_protect = reg.protect & !(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
+            if (reg.state & MEM_COMMIT) == 0 || base_protect == PAGE_NOACCESS {
                 return Err(MemoryTrap::AccessViolation(page_base));
             }
             if is_write
-                && (reg.protect == PAGE_READONLY || reg.protect == PAGE_EXECUTE_READ || reg.protect == PAGE_EXECUTE)
+                && (base_protect == PAGE_READONLY || base_protect == PAGE_EXECUTE_READ || base_protect == PAGE_EXECUTE)
             {
                 // Allow HLE/loader writes via host_write_bytes; guest writes respect protection
                 return Err(MemoryTrap::AccessViolation(page_base));
@@ -543,6 +549,19 @@ impl VirtualMemoryManager {
         } else {
             Err(MemoryTrap::AccessViolation(page_base))
         }
+    }
+
+    /// Consume a one-shot PAGE_GUARD bit on guest access. Loader/HLE host writes do not
+    /// call this, and native JIT resolve deliberately fails without consuming the guard so
+    /// the interpreter re-executes the faulting instruction and delivers the exception.
+    fn check_guard(&mut self, page_base: u64) -> Result<(), MemoryTrap> {
+        let page_base = Self::align_down(page_base);
+        let Some(reg) = self.find_region(page_base).cloned() else { return Ok(()); };
+        if reg.protect & PAGE_GUARD == 0 { return Ok(()); }
+        let new_protect = reg.protect & !PAGE_GUARD;
+        // virtual_protect splits regions and bumps write epochs/layout generation.
+        let _ = self.virtual_protect(page_base, PAGE_SIZE as u64, new_protect);
+        Err(MemoryTrap::GuardPage(page_base))
     }
 
     fn evict_if_needed(&mut self, protected_page: Option<u64>) {
@@ -605,6 +624,7 @@ impl VirtualMemoryManager {
     ) -> Result<&mut [u8], MemoryTrap> {
         if enforce_protect {
             self.check_committed(page_base, mark_dirty)?;
+            self.check_guard(page_base)?;
         }
         if self.swapped_out_pages.contains(&page_base) {
             return Err(MemoryTrap::PageFault(page_base));
@@ -641,6 +661,10 @@ impl VirtualMemoryManager {
     pub fn jit_prepare_page(&mut self, page_base: u64, write: bool) -> Result<*mut u8, MemoryTrap> {
         let page_base = Self::align_down(page_base);
         self.check_committed(page_base, write)?;
+        if self.find_region(page_base).map(|r| r.protect & PAGE_GUARD != 0).unwrap_or(false) {
+            // Do not consume the guard here; the interpreter must deliver the one-shot exception.
+            return Err(MemoryTrap::AccessViolation(page_base));
+        }
         if self.swapped_out_pages.contains(&page_base) {
             return Err(MemoryTrap::PageFault(page_base));
         }
@@ -771,6 +795,7 @@ impl VirtualMemoryManager {
         let mut p = first_page;
         loop {
             self.check_committed(p, is_write)?;
+            self.check_guard(p)?;
             if self.swapped_out_pages.contains(&p) {
                 return Err(MemoryTrap::PageFault(p));
             }

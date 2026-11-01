@@ -1574,7 +1574,7 @@ impl Win32Kernel {
         match vmm.host_write_bytes(addr, data) {
             Ok(()) => None,
             Err(crate::vmm::MemoryTrap::PageFault(page)) => Some(HleAction::HostPageFault(page)),
-            Err(crate::vmm::MemoryTrap::AccessViolation(_)) => {
+            Err(crate::vmm::MemoryTrap::AccessViolation(_)) | Err(crate::vmm::MemoryTrap::GuardPage(_)) => {
                 self.set_last_error(998); // ERROR_NOACCESS
                 Some(HleAction::Return(0))
             }
@@ -1590,7 +1590,7 @@ impl Win32Kernel {
         match vmm.write_u32(addr, value) {
             Ok(()) => None,
             Err(crate::vmm::MemoryTrap::PageFault(page)) => Some(HleAction::HostPageFault(page)),
-            Err(crate::vmm::MemoryTrap::AccessViolation(_)) => {
+            Err(crate::vmm::MemoryTrap::AccessViolation(_)) | Err(crate::vmm::MemoryTrap::GuardPage(_)) => {
                 self.set_last_error(998);
                 Some(HleAction::Return(0))
             }
@@ -4015,7 +4015,7 @@ impl Win32Kernel {
                 let next = match vmm.read_u64(a0) {
                     Ok(v) => v,
                     Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
-                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                    Err(MemoryTrap::AccessViolation(_)) | Err(MemoryTrap::GuardPage(_)) => { self.set_last_error(998); return HleAction::Return(0); }
                 };
                 if let Some(action) = self.host_write_or_fault(vmm, a1, &next.to_le_bytes()) { return action; }
                 if let Some(action) = self.host_write_or_fault(vmm, a0, &a1.to_le_bytes()) { return action; }
@@ -4028,13 +4028,13 @@ impl Win32Kernel {
                 let entry = match vmm.read_u64(a0) {
                     Ok(v) => v,
                     Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
-                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                    Err(MemoryTrap::AccessViolation(_)) | Err(MemoryTrap::GuardPage(_)) => { self.set_last_error(998); return HleAction::Return(0); }
                 };
                 if entry == 0 { return HleAction::Return(0); }
                 let next = match vmm.read_u64(entry) {
                     Ok(v) => v,
                     Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
-                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                    Err(MemoryTrap::AccessViolation(_)) | Err(MemoryTrap::GuardPage(_)) => { self.set_last_error(998); return HleAction::Return(0); }
                 };
                 if let Some(action) = self.host_write_or_fault(vmm, a0, &next.to_le_bytes()) { return action; }
                 let hdr = vmm.read_u64(a0.wrapping_add(8)).unwrap_or(0);
@@ -4046,7 +4046,7 @@ impl Win32Kernel {
                 let entry = match vmm.read_u64(a0) {
                     Ok(v) => v,
                     Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
-                    Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); return HleAction::Return(0); }
+                    Err(MemoryTrap::AccessViolation(_)) | Err(MemoryTrap::GuardPage(_)) => { self.set_last_error(998); return HleAction::Return(0); }
                 };
                 if let Some(action) = self.host_write_or_fault(vmm, a0, &[0u8; 16]) { return action; }
                 entry
@@ -4054,7 +4054,7 @@ impl Win32Kernel {
             "RtlFirstEntrySList" => match vmm.read_u64(a0) {
                 Ok(v) => v,
                 Err(MemoryTrap::PageFault(page)) => return HleAction::HostPageFault(page),
-                Err(MemoryTrap::AccessViolation(_)) => { self.set_last_error(998); 0 }
+                Err(MemoryTrap::AccessViolation(_)) | Err(MemoryTrap::GuardPage(_)) => { self.set_last_error(998); 0 }
             },
             "QueryDepthSList" => vmm.read_u64(a0.wrapping_add(8)).unwrap_or(0) & 0xFFFF,
 

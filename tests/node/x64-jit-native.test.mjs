@@ -97,6 +97,25 @@ test('native CALL/RET push/pop return addresses and preserve registers', async t
   assert.equal(jit.stats.traps, 0);
 });
 
+test('tail-call-linked successor stores are rolled back before shadow validation', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // entry (0x1000): mov rbx,[rsp-8]; jmp 0x1020
+  // target (0x1020): mov qword [rsp-8],0x5678; mov rax,rbx; ret
+  // The entry block has no stores, but its linked successor overwrites the exact slot the
+  // entry loaded. Validation must roll back the whole native transaction before shadowing.
+  const code = Buffer.alloc(0x40);
+  Buffer.from([0x48, 0x8b, 0x5c, 0x24, 0xf8, 0xe9, 0x16, 0x00, 0x00, 0x00]).copy(code, 0);
+  Buffer.from([0x48, 0xc7, 0x44, 0x24, 0xf8, 0x78, 0x56, 0x00, 0x00, 0x48, 0x89, 0xd8, 0xc3]).copy(code, 0x20);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.rbx, interp.regs.rbx);
+  assert.equal(jit.stats.traps, 0, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.compileErrors, 0);
+});
+
 test('SSE2 movdqa/paddd/pxor/pmulld execute in v128 locals and store back', async t => {
   const probe = await newCore();
   if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }

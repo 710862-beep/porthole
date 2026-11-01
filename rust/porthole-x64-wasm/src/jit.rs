@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 7;
+pub const JIT_COMPILER_VERSION: u64 = 8;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -201,6 +201,13 @@ impl HybridWasmJit {
         let mut hash_input = entry_rip.to_le_bytes().to_vec();
         hash_input.extend_from_slice(&JIT_COMPILER_VERSION.to_le_bytes());
         hash_input.extend_from_slice(&window[..block.byte_len]);
+        // A relinked artifact has different Wasm imports than the portable unlinked
+        // module. Hash the specialization too so the host never reuses an unlinked
+        // WebAssembly.Module for a linked meta (or vice versa).
+        for l in &links {
+            hash_input.extend_from_slice(&l.target_rip.to_le_bytes());
+            hash_input.extend_from_slice(&l.page_epoch.to_le_bytes());
+        }
         let code_hash = Self::fnv1a_64(&hash_input);
         let interpret_rip = if block.exit == BlockExit::Interpret { block.target } else { 0 };
         let artifact = CompiledJitArtifact {
