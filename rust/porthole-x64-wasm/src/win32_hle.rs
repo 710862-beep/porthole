@@ -4240,10 +4240,10 @@ impl Win32Kernel {
                 } else { false };
                 if clsid_ok {
                     let obj = self.wmi_alloc_object(vmm, 0, String::new());
-                    if a3 != 0 { let _ = vmm.write_u64(a3, obj); }
+                    if a4 != 0 { let _ = vmm.write_u64(a4, obj); }
                     return HleAction::Return(0); // S_OK
                 }
-                if a3 != 0 { let _ = vmm.write_u64(a3, 0); }
+                if a4 != 0 { let _ = vmm.write_u64(a4, 0); }
                 self.set_last_error(120);
                 0x8004_0154 // REGDB_E_CLASSNOTREG
             }
@@ -7291,21 +7291,28 @@ impl Win32Kernel {
     fn wmi_alloc_object(&mut self, vmm: &mut VirtualMemoryManager, kind: u8, query: String) -> u64 {
         let obj_ptr = self.heap_alloc(vmm, self.process_heap, 64);
         if obj_ptr == 0 { return 0; }
-        // Build a vtable with 8 slots: QI, AddRef, Release, Method3, Method4, ...
-        let vtbl = self.heap_alloc(vmm, self.process_heap, 8 * 8);
+        // IWbemLocator: ConnectServer at slot 3.
+        // IWbemServices: ExecQuery at slot 20.
+        // IEnumWbemClassObject: Next at slot 4.
+        let slots: usize = match kind { 1 => 26, 2 => 8, _ => 8 };
+        let vtbl = self.heap_alloc(vmm, self.process_heap, slots as u64 * 8);
         if vtbl == 0 { return 0; }
         let qi = self.wmi_alloc_thunk(vmm, "WmiQueryInterface");
         let addref = self.wmi_alloc_thunk(vmm, "WmiAddRef");
         let release = self.wmi_alloc_thunk(vmm, "WmiRelease");
-        let m3 = match kind {
-            0 => self.wmi_alloc_thunk(vmm, "WmiConnectServer"),
-            1 => self.wmi_alloc_thunk(vmm, "WmiExecQuery"),
-            2 => self.wmi_alloc_thunk(vmm, "WmiEnumNext"),
-            _ => self.wmi_alloc_thunk(vmm, "WmiClassGet"),
-        };
-        let m4 = self.wmi_alloc_thunk(vmm, "WmiNoop");
-        for (i, t) in [qi, addref, release, m3, m4, m4, m4, m4].iter().enumerate() {
-            let _ = vmm.write_u64(vtbl + i as u64 * 8, *t);
+        let noop = self.wmi_alloc_thunk(vmm, "WmiNoop");
+        // Fill all slots with noop, then override the real methods.
+        for i in 0..slots {
+            let _ = vmm.write_u64(vtbl + i as u64 * 8, noop);
+        }
+        let _ = vmm.write_u64(vtbl, qi);
+        let _ = vmm.write_u64(vtbl + 8, addref);
+        let _ = vmm.write_u64(vtbl + 16, release);
+        match kind {
+            0 => { let t = self.wmi_alloc_thunk(vmm, "WmiConnectServer"); let _ = vmm.write_u64(vtbl + 3 * 8, t); }
+            1 => { let t = self.wmi_alloc_thunk(vmm, "WmiExecQuery"); let _ = vmm.write_u64(vtbl + 20 * 8, t); }
+            2 => { let t = self.wmi_alloc_thunk(vmm, "WmiEnumNext"); let _ = vmm.write_u64(vtbl + 4 * 8, t); }
+            _ => { let t = self.wmi_alloc_thunk(vmm, "WmiClassGet"); let _ = vmm.write_u64(vtbl + 3 * 8, t); }
         }
         let _ = vmm.write_u64(obj_ptr, vtbl);
         self.wmi_objects.insert(obj_ptr, WmiObject { kind, refcount: 1, enum_done: false, query });

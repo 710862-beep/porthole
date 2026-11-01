@@ -1634,6 +1634,8 @@ impl CpuState {
                     }
                     // UD2
                     0x0B => ExecOutcome::Fault(format!("UD2 at 0x{insn_rip:x}")),
+                    // UD1 (0F B9) - raises #UD; used by MinGW as __builtin_trap
+                    0xB9 => ExecOutcome::Fault(format!("UD1 at 0x{insn_rip:x}")),
                     // Multi-byte NOP / ENDBR64 (0F 18..1F)
                     0x18..=0x1F => {
                         let _ = self.decode_modrm_addressing(&pfx, code, &mut cursor);
