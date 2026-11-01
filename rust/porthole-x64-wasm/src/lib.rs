@@ -260,9 +260,9 @@ impl BrowserX64Emulator {
                 let rsp = entry_rsp.wrapping_sub(0x30);
                 let _ = self.vmm.write_u64(rsp, UPCALL_RETURN_THUNK);
                 self.cpu.gpr[4] = rsp;
-                self.cpu.gpr[0] = info.image_base; // RCX = image base
-                self.cpu.gpr[1] = 1;               // RDX = DLL_PROCESS_ATTACH
-                self.cpu.gpr[2] = 0;               // R8  = reserved
+                self.cpu.gpr[1] = info.image_base; // RCX = image base
+                self.cpu.gpr[2] = 1;               // RDX = DLL_PROCESS_ATTACH
+                self.cpu.gpr[8] = 0;               // R8  = reserved
                 self.cpu.rip = first;
                 self.pending_upcall = true;
                 self.trace_event(format!("L TLS process-attach callback=0x{first:x}"));

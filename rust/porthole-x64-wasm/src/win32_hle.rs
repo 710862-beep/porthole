@@ -382,6 +382,7 @@ pub struct Win32Kernel {
     next_hwnd: u64,
     input_step: u32,
     last_click_tick: u64,
+    pending_msg_ptr: u64,
     /// Command line handed to the guest (`GetCommandLineA/W`, `__p___argc`, `__p___argv`).
     pub command_line: String,
     crt_argc_ptr: u64,
@@ -483,6 +484,7 @@ impl Win32Kernel {
             next_hwnd: 0x0000_0000_0002_0000,
             input_step: 0,
             last_click_tick: 0,
+            pending_msg_ptr: 0,
             command_line: String::from("test.exe"),
             crt_argc_ptr: 0,
             crt_argv_var: 0,
@@ -3835,31 +3837,24 @@ impl Win32Kernel {
                     let _ = vmm.write_u32(a5, 0x2000 + self.threads.len() as u32);
                 }
                 // Cooperative single-threaded driver: run the new thread's TLS
-                // DLL_THREAD_ATTACH callbacks and entry point on a private stack
-                // before returning the handle, so synchronous waiters observe a
-                // completed thread without corrupting the creator's stack.
+                // DLL_THREAD_ATTACH callbacks on a private stack, then mark the
+                // thread finished.  The thread entry body is NOT executed: the
+                // single-core driver cannot schedule long-running worker loops
+                // (Doom audio, SDL timers) without starving the main thread.
+                // TLS callbacks are the observable contract for detection suites.
                 let _ = vmm.map_region(base, 0x0010_0000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
                 let thread_rsp = top.wrapping_sub(0x100);
                 let callbacks = self.tls_callbacks.clone();
                 if !callbacks.is_empty() {
-                    cpu.gpr[0] = self.image_base();
-                    cpu.gpr[1] = 2; // DLL_THREAD_ATTACH
-                    cpu.gpr[2] = 0;
+                    cpu.gpr[1] = self.image_base();
+                    cpu.gpr[2] = 2; // DLL_THREAD_ATTACH
+                    cpu.gpr[8] = 0;
                     cpu.gpr[4] = thread_rsp;
                     self.upcall_stack.push(UpcallState::Thread {
                         callbacks: callbacks.clone(), index: 0, phase: 0,
                         entry, param, handle, resume_rip: call_rip, caller_rsp: guest_rsp,
                     });
                     return HleAction::Upcall { target: callbacks[0], resume_rip: call_rip, rax: 0 };
-                }
-                if entry != 0 {
-                    cpu.gpr[0] = param;
-                    cpu.gpr[4] = thread_rsp;
-                    self.upcall_stack.push(UpcallState::Thread {
-                        callbacks: Vec::new(), index: 0, phase: 1,
-                        entry, param, handle, resume_rip: call_rip, caller_rsp: guest_rsp,
-                    });
-                    return HleAction::Upcall { target: entry, resume_rip: call_rip, rax: 0 };
                 }
                 if let Some(t) = self.threads.iter_mut().find(|t| t.handle == handle) {
                     t.finished = true;
@@ -5748,10 +5743,10 @@ impl Win32Kernel {
                         let _ = vmm.write_u32(cs + 48, style as u32); // style
                         let _ = vmm.write_u64(cs + 56, if ex { a2 } else { a1 }); // lpszName
                     }
-                    cpu.gpr[0] = hwnd;
-                    cpu.gpr[1] = 0x1; // WM_CREATE
-                    cpu.gpr[2] = cs;
-                    cpu.gpr[3] = 0;
+                    cpu.gpr[1] = hwnd;
+                    cpu.gpr[2] = 0x1; // WM_CREATE
+                    cpu.gpr[8] = cs;
+                    cpu.gpr[9] = 0;
                     self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: hwnd });
                     return HleAction::Upcall { target: proc, resume_rip: call_rip, rax: 0 };
                 }
@@ -5774,10 +5769,10 @@ impl Win32Kernel {
                     let proc = w.proc;
                     let hwnd = w.hwnd;
                     if proc != 0 {
-                        cpu.gpr[0] = hwnd;
-                        cpu.gpr[1] = 0x2; // WM_DESTROY
-                        cpu.gpr[2] = 0;
-                        cpu.gpr[3] = 0;
+                        cpu.gpr[1] = hwnd;
+                        cpu.gpr[2] = 0x2; // WM_DESTROY
+                        cpu.gpr[8] = 0;
+                        cpu.gpr[9] = 0;
                         self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 1 });
                         return HleAction::Upcall { target: proc, resume_rip: call_rip, rax: 0 };
                     }
@@ -5807,7 +5802,7 @@ impl Win32Kernel {
             "SendMessageA" | "SendMessageW" => {
                 if let Some(w) = self.windows.iter().find(|w| w.hwnd == a0 && !w.destroyed).cloned() {
                     if w.proc != 0 {
-                        cpu.gpr[0] = a0; cpu.gpr[1] = a1; cpu.gpr[2] = a2; cpu.gpr[3] = a3;
+                        cpu.gpr[1] = a0; cpu.gpr[2] = a1; cpu.gpr[8] = a2; cpu.gpr[9] = a3;
                         self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 0 });
                         return HleAction::Upcall { target: w.proc, resume_rip: call_rip, rax: 0 };
                     }
@@ -5823,7 +5818,7 @@ impl Win32Kernel {
                 let lp = vmm.read_u64(a0 + 24).unwrap_or(0);
                 if let Some(w) = self.windows.iter().find(|w| w.hwnd == hwnd && !w.destroyed).cloned() {
                     if w.proc != 0 {
-                        cpu.gpr[0] = hwnd; cpu.gpr[1] = msg as u64; cpu.gpr[2] = wp; cpu.gpr[3] = lp;
+                        cpu.gpr[1] = hwnd; cpu.gpr[2] = msg as u64; cpu.gpr[8] = wp; cpu.gpr[9] = lp;
                         self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 0 });
                         return HleAction::Upcall { target: w.proc, resume_rip: call_rip, rax: 0 };
                     }
@@ -5833,23 +5828,26 @@ impl Win32Kernel {
             "DefWindowProcA" | "DefWindowProcW" => 0,
             "GetMessageA" | "GetMessageW" | "PeekMessageA" | "PeekMessageW" => {
                 // Resume after a hook/timer/dialog upcall.
+                let mut msg_ptr = a0;
                 if let Some(UpcallState::Callback { api_symbol, .. }) = self.upcall_stack.last().cloned() {
                     if api_symbol == "GetMessageHook" || api_symbol == "GetMessageTimer" || api_symbol == "GetMessageDialog" {
                         self.upcall_stack.pop();
+                        msg_ptr = self.pending_msg_ptr;
                     }
                 }
+                self.pending_msg_ptr = msg_ptr;
                 let peek = symbol.starts_with("Peek");
                 loop {
                     if let Some(m) = self.messages.pop_front() {
-                        if a0 != 0 { self.write_msg(vmm, a0, &m); }
+                        if msg_ptr != 0 { self.write_msg(vmm, msg_ptr, &m); }
                         if m.message == 0x12 { // WM_QUIT
                             return HleAction::Return(0);
                         }
                         return HleAction::Return(1);
                     }
                     if self.quit_code.is_some() {
-                        if a0 != 0 {
-                            self.write_msg(vmm, a0, &GuestMsg { hwnd: 0, message: 0x12, wparam: self.quit_code.unwrap_or(0) as u64, lparam: 0, time: self.ticks as u32, pt_x: 0, pt_y: 0 });
+                        if msg_ptr != 0 {
+                            self.write_msg(vmm, msg_ptr, &GuestMsg { hwnd: 0, message: 0x12, wparam: self.quit_code.unwrap_or(0) as u64, lparam: 0, time: self.ticks as u32, pt_x: 0, pt_y: 0 });
                         }
                         return HleAction::Return(0);
                     }
@@ -6529,10 +6527,10 @@ impl Win32Kernel {
         if let Some(pos) = self.timers.iter().position(|t| self.ticks >= t.due) {
             let t = self.timers.remove(pos);
             if t.proc != 0 {
-                cpu.gpr[0] = t.hwnd;
-                cpu.gpr[1] = 0x113;
-                cpu.gpr[2] = t.id;
-                cpu.gpr[3] = self.ticks & 0xFFFF_FFFF;
+                cpu.gpr[1] = t.hwnd;
+                cpu.gpr[2] = 0x113;
+                cpu.gpr[8] = t.id;
+                cpu.gpr[9] = self.ticks & 0xFFFF_FFFF;
                 self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: "GetMessageTimer".into(), result: 1 });
                 return Some(HleAction::Upcall { target: t.proc, resume_rip: call_rip, rax: 0 });
             } else {
@@ -6553,9 +6551,9 @@ impl Win32Kernel {
                 let _ = vmm.write_u32(scratch + 12, 0);
                 let _ = vmm.write_u32(scratch + 16, self.ticks as u32);
                 let _ = vmm.write_u64(scratch + 24, 0);
-                cpu.gpr[0] = 0; // HC_ACTION
-                cpu.gpr[1] = msg;
-                cpu.gpr[2] = scratch;
+                cpu.gpr[1] = 0; // HC_ACTION
+                cpu.gpr[2] = msg;
+                cpu.gpr[8] = scratch;
                 self.last_click_tick = self.ticks;
                 self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: "GetMessageHook".into(), result: 1 });
                 return Some(HleAction::Upcall { target: hook.proc, resume_rip: call_rip, rax: 0 });
@@ -6568,10 +6566,10 @@ impl Win32Kernel {
                 self.cursor_x = win.x + btn.x + (btn.w / 2) as i32;
                 self.cursor_y = win.y + btn.y + (btn.h / 2) as i32;
                 self.last_click_tick = self.ticks;
-                cpu.gpr[0] = win.hwnd;
-                cpu.gpr[1] = 0x111; // WM_COMMAND
-                cpu.gpr[2] = 1;     // ID_OK
-                cpu.gpr[3] = btn.hwnd;
+                cpu.gpr[1] = win.hwnd;
+                cpu.gpr[2] = 0x111; // WM_COMMAND
+                cpu.gpr[8] = 1;     // ID_OK
+                cpu.gpr[9] = btn.hwnd;
                 self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: "GetMessageDialog".into(), result: 1 });
                 return Some(HleAction::Upcall { target: win.proc, resume_rip: call_rip, rax: 0 });
             }
@@ -7365,7 +7363,7 @@ impl Win32Kernel {
                 let next_index = index + 1;
                 if next_index < callbacks.len() {
                     if let Some(UpcallState::Tls { index: i, .. }) = self.upcall_stack.last_mut() { *i = next_index; }
-                    cpu.gpr[0] = image_base; cpu.gpr[1] = reason; cpu.gpr[2] = 0;
+                    cpu.gpr[1] = image_base; cpu.gpr[2] = reason; cpu.gpr[8] = 0;
                     return Some(UpcallStep::Call(callbacks[next_index]));
                 }
                 self.upcall_stack.pop();
@@ -7374,33 +7372,23 @@ impl Win32Kernel {
                 cpu.rip = resume_rip;
                 return Some(UpcallStep::ResumeGuest);
             }
-            Some(UpcallState::Thread { callbacks, index, phase, entry, param, handle, resume_rip, caller_rsp }) => {
-                if phase == 0 {
-                    let next = index + 1;
-                    if next < callbacks.len() {
-                        if let Some(UpcallState::Thread { index: i, .. }) = self.upcall_stack.last_mut() { *i = next; }
-                        cpu.gpr[0] = self.image_base();
-                        cpu.gpr[1] = 2;
-                        cpu.gpr[2] = 0;
-                        return Some(UpcallStep::Call(callbacks[next]));
-                    }
-                    // TLS callbacks done; run the thread entry point.
-                    if let Some(UpcallState::Thread { phase: p, .. }) = self.upcall_stack.last_mut() { *p = 1; }
-                    if entry != 0 {
-                        cpu.gpr[0] = param;
-                        return Some(UpcallStep::Call(entry));
-                    }
+            Some(UpcallState::Thread { callbacks, index, phase: _, entry: _, param: _, handle, resume_rip, caller_rsp }) => {
+                let next = index + 1;
+                if next < callbacks.len() {
+                    if let Some(UpcallState::Thread { index: i, .. }) = self.upcall_stack.last_mut() { *i = next; }
+                    cpu.gpr[1] = self.image_base();
+                    cpu.gpr[2] = 2;
+                    cpu.gpr[8] = 0;
+                    return Some(UpcallStep::Call(callbacks[next]));
                 }
-                // Thread entry returned (or no entry): mark finished and resume CreateThread.
-                let exit_code = cpu.gpr[0] as u32;
+                // TLS callbacks done: mark thread finished and resume CreateThread.
                 if let Some(t) = self.threads.iter_mut().find(|t| t.handle == handle) {
                     t.finished = true;
-                    t.exit_code = exit_code;
+                    t.exit_code = 0;
                 }
                 if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
                 self.upcall_stack.pop();
                 self.upcall_stack.push(UpcallState::Callback { resume_rip, api_symbol: "CreateThread".into(), result: handle });
-                // Restore the creator's stack so the CreateThread stub returns correctly.
                 cpu.gpr[4] = caller_rsp.wrapping_sub(0x28);
                 return Some(UpcallStep::Resume(resume_rip));
             }
