@@ -245,7 +245,7 @@ pub fn EndDialog(machine: &mut Machine, hDlg: HWND, nResult: u32) -> bool {
     dialog_helpers::end_dialog(machine, hDlg, nResult)
 }
 
-fn item_hwnd(machine: &mut Machine, hDlg: HWND, nIDDlgItem: i32) -> HWND {
+fn item_hwnd(machine: &Machine, hDlg: HWND, nIDDlgItem: i32) -> HWND {
     dialog_helpers::GetDlgItem(machine, hDlg, nIDDlgItem)
 }
 

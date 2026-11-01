@@ -51,6 +51,20 @@ for (const [repo,match,name,zip] of [
     save(name,data.stdout,{url:asset.url,tag:release.tag_name,member});
   } finally {fs.rmSync(tmp,{recursive:true,force:true});}
 });
+// Pinned public mirrors for the remaining compatibility fixtures.  Each blob is
+// fetched through the GitHub API (the only allowed transport), PE-validated, and
+// recorded with its repository/path/checksum.  No search result is used as input.
+for (const [repo, blob, name, min] of [
+  ['willianchanlovegithub/kkrieger', 'd9e7f4678ff5b5861d02ed2454ff142c388cc96c', 'games/kkrieger.exe', 64],
+  ['youlinaixu1/Minesweeper', 'f1788172bd48d919de9eda3bf0f6d35c1ab40de3', 'windows/Minesweeper.exe', 64],
+  ['Chicook/arreglos', '89901ba7c5271f6293a0a61e84c11a0f95070c8e', 'windows/notepad.exe', 64],
+]) task(`pinned blob ${repo}/${name}`, () => {
+  if (manifest.assets.some(a => a.path === `tests/assets/${name}`)) return;
+  const url = `https://api.github.com/repos/${repo}/git/blobs/${blob}`;
+  const data = json(url);
+  if (data.encoding !== 'base64') throw new Error('Unsupported blob encoding');
+  save(name, Buffer.from(data.content, 'base64'), { url, repository: repo, blob }, min);
+});
 // Deterministic, identified public mirror: search results are not stable inputs.
 task('pinned DOOM95 mirror blob',()=>{
   if(manifest.assets.some(a=>a.path==='tests/assets/games/doom95.exe'))return;
