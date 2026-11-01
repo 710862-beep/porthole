@@ -129,7 +129,7 @@ pub fn RegDeleteKeyA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>) 
     status(&call(machine, "delete", hKey, lpSubKey.unwrap_or(""), 0, &[]))
 }
 #[win32_derive::dllexport]
-pub fn RegEnumKeyExA(machine: &mut Machine, hKey: HKEY, dwIndex: u32, lpName: u32, lpcchName: Option<&mut u32>, lpReserved: u32, lpClass: u32, lpcchClass: Option<&mut u32>, lpftLastWriteTime: u32) -> u32 {
+pub fn RegEnumKeyExA(machine: &mut Machine, hKey: HKEY, dwIndex: u32, lpName: u32, mut lpcchName: Option<&mut u32>, lpReserved: u32, lpClass: u32, mut lpcchClass: Option<&mut u32>, lpftLastWriteTime: u32) -> u32 {
     if lpReserved != 0 { return 87; }
     let value = call(machine, "enumKeys", hKey, "", 0, &[]);
     let code = status(&value); if code != 0 { return code; }
