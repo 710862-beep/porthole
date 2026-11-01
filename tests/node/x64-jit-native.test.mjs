@@ -212,9 +212,9 @@ test('JIT SAR sign-extends 8/16/32-bit operands before the arithmetic shift', as
   const code = Buffer.concat([
     movImm32(0, 0x0000fda0), Buffer.from([0xc1, 0xf8, 0x10]),
     movImm32(3, 0x000fff55), Buffer.from([0xc1, 0xfb, 0x0c]),
-    movImm32(1, 0xfffffda0), Buffer.from([0xc1, 0xf9, 0x10]),
+    movImm32(1, 0xfda00000), Buffer.from([0xc1, 0xf9, 0x10]),
     movImm32(2, 0x0000ffe0), Buffer.from([0xc1, 0xfa, 0x10]),
-    movImm32(8, 0xffffff55), Buffer.from([0x41, 0xc1, 0xf8, 0x0c]),
+    movImm32(8, 0xfff55000), Buffer.from([0x41, 0xc1, 0xf8, 0x0c]),
     Buffer.from([0xc3]),
   ]);
   const interp = await run(code, false);
@@ -224,5 +224,5 @@ test('JIT SAR sign-extends 8/16/32-bit operands before the arithmetic shift', as
     assert.equal(jit.regs[r], interp.regs[r], `SAR ${r}`);
   }
   assert.equal(BigInt(jit.regs.rcx), 0xfffffda0n, 'negative SAR must keep sign bits');
-  assert.equal(BigInt(jit.regs.r8), 0xfffffn, 'negative 32-bit SAR result zero-extends into r8');
+  assert.equal(BigInt(jit.regs.r8), 0xffffff55n, 'negative 32-bit SAR result zero-extends into r8');
 });
