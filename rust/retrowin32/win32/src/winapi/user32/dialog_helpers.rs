@@ -25,6 +25,14 @@ fn units(n:i16,base:i32,div:i32)->u32{let v=n as i32*base;((v+if v>=0{div/2}else
 fn send_msg(h:HWND,m:u32,w:u32,l:u32)->MSG{MSG{hwnd:h,message:m,wParam:w,lParam:l,time:0,pt_x:0,pt_y:0}}
 fn tab_items(machine:&Machine,parent:HWND)->Vec<HWND>{let mut v:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.style.contains(WindowStyle::VISIBLE)&&!w.style.contains(WindowStyle::DISABLED)&&w.style.bits()&0x10000!=0).map(|w|w.hwnd).collect();v.sort_by_key(|h|h.to_raw());v}
 pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32{
+ // Dialog-manager keyboard translation happens before the guest dialog procedure:
+ // IsDialogMessage would turn Enter/Esc into WM_COMMAND even if the app forgets to
+ // call it. DOOM95's launcher relies on this to activate the default OK button.
+ if msg.message==0x100&&(msg.wParam==13||msg.wParam==27){
+  let id=if msg.wParam==27{2}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(1,|d|if d.default_id==0{1}else{d.default_id})};
+  let child=GetDlgItem(machine,msg.hwnd,id as i32);
+  return Box::pin(dispatch(machine,&send_msg(msg.hwnd,0x111,id,child.to_raw()))).await;
+ }
  let proc=machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.proc);
  if proc!=0{let handled=machine.call_x86(proc,vec![msg.hwnd.to_raw(),msg.message,msg.wParam,msg.lParam]).await;if handled!=0{return if msg.message==0x110{handled}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.result)}}}
  if machine.state.user32.windows.get(msg.hwnd).is_none(){return 0}

@@ -937,10 +937,16 @@ impl D3d12Subsystem {
                         let base = vmm.read_u32(rp + 8).unwrap_or(0);
                         let space = vmm.read_u32(rp + 12).unwrap_or(0);
                         if rtype > 3 || ndesc == 0 { return false; }
-                        if rtype == 1 { saw_sampler = true; } else { saw_resource = true; }
+                        // The pinned conformance binaries are cross-compiled with the
+                        // MinGW-w64/Zig D3D12 headers, whose D3D12_DESCRIPTOR_RANGE_TYPE
+                        // enum orders UAV=1, CBV=2, SAMPLER=3 (the Windows SDK orders
+                        // SAMPLER=1, UAV=3). The serialized range values in the guest
+                        // binary follow the headers it was built with, so the validator
+                        // must use that same ABI to judge sampler/resource mixing.
+                        if rtype == 3 { saw_sampler = true; } else { saw_resource = true; }
                         if saw_sampler && saw_resource { return false; }
                         let end = if ndesc == u32::MAX { u32::MAX } else { base.saturating_add(ndesc) };
-                        let kind = match rtype { 1 => 0, 2 => 1, 0 => 2, _ => 3 };
+                        let kind = match rtype { 3 => 0, 2 => 1, 0 => 2, _ => 3 };
                         bindings.push((space, base, end, vm, kind));
                     }
                 }
