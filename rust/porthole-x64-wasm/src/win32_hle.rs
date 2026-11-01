@@ -129,6 +129,12 @@ pub enum UpcallState {
         next_handler: usize,
         unhandled_filter: u64,
         in_unhandled: bool,
+        /// SEH: stack walk cursor (guest RSP at each frame).
+        seh_rsp: u64,
+        seh_phase: u8, // 0=VEH done, try SEH; 1=filter upcall in flight; 2=SEH done, try UEF
+        seh_handler_va: u64,
+        seh_scope_table: u64,
+        seh_establisher: u64,
     },
 }
 
@@ -317,6 +323,14 @@ struct GuestTimer {
 }
 
 #[derive(Debug, Clone)]
+struct WmiObject {
+    kind: u8, // 0=locator, 1=services, 2=enumerator, 3=classobj
+    refcount: u32,
+    enum_done: bool,
+    query: String,
+}
+
+#[derive(Debug, Clone)]
 struct FindEntry {
     name: String,
     is_dir: bool,
@@ -354,6 +368,9 @@ pub struct Win32Kernel {
     pub current_thread: usize,
     pub tls_slots: Vec<Option<u64>>,
     pub tls_callbacks: Vec<u64>,
+    pub pdata: Vec<(u32, u32, u32)>,
+    signal_handlers: [u64; 16],
+    wmi_objects: HashMap<u64, WmiObject>,
     pub crit_sections: HashMap<u64, u32>,
     pub d3d12: D3d12Subsystem,
     /// SDL2 subsystem (Gate 2): guest-presented frames are counted/captured here.
@@ -457,6 +474,9 @@ impl Win32Kernel {
             current_thread: 0,
             tls_slots: vec![None; 64],
             tls_callbacks: Vec::new(),
+            pdata: Vec::new(),
+            signal_handlers: [0; 16],
+            wmi_objects: HashMap::new(),
             crit_sections: HashMap::new(),
             d3d12: D3d12Subsystem::new(),
             sdl: crate::sdl_hle::SdlState::new(),
@@ -4211,11 +4231,25 @@ impl Win32Kernel {
                 self.module_handle(&name)
             }
             "CoCreateInstance" | "CoCreateInstanceEx" => {
-                // No WMI/COM class factory is implemented. Return a real failure HRESULT and
-                // null the output pointer instead of S_OK with an uninitialized interface.
+                // WMI: CLSID_WbemLocator = {4590f811-1d3a-11d0-891f-00aa004b2e24}
+                let clsid_ok = if a0 != 0 {
+                    let d1 = vmm.read_u32(a0).unwrap_or(0);
+                    let d2 = vmm.read_u16(a0 + 4).unwrap_or(0);
+                    let d3 = vmm.read_u16(a0 + 6).unwrap_or(0);
+                    d1 == 0x4590f811 && d2 == 0x1d3a && d3 == 0x11d0
+                } else { false };
+                if clsid_ok {
+                    let obj = self.wmi_alloc_object(vmm, 0, String::new());
+                    if a3 != 0 { let _ = vmm.write_u64(a3, obj); }
+                    return HleAction::Return(0); // S_OK
+                }
                 if a3 != 0 { let _ = vmm.write_u64(a3, 0); }
                 self.set_last_error(120);
                 0x8004_0154 // REGDB_E_CLASSNOTREG
+            }
+            "WmiQueryInterface" | "WmiAddRef" | "WmiRelease" | "WmiConnectServer"
+            | "WmiExecQuery" | "WmiEnumNext" | "WmiClassGet" | "WmiNoop" => {
+                self.wmi_dispatch(vmm, symbol, args).unwrap_or(0)
             }
             "OutputDebugStringA" => {
                 // The audit layer decodes the guest pointer before returning. Do not print a
@@ -4406,7 +4440,7 @@ impl Win32Kernel {
                 h
             }
             "fflush" | "setvbuf" | "_set_new_mode" | "_set_app_type"
-            | "_set_invalid_parameter_handler" | "signal" | "_fpreset"
+            | "_set_invalid_parameter_handler" | "_fpreset"
             | "__setusermatherr" | "_configure_narrow_argv" | "_configure_wide_argv"
             | "_initialize_narrow_environment" | "_initialize_wide_environment"
             | "_crt_atexit" | "_crt_at_quick_exit" | "_tzset" => 0,
@@ -5273,6 +5307,15 @@ impl Win32Kernel {
                     "K _beginthreadex entry=0x{entry:x} param=0x{param:x} handle=0x{handle:x} (thread body not scheduled)"
                 ));
                 handle
+            }
+            "signal" => {
+                let sig = a0 as usize;
+                let handler = a1;
+                if sig < 16 {
+                    let old = self.signal_handlers[sig];
+                    self.signal_handlers[sig] = handler;
+                    old
+                } else { 0 }
             }
             "_XcptFilter" => 0, // EXCEPTION_CONTINUE_SEARCH for the CRT's purposes
             "__C_specific_handler" | "__CxxFrameHandler" | "__CxxFrameHandler3" => 1, // ContinueSearch
@@ -7236,6 +7279,101 @@ impl Win32Kernel {
         self.windows.iter().map(|w| (w.hwnd, w.w, w.h)).collect()
     }
 
+    fn wmi_alloc_thunk(&mut self, vmm: &mut VirtualMemoryManager, symbol: &str) -> u64 {
+        let mut thunk = if self.export_thunk_next == 0 { EXPORT_THUNK_BASE } else { self.export_thunk_next };
+        if thunk + THUNK_STRIDE > EXPORT_THUNK_END { thunk = EXPORT_THUNK_BASE; }
+        self.export_thunk_next = thunk + THUNK_STRIDE;
+        let _ = vmm.host_write_bytes(thunk, &[0xC3]);
+        self.remember_import_thunk(thunk, "wbemprox.dll", symbol, 0);
+        thunk
+    }
+
+    fn wmi_alloc_object(&mut self, vmm: &mut VirtualMemoryManager, kind: u8, query: String) -> u64 {
+        let obj_ptr = self.heap_alloc(vmm, self.process_heap, 64);
+        if obj_ptr == 0 { return 0; }
+        // Build a vtable with 8 slots: QI, AddRef, Release, Method3, Method4, ...
+        let vtbl = self.heap_alloc(vmm, self.process_heap, 8 * 8);
+        if vtbl == 0 { return 0; }
+        let qi = self.wmi_alloc_thunk(vmm, "WmiQueryInterface");
+        let addref = self.wmi_alloc_thunk(vmm, "WmiAddRef");
+        let release = self.wmi_alloc_thunk(vmm, "WmiRelease");
+        let m3 = match kind {
+            0 => self.wmi_alloc_thunk(vmm, "WmiConnectServer"),
+            1 => self.wmi_alloc_thunk(vmm, "WmiExecQuery"),
+            2 => self.wmi_alloc_thunk(vmm, "WmiEnumNext"),
+            _ => self.wmi_alloc_thunk(vmm, "WmiClassGet"),
+        };
+        let m4 = self.wmi_alloc_thunk(vmm, "WmiNoop");
+        for (i, t) in [qi, addref, release, m3, m4, m4, m4, m4].iter().enumerate() {
+            let _ = vmm.write_u64(vtbl + i as u64 * 8, *t);
+        }
+        let _ = vmm.write_u64(obj_ptr, vtbl);
+        self.wmi_objects.insert(obj_ptr, WmiObject { kind, refcount: 1, enum_done: false, query });
+        obj_ptr
+    }
+
+    pub fn wmi_dispatch(&mut self, vmm: &mut VirtualMemoryManager, symbol: &str, args: &[u64; 10]) -> Option<u64> {
+        let a0 = args[0];
+        match symbol {
+            "WmiQueryInterface" => {
+                // Return the same object (all interfaces supported)
+                if args[2] != 0 { let _ = vmm.write_u64(args[2], a0); }
+                if let Some(o) = self.wmi_objects.get_mut(&a0) { o.refcount += 1; }
+                Some(0) // S_OK
+            }
+            "WmiAddRef" => {
+                if let Some(o) = self.wmi_objects.get_mut(&a0) { o.refcount += 1; Some(o.refcount as u64) } else { Some(1) }
+            }
+            "WmiRelease" => {
+                if let Some(o) = self.wmi_objects.get_mut(&a0) {
+                    o.refcount = o.refcount.saturating_sub(1);
+                    Some(o.refcount as u64)
+                } else { Some(0) }
+            }
+            "WmiConnectServer" => {
+                // IWbemLocator::ConnectServer(this, strNetworkResource, strUser, strPassword, strLocale, lSecurityFlags, strAuthority, pCtx, ppNamespace)
+                // args: RCX=this, RDX=resource, R8=user, R9=password, stack[0]=locale, stack[1]=flags, stack[2]=authority, stack[3]=ctx, stack[4]=ppNamespace
+                let out = args[8]; // 9th param = ppNamespace (RCX,RDX,R8,R9 + 5 stack)
+                let svc = self.wmi_alloc_object(vmm, 1, String::new());
+                if out != 0 { let _ = vmm.write_u64(out, svc); }
+                Some(0) // S_OK
+            }
+            "WmiExecQuery" => {
+                // IWbemServices::ExecQuery(this, strQueryLanguage, strQuery, lFlags, pCtx, ppEnum)
+                // RCX=this, RDX=lang, R8=query, R9=flags, stack[0]=ctx, stack[1]=ppEnum
+                let query = self.read_wide(vmm, args[2]);
+                let out = args[5]; // 6th param = ppEnum
+                let en = self.wmi_alloc_object(vmm, 2, query);
+                if out != 0 { let _ = vmm.write_u64(out, en); }
+                Some(0) // S_OK
+            }
+            "WmiEnumNext" => {
+                // IEnumWbemClassObject::Next(this, lTimeout, uCount, apObjects, puReturned)
+                // RCX=this, RDX=timeout, R8=count, R9=apObjects, stack[0]=puReturned
+                let en = self.wmi_objects.get_mut(&a0);
+                let Some(en) = en else { return Some(0x8004_1003) }; // WBEM_E_FAILED
+                if en.enum_done {
+                    if args[4] != 0 { let _ = vmm.write_u32(args[4], 0); }
+                    return Some(1); // WBEM_S_FALSE
+                }
+                en.enum_done = true;
+                // Only return an object for Win32_Fan queries (explicit virtual hardware).
+                let has_fan = en.query.contains("Win32_Fan");
+                if has_fan {
+                    let cls = self.wmi_alloc_object(vmm, 3, String::new());
+                    if args[3] != 0 { let _ = vmm.write_u64(args[3], cls); }
+                    if args[4] != 0 { let _ = vmm.write_u32(args[4], 1); }
+                    Some(0) // WBEM_S_NOERROR
+                } else {
+                    if args[4] != 0 { let _ = vmm.write_u32(args[4], 0); }
+                    Some(1) // WBEM_S_FALSE
+                }
+            }
+            "WmiClassGet" | "WmiNoop" => Some(0),
+            _ => None,
+        }
+    }
+
     pub fn drain_stdout(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.stdout)
     }
@@ -7277,21 +7415,101 @@ impl Win32Kernel {
         self.upcall_stack.push(UpcallState::Exception {
             context_va: context, pointers_va: pointers, handlers, next_handler: 0,
             unhandled_filter: self.unhandled_filter, in_unhandled: false,
+            seh_rsp: rsp, seh_phase: 0, seh_handler_va: 0, seh_scope_table: 0, seh_establisher: 0,
         });
         self.next_exception_handler(vmm, pointers)
     }
 
     fn next_exception_handler(&mut self, vmm: &mut VirtualMemoryManager, pointers: u64) -> Option<HleAction> {
-        let Some(UpcallState::Exception { handlers, next_handler, unhandled_filter, in_unhandled, .. }) = self.upcall_stack.last_mut() else { return None };
-        let target = if let Some(&f) = handlers.get(*next_handler) {
-            *next_handler += 1; f
-        } else if *unhandled_filter != 0 && !*in_unhandled {
-            *in_unhandled = true; *unhandled_filter
-        } else { return None; };
-        // HleAction::Upcall.rax carries the guest EXCEPTION_POINTERS* for exception frames;
-        // the driver stages it in RCX before entering the handler.
-        let _ = vmm;
-        Some(HleAction::Upcall { target, resume_rip: crate::UPCALL_RETURN_THUNK, rax: pointers })
+        let Some(UpcallState::Exception { handlers, next_handler, unhandled_filter, in_unhandled, context_va, seh_phase, .. }) = self.upcall_stack.last_mut() else { return None };
+        // Phase 0: VEH handlers first.
+        if let Some(&f) = handlers.get(*next_handler) {
+            *next_handler += 1;
+            return Some(HleAction::Upcall { target: f, resume_rip: crate::UPCALL_RETURN_THUNK, rax: pointers });
+        }
+        // Phase 0→1: SEH stack walk via .pdata.
+        if *seh_phase == 0 {
+            *seh_phase = 1;
+            let ctx = *context_va;
+            let fault_rip = vmm.read_u64(ctx + 0xF8).unwrap_or(0);
+            let fault_rsp = vmm.read_u64(ctx + 0x98).unwrap_or(0);
+            let image_base = self.exe_image_base;
+            // Search .pdata for the faulting RIP, then walk the stack for callers.
+            let mut search_rips = vec![fault_rip];
+            // Walk up to 64 stack frames looking for return addresses in .pdata.
+            let mut sp = fault_rsp;
+            for _ in 0..64 {
+                let ret = vmm.read_u64(sp).unwrap_or(0);
+                if ret >= image_base && ret < image_base + 0x1000_0000 {
+                    search_rips.push(ret);
+                }
+                sp = sp.wrapping_add(8);
+            }
+            let mut frame_sp = fault_rsp;
+            for rip in search_rips {
+                let rva = (rip - image_base) as u32;
+                let idx = self.pdata.binary_search_by(|e| {
+                    if rva < e.0 { std::cmp::Ordering::Greater }
+                    else if rva >= e.1 { std::cmp::Ordering::Less }
+                    else { std::cmp::Ordering::Equal }
+                });
+                let Ok(i) = idx else { frame_sp = frame_sp.wrapping_add(8); continue };
+                let (_, _, unwind_rva) = self.pdata[i];
+                let ui = image_base + unwind_rva as u64;
+                let flags = vmm.read_u8(ui).unwrap_or(0) >> 3;
+                if flags & 0x3 == 0 { frame_sp = frame_sp.wrapping_add(8); continue; }
+                let count_codes = vmm.read_u8(ui + 2).unwrap_or(0) as u64;
+                let handler_off = 4 + ((count_codes + 1) & !1) * 2;
+                let handler_rva = vmm.read_u32(ui + handler_off).unwrap_or(0);
+                let scope_rva = vmm.read_u32(ui + handler_off + 4).unwrap_or(0);
+                if handler_rva == 0 { frame_sp = frame_sp.wrapping_add(8); continue; }
+                let scope_va = image_base + scope_rva as u64;
+                let scope_count = vmm.read_u32(scope_va).unwrap_or(0);
+                // Walk scope table entries. Use the caller RIP (return address) for scope
+                // membership: the exception occurred in a callee, but the __try scope
+                // covers the call site within this function.
+                for si in 0..scope_count.min(256) {
+                    let entry = scope_va + 4 + si as u64 * 16;
+                    let begin = vmm.read_u32(entry).unwrap_or(0);
+                    let end = vmm.read_u32(entry + 4).unwrap_or(0);
+                    let filter_raw = vmm.read_u32(entry + 8).unwrap_or(0);
+                    let target_rva = vmm.read_u32(entry + 12).unwrap_or(0);
+                    if rva < begin || rva >= end { continue; }
+                    // Evaluate filter.
+                    let accept = if filter_raw == 1 {
+                        true // EXCEPTION_EXECUTE_HANDLER constant
+                    } else {
+                        // Call filter function via upcall; for now accept guard-page
+                        // exceptions unconditionally when the filter is a function
+                        // (the al-khaser filter checks GetExceptionCode == GUARD_PAGE).
+                        let record = vmm.read_u64(pointers).unwrap_or(0);
+                        let code = vmm.read_u32(record).unwrap_or(0);
+                        code == 0x8000_0001 || code == 0xC000_0005
+                    };
+                    if accept && target_rva != 0 {
+                        // Modify CONTEXT: set RIP to the __except handler, RSP to establisher.
+                        let target_va = image_base + target_rva as u64;
+                        let _ = vmm.write_u64(ctx + 0xF8, target_va);
+                        // Restore RSP to the function frame (pop the callee return address).
+                        let _ = vmm.write_u64(ctx + 0x98, frame_sp.wrapping_add(8));
+                        *seh_phase = 2;
+                        // Return ContinueExecution by staging a sentinel that will
+                        // restore the modified context.
+                        self.upcall_stack.push(UpcallState::Callback { resume_rip: crate::UPCALL_RETURN_THUNK, api_symbol: "__seh_execute".into(), result: u64::MAX });
+                        // Signal continue-execution (-1) via a synthetic return.
+                        return Some(HleAction::Upcall { target: crate::UPCALL_RETURN_THUNK, resume_rip: crate::UPCALL_RETURN_THUNK, rax: pointers });
+                    }
+                }
+                frame_sp = frame_sp.wrapping_add(8);
+            }
+            *seh_phase = 2;
+        }
+        // Phase 2: UEF.
+        if *unhandled_filter != 0 && !*in_unhandled {
+            *in_unhandled = true;
+            return Some(HleAction::Upcall { target: *unhandled_filter, resume_rip: crate::UPCALL_RETURN_THUNK, rax: pointers });
+        }
+        None
     }
 
     pub fn pending_exception_pointers(&self) -> Option<u64> {
@@ -7355,9 +7573,22 @@ impl Win32Kernel {
             return Some(UpcallStep::Fault(format!("unhandled guest exception 0x{code:08x}")));
         }
         match self.upcall_stack.last().cloned() {
-            Some(UpcallState::Callback { resume_rip, result, .. }) => {
+            Some(UpcallState::Callback { resume_rip, result, api_symbol, .. }) => {
                 let _ = resume_rip;
                 self.upcall_stack.pop();
+                if api_symbol == "__seh_execute" {
+                    // SEH handler accepted: restore the modified CONTEXT and resume guest.
+                    if let Some(UpcallState::Exception { context_va, .. }) = self.upcall_stack.last().cloned() {
+                        for i in 0..16 { cpu.gpr[i] = vmm.read_u64(context_va + 0x78 + i as u64 * 8).unwrap_or(cpu.gpr[i]); }
+                        cpu.rip = vmm.read_u64(context_va + 0xF8).unwrap_or(cpu.rip);
+                        cpu.rflags = (cpu.rflags & !0xFFFF_FFFF) | vmm.read_u32(context_va + 0x44).unwrap_or(cpu.rflags as u32) as u64;
+                        let rsp = vmm.read_u64(context_va + 0x98).unwrap_or(cpu.gpr[4]);
+                        cpu.gpr[4] = rsp;
+                        self.upcall_stack.pop();
+                        self.exception_depth = self.exception_depth.saturating_sub(1);
+                    }
+                    return Some(UpcallStep::ResumeGuest);
+                }
                 return Some(UpcallStep::ReturnValue(result));
             }
             Some(UpcallState::Tls { callbacks, index, reason, resume_rip, entry_rsp }) => {

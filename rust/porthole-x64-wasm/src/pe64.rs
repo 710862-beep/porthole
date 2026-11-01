@@ -495,6 +495,26 @@ where
         }
     }
 
+    // Parse .pdata exception directory (DataDirectory[3]) for x64 SEH.
+    let mut pdata: Vec<(u32, u32, u32)> = Vec::new();
+    if num_rva > 3 {
+        let exc_dir = opt + 112 + 3 * 8;
+        let exc_rva = read_le_u32(pe_bytes, exc_dir).unwrap_or(0);
+        let exc_sz = read_le_u32(pe_bytes, exc_dir + 4).unwrap_or(0);
+        if exc_rva != 0 && exc_sz >= 12 {
+            let count = (exc_sz / 12) as usize;
+            for i in 0..count.min(65536) {
+                let off = exc_rva as usize + i * 12;
+                let begin = read_le_u32(pe_bytes, off).unwrap_or(0);
+                let end = read_le_u32(pe_bytes, off + 4).unwrap_or(0);
+                let unwind = read_le_u32(pe_bytes, off + 8).unwrap_or(0);
+                if begin == 0 && end == 0 { break; }
+                pdata.push((begin, end, unwind));
+            }
+            pdata.sort_by_key(|e| e.0);
+        }
+    }
+
     init_teb(
         vmm,
         MAIN_TEB_ADDR,
@@ -524,6 +544,7 @@ where
             aot_instructions_scanned,
             tls_callbacks,
             resources,
+            pdata,
         },
         bindings,
     ))

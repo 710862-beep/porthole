@@ -254,6 +254,7 @@ impl BrowserX64Emulator {
         if !info.tls_callbacks.is_empty() {
             let entry_rsp = self.cpu.gpr[4];
             self.kernel.tls_callbacks = info.tls_callbacks.clone();
+            self.kernel.pdata = info.pdata.clone();
             if let Some(first) = self.kernel.begin_tls(info.tls_callbacks.clone(), info.entry_point, entry_rsp) {
                 // Stage a full Win64 call frame (sentinel + 0x20 home space + alignment)
                 // so the TLS callback sees RSP % 16 == 8 at entry, exactly as a real CALL.
