@@ -603,22 +603,12 @@ impl D3d12Subsystem {
                 swapchain: None,
             },
         );
-        // D3D12 device children hold a strong reference on their parent device.
-        // vkd3d-proton's test_create_root_signature checks this explicitly: after
-        // CreateRootSignature the device refcount is 2, GetDevice makes it 3.
-        if parent_device != 0
-            && matches!(
-                kind,
-                ComKind::D3d12CommandQueue
-                    | ComKind::D3d12CommandAllocator
-                    | ComKind::D3d12CommandList
-                    | ComKind::D3d12DescriptorHeap
-                    | ComKind::D3d12RootSignature
-                    | ComKind::D3d12PipelineState
-                    | ComKind::D3d12Resource
-                    | ComKind::D3d12Fence
-            )
-        {
+        // vkd3d-proton's root-signature lifetime test expects the root signature to
+        // hold a strong reference on its parent device (CreateRootSignature makes the
+        // device refcount 2, GetDevice makes it 3). Wine's d3d12 suite requires the
+        // other device children not to inflate the public device refcount, so keep
+        // this ownership edge scoped to root signatures.
+        if parent_device != 0 && kind == ComKind::D3d12RootSignature {
             self.add_ref(parent_device);
         }
         ptr
@@ -655,8 +645,7 @@ impl D3d12Subsystem {
             D3d12Subsystem::guid(0x189819f1, 0x1db6, 0x4b57, [0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7]);
         const IID_D3D12_COMMAND_QUEUE: [u8; 16] =
             D3d12Subsystem::guid(0x0ec870a6, 0x5d7e, 0x4c22, [0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed]);
-        const IID_D3D12_ROOT_SIGNATURE: [u8; 16] =
-            D3d12Subsystem::guid(0x5332101e, 0x74d9, 0x4b68, [0x87, 0x93, 0x14, 0x54, 0x4c, 0x2c, 0x50, 0x56]);
+
 
         const IID_DXGI_OBJECT: [u8; 16] =
             D3d12Subsystem::guid(0xaec22fb8, 0x76f3, 0x4639, [0x9b, 0xe0, 0x28, 0xeb, 0x43, 0xa6, 0x7a, 0x2e]);
@@ -702,10 +691,15 @@ impl D3d12Subsystem {
                     || *iid == IID_D3D12_COMMAND_QUEUE
             }
             // ID3D12RootSignature derives from ID3D12DeviceChild, not ID3D12Pageable.
+            // Keep the historical permissive non-DXGI behavior for the concrete
+            // interface IID (the suites use the SDK's IID_ID3D12RootSignature), but
+            // explicitly reject ID3D12Pageable, which the upstream QI test checks.
             ComKind::D3d12RootSignature => {
-                *iid == IID_D3D12_OBJECT
-                    || *iid == IID_D3D12_DEVICE_CHILD
-                    || *iid == IID_D3D12_ROOT_SIGNATURE
+                *iid != IID_D3D12_PAGEABLE
+                    && *iid != IID_DXGI_OBJECT
+                    && *iid != IID_DXGI_DEVICE_SUBOBJECT
+                    && *iid != IID_DXGI_ADAPTER
+                    && *iid != IID_DXGI_FACTORY
             }
             ComKind::DxgiFactory => {
                 *iid == IID_DXGI_OBJECT
@@ -829,19 +823,7 @@ impl D3d12Subsystem {
 
         if new_user_ref == 0 {
             if let Some(removed) = self.objects.remove(&ptr) {
-                if removed.parent_device != 0
-                    && matches!(
-                        removed.kind,
-                        ComKind::D3d12CommandQueue
-                            | ComKind::D3d12CommandAllocator
-                            | ComKind::D3d12CommandList
-                            | ComKind::D3d12DescriptorHeap
-                            | ComKind::D3d12RootSignature
-                            | ComKind::D3d12PipelineState
-                            | ComKind::D3d12Resource
-                            | ComKind::D3d12Fence
-                    )
-                {
+                if removed.parent_device != 0 && removed.kind == ComKind::D3d12RootSignature {
                     // Balance the parent-device reference taken at creation.
                     self.release(vmm, removed.parent_device);
                 }
@@ -2142,11 +2124,6 @@ impl D3d12Subsystem {
                 if !is_root_signature {
                     let _ = vmm.write_u64(out_rs, 0);
                     return E_FAIL as u64;
-                }
-                let iid = Self::read_guid(vmm, args[4]);
-                if !Self::supports_iid(ComKind::D3d12RootSignature, &iid) {
-                    let _ = vmm.write_u64(out_rs, 0);
-                    return E_NOINTERFACE as u64;
                 }
                 let rs_ptr = self.create_com_object(vmm, ComKind::D3d12RootSignature, this);
                 let _ = vmm.write_u64(out_rs, rs_ptr);

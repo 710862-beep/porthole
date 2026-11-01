@@ -2742,6 +2742,26 @@ impl Win32Kernel {
             }
             "socket" | "#23" => self.alloc_handle(),
             "closesocket" | "#3" => 0,
+            "EnumDisplaySettingsW" | "EnumDisplaySettingsA" => {
+                // BOOL EnumDisplaySettings(lpszDeviceName, iModeNum, lpDevMode).
+                // The virtual adapter exposes one current/registry mode: 1920x1080x32@60.
+                let mode_num = a1 as i32;
+                if a2 == 0 || (mode_num != -1 && mode_num != -2 && mode_num != 0) {
+                    self.set_last_error(ERROR_INVALID_PARAMETER);
+                    return HleAction::Return(0);
+                }
+                let mut dm = [0u8; 220];
+                // dmSize @68, dmFields @72, dmBitsPerPel @168, dmPelsWidth @172,
+                // dmPelsHeight @176, dmDisplayFrequency @184 (DEVMODEW x64 layout).
+                dm[68..70].copy_from_slice(&220u16.to_le_bytes());
+                dm[72..76].copy_from_slice(&0x005C_0000u32.to_le_bytes());
+                dm[168..172].copy_from_slice(&32u32.to_le_bytes());
+                dm[172..176].copy_from_slice(&1920u32.to_le_bytes());
+                dm[176..180].copy_from_slice(&1080u32.to_le_bytes());
+                dm[184..188].copy_from_slice(&60u32.to_le_bytes());
+                if let Some(action) = self.host_write_or_fault(vmm, a2, &dm) { return action; }
+                1
+            }
             "GetSystemMetrics" => match a0 as u32 {
                 0 => 1920, 1 => 1080,           // SM_CXSCREEN / SM_CYSCREEN
                 16 => 1920, 17 => 1040,         // SM_CXFULLSCREEN / SM_CYFULLSCREEN
@@ -4048,11 +4068,15 @@ impl Win32Kernel {
             }
             "DeleteTimerQueueEx" | "DeleteTimerQueueTimer" => 1,
             "CreateMutexA" | "CreateMutexW" => {
+                // bInitialOwner=TRUE means the creating thread owns the mutex, so the
+                // waitable is NON-signaled. FALSE (the winetest print-lock case) creates
+                // an available mutex. The previous inverted polarity made every Wine
+                // test harness wait 30s and report `could not get the print lock: 258`.
                 let h = self.alloc_handle();
                 self.waitables.insert(
                     h,
                     Waitable {
-                        signaled: a1 as u32 != 0,
+                        signaled: a1 as u32 == 0,
                         manual_reset: false,
                     },
                 );
@@ -4255,6 +4279,15 @@ impl Win32Kernel {
             "WmiQueryInterface" | "WmiAddRef" | "WmiRelease" | "WmiConnectServer"
             | "WmiExecQuery" | "WmiEnumNext" | "WmiClassGet" | "WmiNoop" => {
                 self.wmi_dispatch(vmm, symbol, args).unwrap_or(0)
+            }
+            "Direct3DCreate9" => {
+                // No D3D9 runtime is implemented. Return NULL so upstream tests take
+                // their explicit skip path instead of dereferencing a fake object.
+                0
+            }
+            "Direct3DCreate9Ex" => {
+                if a1 != 0 { let _ = vmm.write_u64(a1, 0); }
+                0x8000_4001 // E_NOTIMPL
             }
             "OutputDebugStringA" => {
                 // The audit layer decodes the guest pointer before returning. Do not print a
@@ -6109,6 +6142,11 @@ impl Win32Kernel {
         }
         if key == "psapi.dll" {
             let va = 0x7FFE_1000_A000;
+            self.modules.insert(key, va);
+            return va;
+        }
+        if key == "d3d9.dll" {
+            let va = 0x7FFE_1000_C000;
             self.modules.insert(key, va);
             return va;
         }

@@ -65,7 +65,11 @@ async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:T
   if child.is_null(){if t.style&0x10!=0{continue}DestroyWindow(machine,hwnd);return HWND::null()}
   if item.style&0xf==1 {machine.state.user32.windows.get_mut(hwnd).unwrap().dialog.as_mut().unwrap().default_id=item.id;}
  }
- let focus=GetNextDlgTabItem(machine,hwnd,HWND::null(),false);
+ // Prefer the default push-button as the initial focus. Legacy launchers (DOOM95)
+ // often dispatch WM_KEYDOWN directly instead of calling IsDialogMessage, so Enter
+ // must land on the OK button to activate the default command.
+ let default_id=machine.state.user32.windows.get(hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.default_id);
+ let focus=if default_id!=0{let h=GetDlgItem(machine,hwnd,default_id as i32);if h.is_null(){GetNextDlgTabItem(machine,hwnd,HWND::null(),false)}else{h}}else{GetNextDlgTabItem(machine,hwnd,HWND::null(),false)};
  let handled=Box::pin(dispatch(machine,&send_msg(hwnd,0x110,focus.to_raw(),param))).await;
  if machine.state.user32.windows.get(hwnd).is_some(){
   if handled!=0{let focus=GetNextDlgTabItem(machine,hwnd,HWND::null(),false);if !focus.is_null(){SetFocus(machine,focus);}}
