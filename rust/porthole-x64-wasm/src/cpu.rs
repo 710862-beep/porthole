@@ -729,6 +729,11 @@ impl CpuState {
         if off + 16 <= 4096 {
             if let Some(cb) = self.icache.get_mut(&page_base) {
                 if cb.page_epoch == cur_epoch && !vmm.is_page_swapped(page_base) {
+                    // A cached code page can still acquire PAGE_GUARD after it was
+                    // cached (VirtualProtect bumps the epoch, but be fail-closed).
+                    if vmm.has_guard(page_base) {
+                        vmm.check_instruction_fetch(rip)?;
+                    }
                     buf.copy_from_slice(&cb.code_window[off..off + 16]);
                     cb.exec_count = cb.exec_count.wrapping_add(1);
                     self.icache_hits += 1;

@@ -7474,7 +7474,7 @@ impl Win32Kernel {
         &mut self, vmm: &mut VirtualMemoryManager, cpu: &crate::cpu::CpuState,
         code: u32, flags: u32, rip: u64, rsp: u64, params: &[u64],
     ) -> Option<HleAction> {
-        if self.exception_depth >= 8 || !self.has_exception_handlers() { return None; }
+        if self.exception_depth >= 8 || (!self.has_exception_handlers() && !self.has_seh_pdata()) { return None; }
         let context = self.heap_alloc(vmm, self.process_heap, 1232);
         let record = self.heap_alloc(vmm, self.process_heap, 152);
         let pointers = self.heap_alloc(vmm, self.process_heap, 16);
