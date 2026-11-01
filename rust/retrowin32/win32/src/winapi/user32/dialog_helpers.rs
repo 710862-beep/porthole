@@ -11,7 +11,14 @@ use memory::Extensions;
 use std::rc::Rc;
 const TRACE_CONTEXT:&str="user32/dialog_helpers";
 pub const DIALOG_PROC:u32=0xffff0020;
-pub struct DialogInfo {pub proc:u32,pub result:u32,pub default_id:u32}
+pub struct DialogInfo {pub proc:u32,pub result:u32,pub default_id:u32,pub ended:bool,pub modal:bool}
+pub fn end_dialog(machine:&mut Machine,hDlg:HWND,result:u32)->bool{
+ let Some(w)=machine.state.user32.windows.get_mut(hDlg) else{kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+ let Some(d)=w.dialog.as_mut() else{kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+ d.result=result;d.ended=true;w.style.remove(WindowStyle::VISIBLE);
+ if let WindowType::TopLevel(t)=&mut w.typ{t.host.set_visible(false);}
+ true
+}
 fn fail(machine:&mut Machine,code:u32)->HWND{kernel32::teb_mut(machine).LastErrorValue=code;HWND::null()}
 fn text(n:&Name)->Result<String,u32>{match n{Name::None=>Ok(String::new()),Name::Text(s)=>Ok(s.clone()),_=>Err(50)}}
 fn units(n:i16,base:i32,div:i32)->u32{let v=n as i32*base;((v+if v>=0{div/2}else{-div/2})/div)as u32}
@@ -25,8 +32,8 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32{
   0x400=>machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|if d.default_id==0{0}else{0x534b0000|d.default_id}),
   0x401=>{if let Some(d)=machine.state.user32.windows.get_mut(msg.hwnd).and_then(|w|w.dialog.as_mut()){d.default_id=msg.wParam;}1},
   0x28=>{let h=if msg.lParam!=0{HWND::from_raw(msg.wParam)}else{{let focus=GetFocus(machine);GetNextDlgTabItem(machine,msg.hwnd,focus,msg.wParam!=0)}};if !h.is_null(){SetFocus(machine,h);}0},
-  // Default close hides/destroys a modeless dialog; no fake modal result.
-  0x10=>{DestroyWindow(machine,msg.hwnd);0},
+  // WM_CLOSE: a modal dialog ends with IDCANCEL; a modeless dialog is destroyed.
+  0x10=>{let modal=machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(false,|d|d.modal);if modal{end_dialog(machine,msg.hwnd,2);}else{DestroyWindow(machine,msg.hwnd);}0},
   _=>Box::pin(DefWindowProcA(machine,msg.hwnd,WM::try_from(msg.message),msg.wParam,msg.lParam)).await,
  }
 }
@@ -43,7 +50,7 @@ async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:T
  AdjustWindowRectEx(machine,Some(&mut rect),Ok(WindowStyle::from_bits_truncate(t.style)),false,Ok(WindowStyleEx::from_bits_truncate(t.ex)));
  let hwnd=Box::pin(CreateWindowExW(machine,Err(t.ex),CreateWindowClassName::Name(class.as_str16()),Some(title.as_str16()),Err(t.style&!0x10000000),units(t.x,8,4),units(t.y,8,8),(rect.right-rect.left)as u32,(rect.bottom-rect.top)as u32,parent,0,inst,0)).await;
  if hwnd.is_null(){return hwnd}
- machine.state.user32.windows.get_mut(hwnd).unwrap().dialog=Some(DialogInfo{proc,result:0,default_id:0});
+ machine.state.user32.windows.get_mut(hwnd).unwrap().dialog=Some(DialogInfo{proc,result:0,default_id:0,ended:false,modal:false});
  for item in t.items{
   let cls=match dialog_template::class_name(&item.class){Ok(c)=>c,Err(e)=>{DestroyWindow(machine,hwnd);return fail(machine,e)}};
   let caption=match text(&item.title){Ok(t)=>t,Err(e)=>{DestroyWindow(machine,hwnd);return fail(machine,e)}};

@@ -39,6 +39,7 @@ async function run(code, jit, validate = true) {
   const scratch = c.emu.peek_qwords(rsp - 0x100n, 16);
   return { status, regs, scratch, stats: host?.stats };
 }
+function movImm32(reg, imm) { return Buffer.from([0x40 | (reg >> 3), 0xb8 | (reg & 7), imm & 255, (imm >>> 8) & 255, (imm >>> 16) & 255, (imm >>> 24) & 255]); }
 function movImm64(reg, imm) { const b = Buffer.alloc(10); b[0] = 0x48 | (reg >> 3); b[1] = 0xb8 | (reg & 7); b.writeBigUInt64LE(imm, 2); return b; }
 
 test('native JIT stores of all integer widths commit and reload exactly', async t => {
@@ -179,4 +180,23 @@ test('REX low-byte registers use architectural indexes for partial ALU and flags
   assert.equal(jit.regs.rflags, interp.regs.rflags);
   assert.equal(BigInt(jit.regs.rax), 1n);
   assert.equal(jit.stats.traps, 0);
+});
+
+test('JIT multi-bit SHR preserves prior OF and parity uses the low byte', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // add eax,1 sets OF=1 (0x7fffffff -> 0x80000000). shr eax,2 must leave OF
+  // unchanged for count>1, matching the interpreter and the validation samples.
+  const code = Buffer.concat([
+    movImm32(0, 0x7fffffff),
+    Buffer.from([0x40, 0x83, 0xc0, 0x01]), // add eax,1
+    Buffer.from([0x40, 0xc1, 0xe8, 0x02]), // shr eax,2
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.rflags, interp.regs.rflags, 'multi-bit SHR must not clear OF');
+  assert.ok((jit.regs.rflags & 0x800) !== 0, 'OF should survive shr eax,2');
 });

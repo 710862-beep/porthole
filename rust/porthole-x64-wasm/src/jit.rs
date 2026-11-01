@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 8;
+pub const JIT_COMPILER_VERSION: u64 = 9;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -662,7 +662,9 @@ impl HybridWasmJit {
         Self::local_get(b, 17); Self::i64_const(b, !0xC4i64); b.push(0x83); Self::local_set(b, 17);
         Self::local_get(b, 20); b.push(0x50); Self::or_flag(b, 0x40);
         Self::local_get(b, 20); Self::i64_const(b, 1i64 << (width * 8 - 1)); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 0x80);
-        Self::local_get(b, 20); Self::local_get(b, 20); Self::i64_const(b, 4); b.push(0x88); b.push(0x85); Self::local_set(b, 21);
+        // x86 PF is computed from the low 8 bits of the result only.
+        Self::local_get(b, 20); Self::i64_const(b, 0xFF); b.push(0x83); Self::local_set(b, 21);
+        Self::local_get(b, 21); Self::local_get(b, 21); Self::i64_const(b, 4); b.push(0x88); b.push(0x85); Self::local_set(b, 21);
         Self::local_get(b, 21); Self::local_get(b, 21); Self::i64_const(b, 2); b.push(0x88); b.push(0x85); Self::local_set(b, 21);
         Self::local_get(b, 21); Self::local_get(b, 21); Self::i64_const(b, 1); b.push(0x88); b.push(0x85); Self::i64_const(b, 1); b.push(0x83); b.push(0x50); Self::or_flag(b, 4);
     }
@@ -712,13 +714,34 @@ impl HybridWasmJit {
         match kind {
             4 => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x86); }
             5 => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x88); }
-            _ => { Self::local_get(b, 18); if width == 4 { b.push(0xA7); b.push(0xAC); } Self::local_get(b, 19); b.push(0x87); }
+            _ => {
+                Self::local_get(b, 18);
+                if width < 8 {
+                    // Sign-extend the masked operand from its architectural width
+                    // before the arithmetic shift (SAR 8/16/32/64).
+                    let sh = (64 - width as i64 * 8);
+                    Self::i64_const(b, sh); b.push(0x86);
+                    Self::i64_const(b, sh); b.push(0x88);
+                }
+                Self::local_get(b, 19); b.push(0x87);
+            }
         }
         Self::mask_width(b, width); Self::local_set(b, 20); Self::write_reg(b, dst, width, 20);
         if count == 0 { return; }
-        Self::local_get(b, 17); Self::i64_const(b, !0x811i64); b.push(0x83); Self::local_set(b, 17);
+        // x86 leaves OF undefined for multi-bit SHL/SHR; the reference interpreter
+        // preserves it, so the JIT must not clear it either (SAR always clears OF).
+        let clear = if kind == 7 || count == 1 { !0x811i64 } else { !0x11i64 };
+        Self::local_get(b, 17); Self::i64_const(b, clear); b.push(0x83); Self::local_set(b, 17);
         if kind == 4 { Self::local_get(b, 18); Self::i64_const(b, (bits - count) as i64); b.push(0x88); }
-        else if kind == 7 { Self::local_get(b, 18); if width == 4 { b.push(0xA7); b.push(0xAC); } Self::i64_const(b, (count - 1) as i64); b.push(0x87); }
+        else if kind == 7 {
+            Self::local_get(b, 18);
+            if width < 8 {
+                let sh = (64 - width as i64 * 8);
+                Self::i64_const(b, sh); b.push(0x86);
+                Self::i64_const(b, sh); b.push(0x88);
+            }
+            Self::i64_const(b, (count - 1) as i64); b.push(0x87);
+        }
         else { Self::local_get(b, 18); Self::i64_const(b, (count - 1) as i64); b.push(0x88); }
         Self::i64_const(b, 1); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 1);
         if count == 1 {

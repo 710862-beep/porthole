@@ -281,6 +281,10 @@ async fn get_message(
     assert_eq!(wMsgFilterMax, 0);
 
     loop {
+        // Blocking GetMessage must observe the same injected raw-input stream as
+        // PeekMessage; otherwise a modal launcher that only calls GetMessage never
+        // sees the host's mouse/keyboard events.
+        super::raw_input::pump(machine);
         loop {
             match fill_message_queue(machine, hWnd) {
                 Ok(_) => break,
