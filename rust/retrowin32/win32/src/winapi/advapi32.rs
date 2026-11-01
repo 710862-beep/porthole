@@ -136,15 +136,15 @@ pub fn RegEnumKeyExA(machine: &mut Machine, hKey: HKEY, dwIndex: u32, lpName: u3
     let names = match value["names"].as_array() { Some(a) => a, None => return 13 };
     let Some(name) = names.get(dwIndex as usize).and_then(|v| v.as_str()) else { return 259; }; // ERROR_NO_MORE_ITEMS
     let bytes = name.as_bytes();
-    let cap = match lpcchName { Some(p) => *p, None => return 87 };
+    let cap = match lpcchName.as_deref() { Some(p) => *p, None => return 87 };
     if lpName == 0 { return 87; }
-    if (cap as usize) < bytes.len() + 1 { if let Some(p) = lpcchName { *p = bytes.len() as u32 + 1; } return 234; }
+    if (cap as usize) < bytes.len() + 1 { if let Some(p) = lpcchName.as_deref_mut() { *p = bytes.len() as u32 + 1; } return 234; }
     let mem = machine.mem();
     if lpName.checked_add(bytes.len() as u32 + 1).map_or(true, |end| end as usize > mem.as_slice().len()) { return 87; }
     mem.sub32_mut(lpName, bytes.len() as u32 + 1)[..bytes.len()].copy_from_slice(bytes);
     mem.put_pod::<u8>(lpName + bytes.len() as u32, 0);
-    if let Some(p) = lpcchName { *p = bytes.len() as u32; }
-    if let Some(p) = lpcchClass { *p = 0; }
+    if let Some(p) = lpcchName.as_deref_mut() { *p = bytes.len() as u32; }
+    if let Some(p) = lpcchClass.as_deref_mut() { *p = 0; }
     let _ = (lpClass, lpftLastWriteTime);
     0
 }

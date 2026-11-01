@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use std::cmp::min;
+use memory::Extensions;
 
 const TRACE_CONTEXT: &'static str = "gdi32/bitmap";
 
