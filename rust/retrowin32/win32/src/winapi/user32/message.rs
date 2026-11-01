@@ -361,6 +361,23 @@ pub fn TranslateMessage(machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
 }
 
 pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
+    // Dialog-manager keyboard translation applies to the focused child control as
+    // well as the dialog itself. IsDialogMessage would turn Enter/Esc into WM_COMMAND
+    // before the control's wndproc sees the key; legacy launchers (DOOM95) rely on it.
+    if msg.message == WM::KEYDOWN as u32 && (msg.wParam == 13 || msg.wParam == 27) {
+        let mut h = msg.hwnd;
+        let mut dlg = HWND::null();
+        for _ in 0..64 {
+            let Some(w) = machine.state.user32.windows.get(h) else { break };
+            if w.dialog.is_some() { dlg = h; break; }
+            if w.parent.is_null() { break; }
+            h = w.parent;
+        }
+        if !dlg.is_null() {
+            let translated = MSG { hwnd: dlg, message: msg.message, wParam: msg.wParam, lParam: msg.lParam, time: msg.time, pt_x: msg.pt_x, pt_y: msg.pt_y };
+            return Box::pin(super::dialog_helpers::dispatch(machine, &translated)).await;
+        }
+    }
     let wndproc = match machine.state.user32.windows.get(msg.hwnd) {
         Some(window) if !msg.hwnd.is_null() => window.wndproc_override.unwrap_or(window.wndclass.wndproc),
         _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}

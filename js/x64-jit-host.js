@@ -31,7 +31,8 @@
       this.enabled = options.enabled !== false;
       if (typeof this.emu.set_jit_enabled === 'function') this.emu.set_jit_enabled(this.enabled);
       try {
-        this.stats.tailCalls = WebAssembly.validate(TAIL_CALL_PROBE);
+        const tailCallOptOut = typeof process !== 'undefined' && process.env && process.env.PORTHOLE_JIT_TAIL_CALLS === '0';
+        this.stats.tailCalls = !tailCallOptOut && WebAssembly.validate(TAIL_CALL_PROBE);
         if (typeof this.emu.set_jit_tail_calls === 'function') this.emu.set_jit_tail_calls(this.stats.tailCalls);
       } catch { this.stats.tailCalls = false; }
     }
