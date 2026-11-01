@@ -115,6 +115,7 @@ pub enum UpcallState {
         param: u64,
         handle: u64,
         resume_rip: u64,
+        caller_rsp: u64,
     },
     Callback {
         resume_rip: u64,
@@ -3834,24 +3835,29 @@ impl Win32Kernel {
                     let _ = vmm.write_u32(a5, 0x2000 + self.threads.len() as u32);
                 }
                 // Cooperative single-threaded driver: run the new thread's TLS
-                // DLL_THREAD_ATTACH callbacks and entry point before returning the
-                // handle, so synchronous waiters observe a completed thread.
+                // DLL_THREAD_ATTACH callbacks and entry point on a private stack
+                // before returning the handle, so synchronous waiters observe a
+                // completed thread without corrupting the creator's stack.
+                let _ = vmm.map_region(base, 0x0010_0000, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, true);
+                let thread_rsp = top.wrapping_sub(0x100);
                 let callbacks = self.tls_callbacks.clone();
                 if !callbacks.is_empty() {
                     cpu.gpr[0] = self.image_base();
                     cpu.gpr[1] = 2; // DLL_THREAD_ATTACH
                     cpu.gpr[2] = 0;
+                    cpu.gpr[4] = thread_rsp;
                     self.upcall_stack.push(UpcallState::Thread {
                         callbacks: callbacks.clone(), index: 0, phase: 0,
-                        entry, param, handle, resume_rip: call_rip,
+                        entry, param, handle, resume_rip: call_rip, caller_rsp: guest_rsp,
                     });
                     return HleAction::Upcall { target: callbacks[0], resume_rip: call_rip, rax: 0 };
                 }
                 if entry != 0 {
                     cpu.gpr[0] = param;
+                    cpu.gpr[4] = thread_rsp;
                     self.upcall_stack.push(UpcallState::Thread {
                         callbacks: Vec::new(), index: 0, phase: 1,
-                        entry, param, handle, resume_rip: call_rip,
+                        entry, param, handle, resume_rip: call_rip, caller_rsp: guest_rsp,
                     });
                     return HleAction::Upcall { target: entry, resume_rip: call_rip, rax: 0 };
                 }
@@ -3888,7 +3894,23 @@ impl Win32Kernel {
                     self.exit_code = Some(a0 as u32);
                     return HleAction::ExitProcess(a0 as u32);
                 }
-                0
+                // ExitThread never returns to the caller.  If a cooperative thread
+                // upcall is in flight, complete it and resume the CreateThread stub.
+                if let Some(UpcallState::Thread { handle, resume_rip, caller_rsp, .. }) = self.upcall_stack.last().cloned() {
+                    if let Some(t) = self.threads.iter_mut().find(|t| t.handle == handle) {
+                        t.finished = true;
+                        t.exit_code = a0 as u32;
+                    }
+                    if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
+                    self.upcall_stack.pop();
+                    self.upcall_stack.push(UpcallState::Callback { resume_rip, api_symbol: "CreateThread".into(), result: handle });
+                    cpu.gpr[0] = handle;
+                    cpu.gpr[4] = caller_rsp;
+                    return HleAction::Upcall { target: crate::UPCALL_RETURN_THUNK, resume_rip, rax: handle };
+                }
+                // Main thread ExitThread behaves as ExitProcess.
+                self.exit_code = Some(a0 as u32);
+                return HleAction::ExitProcess(a0 as u32);
             }
             "TlsAlloc" => {
                 for (i, slot) in self.tls_slots.iter_mut().enumerate() {
@@ -7352,7 +7374,7 @@ impl Win32Kernel {
                 cpu.rip = resume_rip;
                 return Some(UpcallStep::ResumeGuest);
             }
-            Some(UpcallState::Thread { callbacks, index, phase, entry, param, handle, resume_rip }) => {
+            Some(UpcallState::Thread { callbacks, index, phase, entry, param, handle, resume_rip, caller_rsp }) => {
                 if phase == 0 {
                     let next = index + 1;
                     if next < callbacks.len() {
@@ -7378,6 +7400,8 @@ impl Win32Kernel {
                 if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
                 self.upcall_stack.pop();
                 self.upcall_stack.push(UpcallState::Callback { resume_rip, api_symbol: "CreateThread".into(), result: handle });
+                // Restore the creator's stack so the CreateThread stub returns correctly.
+                cpu.gpr[4] = caller_rsp.wrapping_sub(0x28);
                 return Some(UpcallStep::Resume(resume_rip));
             }
             Some(UpcallState::Initterm {

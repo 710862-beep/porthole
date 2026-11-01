@@ -101,7 +101,13 @@ async function main() {
         const pages = new Map(); let terminal = null;
         for (let n = 0; n < o.maxSlices && Date.now() - started < o.timeoutMs; n++) {
           const status = emu.run_slice(o.slice);
-          const chunk = emu.take_api_audit(); if (chunk) audit.push(...chunk.split('\n').filter(Boolean).map(JSON.parse));
+          const chunk = emu.take_api_audit();
+          if (chunk) {
+            const rows = chunk.split('\n').filter(Boolean).map(JSON.parse);
+            audit.push(...rows);
+            // Keep only the tail in memory; the full JSONL is written at the end.
+            if (audit.length > 200000) audit.splice(0, audit.length - 100000);
+          }
           const drained = emu.drain_evicted_pages();
           const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);
           for (let off = 0; off + 4104 <= drained.length; off += 4104) pages.set(view.getBigUint64(off, true), drained.slice(off + 8, off + 4104));
