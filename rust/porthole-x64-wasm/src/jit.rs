@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 5;
+pub const JIT_COMPILER_VERSION: u64 = 6;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -1065,10 +1065,12 @@ impl HybridWasmJit {
         Self::local_get(&mut b, 23); Self::i64_const(&mut b, block_insns); b.push(0x54);
         b.push(0x04); b.push(0x40);
         Self::ctx_store_const(&mut b, 16, JIT_STATUS_BUDGET as i64); Self::ctx_store_const(&mut b, 17, entry_rip as i64);
-        // Return the already-committed instruction total (a tail-called successor inherits
-        // its predecessor's ctx[18]). Never fall through to GPR writeback: the block body
-        // did not execute, so storing its write-mask locals would clobber live registers.
-        Self::ctx_load(&mut b, 18); b.push(0x0F);
+        // Commit the dynamic instruction total accumulated so far (local24). A tail-called
+        // successor inherits its predecessor's total; a self-loop may have completed many
+        // iterations before this budget check. Never fall through to GPR writeback: the
+        // next iteration did not execute, so storing write-mask locals would clobber regs.
+        Self::ctx_store_local(&mut b, 18, 24);
+        Self::local_get(&mut b, 24); b.push(0x0F);
         b.push(0x0B);
         // undo capacity check for store loops
         if has_stores && stores_per_iter > 0 {
@@ -1076,7 +1078,8 @@ impl HybridWasmJit {
             Self::i64_const(&mut b, JIT_UNDO_CAP as i64); b.push(0x56);
             b.push(0x04); b.push(0x40);
             Self::ctx_store_const(&mut b, 16, JIT_STATUS_BUDGET as i64); Self::ctx_store_const(&mut b, 17, entry_rip as i64);
-            Self::ctx_load(&mut b, 18); b.push(0x0F);
+            Self::ctx_store_local(&mut b, 18, 24);
+            Self::local_get(&mut b, 24); b.push(0x0F);
             b.push(0x0B);
         }
         for op in &block.ops { Self::emit_op(&mut b, op, resolve_func, abort_depth); }

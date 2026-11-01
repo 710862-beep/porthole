@@ -49,6 +49,12 @@ pub enum WM {
     ACTIVATEAPP = 0x001C,
     WINDOWPOSCHANGED = 0x0047,
     TIMER = 0x0113,
+    KEYDOWN = 0x0100,
+    KEYUP = 0x0101,
+    CHAR = 0x0102,
+    SYSKEYDOWN = 0x0104,
+    SYSKEYUP = 0x0105,
+    SYSCHAR = 0x0106,
     MOUSEMOVE = 0x0200,
     LBUTTONDOWN = 0x0201,
     LBUTTONUP = 0x0202,
@@ -325,9 +331,29 @@ pub fn WaitMessage(_machine: &mut Machine) -> bool {
 }
 
 #[win32_derive::dllexport]
-pub fn TranslateMessage(_machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
-    // TODO: translate key-related messages into enqueuing a WM_CHAR.
-    false // no message translated
+pub fn TranslateMessage(machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
+    let Some(msg) = lpMsg else { return false; };
+    let ch = match msg.message {
+        x if x == WM::KEYDOWN as u32 || x == WM::SYSKEYDOWN as u32 => Some(msg.wParam),
+        _ => None,
+    };
+    let Some(ch) = ch else { return false; };
+    // Legacy ANSI translation: VK codes below 0x20 are already the ASCII control
+    // character produced by the US keyboard layout (Enter=13, Escape=27, etc.).
+    // Printable VK codes are upper-case letters/digits; shift state is tracked by
+    // the host key map, so this is sufficient for dialog/menu navigation.
+    if ch > 0xFF { return false; }
+    let message = if msg.message == WM::SYSKEYDOWN as u32 { WM::SYSCHAR as u32 } else { WM::CHAR as u32 };
+    machine.state.user32.messages.push_back(MSG {
+        hwnd: msg.hwnd,
+        message,
+        wParam: ch,
+        lParam: msg.lParam,
+        time: msg.time,
+        pt_x: msg.pt_x,
+        pt_y: msg.pt_y,
+    });
+    true
 }
 
 pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
