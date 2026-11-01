@@ -29,6 +29,14 @@ sha256sum "$out/retrowin32.wasm" "$out/glue.mjs" > "$out/SHA256SUMS"
 cp LICENSE.Wine "$out/LICENSE.Wine"
 cp vendor/ATTRIBUTION.md "$out/ATTRIBUTION.md"
 git rev-parse HEAD > "$out/SOURCE_COMMIT"
-git archive --format=tar.gz --output="$out/corresponding-source.tar.gz" HEAD rust scripts js shims tests .github package.json package-lock.json LICENSE.Wine vendor/ATTRIBUTION.md README.md docs/wine-commit.txt docs/wine-porting-guide.md
+# The corresponding source must match the *built* candidate, not stale tracked
+# generated files. `make -B` regenerates win32/dll/*.dll and winapi/builtin.rs in
+# the working tree; git archive HEAD would ship the previous committed DLLs.
+tar -czf "$out/corresponding-source.tar.gz" \
+  --exclude='rust/retrowin32/target' \
+  --exclude='rust/retrowin32/win32/dll/*.obj' \
+  --exclude='rust/retrowin32/win32/dll/*.exp' \
+  --exclude='rust/retrowin32/win32/dll/*.lib' \
+  rust scripts js shims tests .github package.json package-lock.json LICENSE.Wine vendor/ATTRIBUTION.md README.md docs/wine-commit.txt docs/wine-porting-guide.md
 sha256sum "$out/LICENSE.Wine" "$out/ATTRIBUTION.md" "$out/SOURCE_COMMIT" "$out/corresponding-source.tar.gz" >> "$out/SHA256SUMS"
 echo "BUILD_COMPLETE: candidate artifacts only; guest validation still required."

@@ -250,11 +250,11 @@ pub mod IDirectDraw7 {
     }
 
     #[win32_derive::dllexport]
-    pub fn GetVerticalBlankStatus(_machine: &mut Machine, _this: u32, status: Option<&mut u32>) -> u32 {
+    pub fn GetVerticalBlankStatus(machine: &mut Machine, _this: u32, status: Option<&mut u32>) -> u32 {
         let Some(status) = status else { return DDERR_INVALIDPARAMS; };
-        // Flips complete synchronously in the software host, so the device is
-        // always in the vertical-blank-safe state when polled.
-        *status = 1;
+        // Honest 60 Hz software CRT clock: a 1 ms vertical-blank window each 16 ms
+        // refresh. Games that poll for the beam edge (DOOM95) need both states.
+        *status = if machine.host.ticks() % 16 == 0 { 1 } else { 0 };
         DD_OK
     }
 
@@ -322,15 +322,18 @@ pub mod IDirectDraw7 {
     }
 
     #[win32_derive::dllexport]
-    pub fn WaitForVerticalBlank(
-        _machine: &mut Machine,
-        this: u32,
-        flags: u32,
+    pub async fn WaitForVerticalBlank(
+        machine: &mut Machine,
+        _this: u32,
+        _flags: u32,
         _unused: u32,
     ) -> u32 {
-        // TODO: effect.exe uses this to pace itself; actually sync to a clock here?
-        #[cfg(not(feature = "wasm"))]
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Pace to the next 60 Hz vertical-blank window using the same honest clock
+        // as GetVerticalBlankStatus. The async upcall yields to the host timer so
+        // wall-clock time advances instead of spinning the Wasm instance.
+        let phase = machine.host.ticks() % 16;
+        let delay = if phase == 0 { 16 } else { 16 - phase };
+        crate::winapi::kernel32::Sleep(machine, delay).await;
         DD_OK
     }
 }

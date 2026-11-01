@@ -160,7 +160,7 @@ jobs:
         run: |
           mkdir -p artifacts
           set -o pipefail
-          node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
+          PORTHOLE_JIT_TELEMETRY=1 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
       - name: Publish the Tier B guest report through the Checks API
         if: always()
         env:
