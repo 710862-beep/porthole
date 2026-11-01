@@ -122,7 +122,7 @@ impl TryFrom<u32> for DDLOCK {
 }
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DDCOLORKEY {
     dwColorSpaceLowValue: DWORD,
     dwColorSpaceHighValue: DWORD,

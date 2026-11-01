@@ -34,6 +34,8 @@ pub struct Surface {
     pixels: u32,
     /// Address of attached surface, e.g. back buffer.
     attached: u32,
+    /// Optional DirectDraw color key (SetColorKey/GetColorKey).
+    color_key: Option<DDCOLORKEY>,
 }
 
 impl Surface {
@@ -48,6 +50,7 @@ impl Surface {
             palette: 0,
             pixels: 0,
             attached: 0,
+            color_key: None,
         }
     }
 

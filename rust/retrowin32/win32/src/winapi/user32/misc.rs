@@ -154,8 +154,9 @@ pub fn wsprintfW(machine: &mut Machine, buf: u32, fmt: Option<&Str16>, args: Var
 }
 
 #[win32_derive::dllexport]
-pub fn GetKeyState(_machine: &mut Machine, nVirtKey: u32) -> u32 {
-    0
+pub fn GetKeyState(machine: &mut Machine, nVirtKey: u32) -> u32 {
+    if nVirtKey > 255 { return 0; }
+    machine.host.key_state(nVirtKey) & 0x8001
 }
 
 #[win32_derive::dllexport]
