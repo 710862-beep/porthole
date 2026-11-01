@@ -37,6 +37,7 @@ pub struct DC {
     // per object type.
     pub brush: HGDIOBJ,
     pub pen: HGDIOBJ,
+    pub palette: HGDIOBJ,
 }
 
 impl DC {
@@ -48,6 +49,7 @@ impl DC {
             y: 0,
             brush: Default::default(),
             pen: Default::default(),
+            palette: Default::default(),
         }
     }
 
@@ -171,4 +173,19 @@ pub fn GetDCOrgEx(machine: &mut Machine, hdc: HDC, lpPoint: Option<&mut POINT>) 
         return true;
     }
     false
+}
+
+#[win32_derive::dllexport]
+pub fn CreateDCA(machine: &mut Machine, lpszDriver: Option<&str>, lpszDevice: Option<&str>, lpszOutput: Option<&str>, lpInitData: u32) -> HDC {
+    let _ = (lpszDevice, lpszOutput, lpInitData);
+    match lpszDriver {
+        Some("DISPLAY") | None => machine.state.gdi32.screen_dc,
+        _ => { crate::winapi::kernel32::teb_mut(machine).LastErrorValue = 50; HDC::null() }
+    }
+}
+#[win32_derive::dllexport]
+pub fn CreateDCW(machine: &mut Machine, lpszDriver: Option<&crate::winapi::types::Str16>, lpszDevice: Option<&crate::winapi::types::Str16>, lpszOutput: Option<&crate::winapi::types::Str16>, lpInitData: u32) -> HDC {
+    let _ = (lpszDevice, lpszOutput, lpInitData);
+    let driver = lpszDriver.map(|s| s.to_string());
+    CreateDCA(machine, driver.as_deref(), None, None, lpInitData)
 }

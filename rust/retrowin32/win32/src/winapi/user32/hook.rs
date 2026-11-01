@@ -35,10 +35,11 @@ pub fn SetWindowsHookExA(machine: &mut Machine, idHook: i32, lpfn: u32, hmod: u3
         return error(machine, 87);
     }
     let current = thread_id(machine);
-    if dwThreadId != current || hmod != 0 {
+    if dwThreadId != current {
         // Global/DLL-injected hooks are not implemented; do not fake success.
         return error(machine, 50);
     }
+    let _ = hmod;
     let handle = 0x7000_0000u32 | (machine.state.user32.hooks.len() as u32 + 1);
     machine.state.user32.hooks.push(Hook { handle, id: idHook, proc: lpfn, thread: current });
     handle

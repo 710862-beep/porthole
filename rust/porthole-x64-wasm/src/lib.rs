@@ -567,7 +567,7 @@ impl BrowserX64Emulator {
             }
 
             // --- ordinary guest instruction ----------------------------------------------------
-            let exception_snapshot = if self.kernel.has_exception_handlers() { Some(self.cpu.clone()) } else { None };
+            let exception_snapshot = if self.kernel.has_exception_handlers() { Some(self.cpu.exception_snapshot()) } else { None };
             let outcome = self.cpu.step_one(&mut self.vmm);
             match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {

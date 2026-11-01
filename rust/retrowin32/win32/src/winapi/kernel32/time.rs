@@ -251,3 +251,30 @@ pub fn LocalFileTimeToFileTime(machine:&mut Machine,lpLocalFileTime:u32,lpFileTi
  use super::*;
  #[test]fn signed_bias_and_roundtrip(){let t=116_444_736_000_000_000u64;assert_eq!(local_ticks(t,-10800),t-10800*10_000_000);assert_eq!(local_ticks(local_ticks(t,-10800),10800),t);assert_eq!(local_ticks(t,19800),t+19800*10_000_000);}
 }
+
+#[win32_derive::dllexport]
+pub fn DosDateTimeToFileTime(machine: &mut Machine, wFatDate: u16, wFatTime: u16, lpFileTime: Option<&mut FILETIME>) -> bool {
+    let year = 1980 + ((wFatDate >> 9) as i32);
+    let month = ((wFatDate >> 5) & 0x0F) as u32;
+    let day = (wFatDate & 0x1F) as u32;
+    let hour = (wFatTime >> 11) as u32;
+    let minute = ((wFatTime >> 5) & 0x3F) as u32;
+    let second = ((wFatTime & 0x1F) * 2) as u32;
+    let Some(dt) = chrono::NaiveDate::from_ymd_opt(year, month, day).and_then(|d| d.and_hms_opt(hour, minute, second)) else {
+        super::set_last_error(machine, ERROR::INVALID_DATA); return false;
+    };
+    if let Some(out) = lpFileTime { *out = FILETIME::from_unix_nanos(dt.and_utc().timestamp_nanos_opt().unwrap_or(0)); }
+    true
+}
+#[win32_derive::dllexport]
+pub fn FileTimeToDosDateTime(machine: &mut Machine, lpFileTime: Option<&FILETIME>, lpFatDate: Option<&mut u16>, lpFatTime: Option<&mut u16>) -> bool {
+    let Some(ft) = lpFileTime else { super::set_last_error(machine, ERROR::INVALID_PARAMETER); return false; };
+    let nanos = ft.to_unix_nanos();
+    let Some(dt) = chrono::NaiveDateTime::from_timestamp_opt(nanos.div_euclid(1_000_000_000), nanos.rem_euclid(1_000_000_000) as u32) else {
+        super::set_last_error(machine, ERROR::INVALID_PARAMETER); return false;
+    };
+    if dt.year() < 1980 || dt.year() > 2107 { super::set_last_error(machine, ERROR::INVALID_PARAMETER); return false; }
+    if let Some(d) = lpFatDate { *d = (((dt.year() - 1980) as u16) << 9) | ((dt.month() as u16) << 5) | dt.day() as u16; }
+    if let Some(t) = lpFatTime { *t = ((dt.hour() as u16) << 11) | ((dt.minute() as u16) << 5) | (dt.second() as u16 / 2); }
+    true
+}

@@ -22,7 +22,7 @@ pub fn GetACP(_machine: &mut Machine) -> u32 {
 
 #[win32_derive::dllexport]
 pub fn GetOEMCP(_machine: &mut Machine) -> u32 {
-    todo!()
+    437
 }
 
 #[win32_derive::dllexport]
@@ -31,8 +31,15 @@ pub fn IsValidCodePage(_machine: &mut Machine, CodePage: u32) -> bool {
 }
 
 #[win32_derive::dllexport]
-pub fn GetCPInfo(_machine: &mut Machine, _CodePage: u32, _lpCPInfo: u32) -> u32 {
-    0 // fail
+pub fn GetCPInfo(machine: &mut Machine, CodePage: u32, lpCPInfo: u32) -> u32 {
+    if !matches!(CodePage, 0 | 1 | 437 | 1252 | 65001) || lpCPInfo == 0 { super::teb_mut(machine).LastErrorValue = 87; return 0; }
+    let mem = machine.mem();
+    if lpCPInfo.checked_add(12).map_or(true, |end| end as usize > mem.as_slice().len()) { super::teb_mut(machine).LastErrorValue = 87; return 0; }
+    use memory::ExtensionsMut;
+    mem.put_pod::<u32>(lpCPInfo, if CodePage == 65001 { 4 } else { 1 });
+    mem.put_pod::<u8>(lpCPInfo + 4, if CodePage == 65001 { 0 } else { b'?' });
+    for i in 0..6 { mem.put_pod::<u8>(lpCPInfo + 5 + i, 0); }
+    1
 }
 
 #[win32_derive::dllexport]
@@ -186,4 +193,44 @@ pub fn GetStringTypeW(
     lpCharType: Option<&mut u32>,
 ) -> bool {
     todo!();
+}
+
+// Wine kernelbase/locale.c CompareStringA/W ordinal contract: 1 less, 2 equal,
+// 3 greater; 0 on invalid parameter. Locale tables are not installed, so use
+// the requested case/width-insensitive ordinal comparison for the C locale.
+fn compare_units(a: &[u16], b: &[u16], ignore_case: bool) -> i32 {
+    let norm = |u: u16| if ignore_case && u < 128 { (u as u8 as char).to_ascii_uppercase() as u16 } else { u };
+    for (x, y) in a.iter().zip(b.iter()) {
+        let (x, y) = (norm(*x), norm(*y));
+        if x < y { return 1; }
+        if x > y { return 3; }
+    }
+    match a.len().cmp(&b.len()) { std::cmp::Ordering::Less => 1, std::cmp::Ordering::Greater => 3, std::cmp::Ordering::Equal => 2 }
+}
+#[win32_derive::dllexport]
+pub fn CompareStringW(machine: &mut Machine, Locale: u32, dwCmpFlags: u32, lpString1: u32, cch1: i32, lpString2: u32, cch2: i32) -> i32 {
+    if lpString1 == 0 || lpString2 == 0 || cch1 == 0 || cch2 == 0 { super::teb_mut(machine).LastErrorValue = 87; return 0; }
+    let mem = machine.mem();
+    let read = |ptr: u32, cch: i32| -> Vec<u16> {
+        if cch >= 0 {
+            return mem.sub32(ptr, 2 * cch as u32).chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        }
+        let Some(bytes) = mem.as_slice().get(ptr as usize..) else { return Vec::new(); };
+        bytes.chunks_exact(2).take(1_048_576).map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|&u| u != 0).collect()
+    };
+    let a = read(lpString1, cch1); let b = read(lpString2, cch2);
+    let _ = Locale;
+    compare_units(&a, &b, dwCmpFlags & 1 != 0)
+}
+#[win32_derive::dllexport]
+pub fn CompareStringA(machine: &mut Machine, Locale: u32, dwCmpFlags: u32, lpString1: u32, cch1: i32, lpString2: u32, cch2: i32) -> i32 {
+    if lpString1 == 0 || lpString2 == 0 || cch1 == 0 || cch2 == 0 { super::teb_mut(machine).LastErrorValue = 87; return 0; }
+    let mem = machine.mem();
+    let read = |ptr: u32, cch: i32| -> Vec<u16> {
+        if cch >= 0 { return mem.sub32(ptr, cch as u32).iter().map(|&b| b as u16).collect(); }
+        mem.slicez(ptr).iter().map(|&b| b as u16).collect()
+    };
+    let a = read(lpString1, cch1); let b = read(lpString2, cch2);
+    let _ = Locale;
+    compare_units(&a, &b, dwCmpFlags & 1 != 0)
 }

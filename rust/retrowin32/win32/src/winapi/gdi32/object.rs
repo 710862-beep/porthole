@@ -30,6 +30,7 @@ pub enum Object {
     Brush(Brush),
     Bitmap(BitmapType),
     Pen(Pen),
+    Palette(Vec<[u8; 4]>),
 }
 
 pub type HGDIOBJ = HANDLE<Object>;
@@ -99,6 +100,7 @@ pub fn SelectObject(machine: &mut Machine, hdc: HDC, hGdiObj: HGDIOBJ) -> HGDIOB
         },
         Object::Brush(_) => std::mem::replace(&mut dc.brush, hGdiObj),
         Object::Pen(_) => std::mem::replace(&mut dc.pen, hGdiObj),
+        Object::Palette(_) => std::mem::replace(&mut dc.palette, hGdiObj),
     }
 }
 
@@ -127,6 +129,7 @@ pub fn GetObjectA(machine: &mut Machine, handle: HGDIOBJ, bytes: u32, out: u32) 
             bytes
         }
         Object::Pen(_) => todo!(),
+        Object::Palette(_) => 0,
     }
 }
 

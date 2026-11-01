@@ -1190,3 +1190,11 @@ pub fn SearchPathA(machine: &mut Machine, path: Option<&str>, file: Option<&str>
     }
     set_last_error(machine,ERROR::FILE_NOT_FOUND);0
 }
+
+#[win32_derive::dllexport]
+pub fn DeviceIoControl(machine: &mut Machine, hDevice: u32, dwIoControlCode: u32, lpInBuffer: u32, nInBufferSize: u32, lpOutBuffer: u32, nOutBufferSize: u32, lpBytesReturned: Option<&mut u32>, lpOverlapped: u32) -> bool {
+    let _ = (hDevice, dwIoControlCode, lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize, lpOverlapped);
+    if let Some(n) = lpBytesReturned { *n = 0; }
+    super::set_last_error(machine, ERROR::NOT_SUPPORTED);
+    false
+}

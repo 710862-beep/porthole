@@ -395,6 +395,15 @@ pub fn PostMessageA(machine: &mut Machine, hWnd: HWND, Msg: u32, wParam: u32, lP
 }
 
 #[win32_derive::dllexport]
+pub fn PostThreadMessageA(machine: &mut Machine, idThread: u32, Msg: u32, wParam: u32, lParam: u32) -> bool {
+    if idThread == 0 { crate::winapi::kernel32::teb_mut(machine).LastErrorValue = 87; return false; }
+    machine.state.user32.messages.push_back(MSG {
+        hwnd: HWND::null(), message: Msg, wParam, lParam, time: 0, pt_x: 0, pt_y: 0,
+    });
+    true
+}
+
+#[win32_derive::dllexport]
 pub fn PostMessageW(machine: &mut Machine, hWnd: HWND, Msg: u32, wParam: u32, lParam: u32) -> bool {
     machine.state.user32.messages.push_back(MSG {
         hwnd: hWnd,

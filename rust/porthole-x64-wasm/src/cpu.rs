@@ -72,6 +72,31 @@ pub struct CpuState {
 }
 
 impl CpuState {
+    /// Register/FPU snapshot for exception delivery. The decoded-block cache is execution
+    /// state, not architectural state; cloning it per instruction made VEH-enabled guests
+    /// (e.g. kernel32!atom) run at ~0.25 MIPS. Restoring an empty cache is safe.
+    pub fn exception_snapshot(&self) -> Self {
+        Self {
+            gpr: self.gpr,
+            rip: self.rip,
+            rflags: self.rflags,
+            gs_base: self.gs_base,
+            fs_base: self.fs_base,
+            ymm: self.ymm,
+            mxcsr: self.mxcsr,
+            fpu_regs: self.fpu_regs,
+            fpu_top: self.fpu_top,
+            fpu_cw: self.fpu_cw,
+            fpu_sw: self.fpu_sw,
+            icache: HashMap::new(),
+            instructions_executed: self.instructions_executed,
+            icache_hits: self.icache_hits,
+            icache_misses: self.icache_misses,
+            rip_history: self.rip_history,
+            rip_history_len: self.rip_history_len,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             gpr: [0; 16],

@@ -45,6 +45,7 @@
           if(names.length>4096)return JSON.stringify({status:8});
           return JSON.stringify({status:0,names:names.sort((a,b)=>a.localeCompare(b))});
         }
+        if(op==='delete') { const path=input?`${root}\\${input}`:root; const code=this.store.deleteKeySync(path); this._persist(); return JSON.stringify({status:code}); }
         if(op==='query') {
           const value=this.store._record(root)?.values.get(input.toLocaleLowerCase('en-US'));
           if(!value)return JSON.stringify({status:2});

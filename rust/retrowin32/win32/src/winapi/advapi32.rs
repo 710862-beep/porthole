@@ -123,3 +123,28 @@ fn user_name(machine:&mut Machine,name:u32,size:u32,wide:bool)->bool{
 pub fn GetUserNameA(machine:&mut Machine,lpBuffer:u32,pcbBuffer:u32)->bool{user_name(machine,lpBuffer,pcbBuffer,false)}
 #[win32_derive::dllexport]
 pub fn GetUserNameW(machine:&mut Machine,lpBuffer:u32,pcbBuffer:u32)->bool{user_name(machine,lpBuffer,pcbBuffer,true)}
+
+#[win32_derive::dllexport]
+pub fn RegDeleteKeyA(machine: &mut Machine, hKey: HKEY, lpSubKey: Option<&str>) -> u32 {
+    status(&call(machine, "delete", hKey, lpSubKey.unwrap_or(""), 0, &[]))
+}
+#[win32_derive::dllexport]
+pub fn RegEnumKeyExA(machine: &mut Machine, hKey: HKEY, dwIndex: u32, lpName: u32, lpcchName: Option<&mut u32>, lpReserved: u32, lpClass: u32, lpcchClass: Option<&mut u32>, lpftLastWriteTime: u32) -> u32 {
+    if lpReserved != 0 { return 87; }
+    let value = call(machine, "enumKeys", hKey, "", 0, &[]);
+    let code = status(&value); if code != 0 { return code; }
+    let names = match value["names"].as_array() { Some(a) => a, None => return 13 };
+    let Some(name) = names.get(dwIndex as usize).and_then(|v| v.as_str()) else { return 259; }; // ERROR_NO_MORE_ITEMS
+    let bytes = name.as_bytes();
+    let cap = match lpcchName { Some(p) => *p, None => return 87 };
+    if lpName == 0 { return 87; }
+    if (cap as usize) < bytes.len() + 1 { if let Some(p) = lpcchName { *p = bytes.len() as u32 + 1; } return 234; }
+    let mem = machine.mem();
+    if lpName.checked_add(bytes.len() as u32 + 1).map_or(true, |end| end as usize > mem.as_slice().len()) { return 87; }
+    mem.sub32_mut(lpName, bytes.len() as u32 + 1)[..bytes.len()].copy_from_slice(bytes);
+    mem.put_pod::<u8>(lpName + bytes.len() as u32, 0);
+    if let Some(p) = lpcchName { *p = bytes.len() as u32; }
+    if let Some(p) = lpcchClass { *p = 0; }
+    let _ = (lpClass, lpftLastWriteTime);
+    0
+}

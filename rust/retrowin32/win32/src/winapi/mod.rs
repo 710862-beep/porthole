@@ -7,6 +7,7 @@ mod bitmap;
 mod builtin;
 mod com;
 mod comctl32;
+mod comdlg32;
 mod dplay;
 pub mod ddraw;
 pub mod dsound;
@@ -45,8 +46,9 @@ impl<'a> std::fmt::Display for ImportSymbol<'a> {
     }
 }
 
-pub const DLLS: [builtin::BuiltinDLL; 19] = [
+pub const DLLS: [builtin::BuiltinDLL; 20] = [
     builtin::comctl32::DLL,
+    builtin::comdlg32::DLL,
     builtin::advapi32::DLL,
     builtin::bass::DLL,
     builtin::dplay::DLL,

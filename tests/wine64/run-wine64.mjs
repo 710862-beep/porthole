@@ -38,6 +38,8 @@ function parseArgs(argv) {
     maxSlices: 400,
     timeoutMs: 240_000,
     auditDir: 'artifacts/torture/wine64',
+    auditMax: 5000,
+    traceMax: 4096,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -50,6 +52,8 @@ function parseArgs(argv) {
     else if (a === '--max-slices') out.maxSlices = Number(argv[++i]);
     else if (a === '--timeout-ms') out.timeoutMs = Number(argv[++i]);
     else if (a === '--audit-dir') out.auditDir = argv[++i];
+    else if (a === '--audit-max') out.auditMax = Number(argv[++i]);
+    else if (a === '--trace-max') out.traceMax = Number(argv[++i]);
     else throw new Error(`Argumento desconhecido: ${a}`);
   }
   return out;
@@ -111,8 +115,11 @@ async function runOne(binding, manifestEntry, options, testName = null) {
   // The winetest summary line is the conformance authority. API audit is a
   // sampled diagnostic (the emulator caps each drained batch); a full audit of
   // stress suites such as kernel32!atom is gigabytes and dominates runtime.
-  emu.enable_api_audit(5000);
-  emu.enable_trace(4096);
+  // Stress subtests (kernel32!atom issues ~100k ok() assertions) can spend more time in
+  // diagnostic snapshots than in the guest. The winetest summary remains the authority;
+  // callers may disable sampling for a measured stress run and re-enable it to diagnose a failure.
+  emu.enable_api_audit(options.auditMax);
+  if (options.traceMax > 0) emu.enable_trace(options.traceMax);
   emu.set_hle_trace_only(true);
   // Stream the full API audit to disk as it is produced. Keeping every parsed
   // entry in memory made long upstream suites (e.g. kernel32 atom) exhaust the
