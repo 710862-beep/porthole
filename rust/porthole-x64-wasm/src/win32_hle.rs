@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::d3d12_hle::D3d12Subsystem;
 use crate::pe64::{
@@ -370,6 +370,9 @@ pub struct Win32Kernel {
     pub tls_callbacks: Vec<u64>,
     pub pdata: Vec<(u32, u32, u32)>,
     signal_handlers: [u64; 16],
+    /// Opaque process/thread token handles. They have no waitable semantics, but
+    /// CloseHandle must still recognize them (Wine kernel32:environ closes one).
+    token_handles: HashSet<u64>,
     wmi_objects: HashMap<u64, WmiObject>,
     pub crit_sections: HashMap<u64, u32>,
     pub d3d12: D3d12Subsystem,
@@ -476,6 +479,7 @@ impl Win32Kernel {
             tls_callbacks: Vec::new(),
             pdata: Vec::new(),
             signal_handlers: [0; 16],
+            token_handles: HashSet::new(),
             wmi_objects: HashMap::new(),
             crit_sections: HashMap::new(),
             d3d12: D3d12Subsystem::new(),
@@ -2296,6 +2300,7 @@ impl Win32Kernel {
                     return HleAction::Return(0);
                 }
                 let token = self.alloc_handle();
+                self.token_handles.insert(token);
                 let _ = vmm.write_u64(a2, token);
                 1
             }
@@ -6223,6 +6228,9 @@ impl Win32Kernel {
         self.find_searches.remove(&handle);
         self.semaphores.remove(&handle);
         self.file_mappings.remove(&handle);
+        if self.token_handles.remove(&handle) {
+            return 1;
+        }
         if let Some(key) = self.handle_map.remove(&handle) {
             if let Some(f) = self.files.get_mut(&key) {
                 f.handle_count = f.handle_count.saturating_sub(1);
@@ -7364,9 +7372,10 @@ impl Win32Kernel {
                     return Some(1); // WBEM_S_FALSE
                 }
                 en.enum_done = true;
-                // Only return an object for Win32_Fan queries (explicit virtual hardware).
-                let has_fan = en.query.contains("Win32_Fan");
-                if has_fan {
+                // Explicit Porthole virtual hardware inventory. These are not physical
+                // device claims: each supported WMI class exposes one virtual device.
+                let has_device = Self::wmi_query_has_virtual_device(&en.query);
+                if has_device {
                     let cls = self.wmi_alloc_object(vmm, 3, String::new());
                     if args[3] != 0 { let _ = vmm.write_u64(args[3], cls); }
                     if args[4] != 0 { let _ = vmm.write_u32(args[4], 1); }
@@ -7381,12 +7390,40 @@ impl Win32Kernel {
         }
     }
 
+    /// WMI classes backed by the explicit Porthole virtual hardware profile.
+    /// al-khaser's hardware-presence checks treat an empty enumeration as a VM
+    /// indicator; returning the virtual devices is honest inventory, not spoofing.
+    fn wmi_query_has_virtual_device(query: &str) -> bool {
+        const CLASSES: &[&str] = &[
+            "Win32_Fan",
+            "Win32_CacheMemory",
+            "Win32_PhysicalMemory",
+            "Win32_MemoryDevice",
+            "Win32_MemoryArray",
+            "Win32_VoltageProbe",
+            "Win32_PortConnector",
+            "Win32_SMBIOSMemory",
+            "Win32_PerfFormattedData_Counters_ThermalZoneInformation",
+            "CIM_Memory",
+            "CIM_Sensor",
+            "CIM_NumericSensor",
+            "CIM_TemperatureSensor",
+            "CIM_VoltageSensor",
+            "CIM_PhysicalConnector",
+            "CIM_Slot",
+        ];
+        CLASSES.iter().any(|c| query.contains(c))
+    }
+
     pub fn drain_stdout(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.stdout)
     }
 
     pub fn has_exception_handlers(&self) -> bool {
-        !self.vectored_handlers.is_empty() || self.unhandled_filter != 0
+        // SEH-only binaries (MSVC __try/__except) carry unwind/handler metadata in
+        // .pdata even when no VEH/UEF is registered. Without this, guard-page and
+        // access-violation exceptions never reach the guest's __except blocks.
+        !self.vectored_handlers.is_empty() || self.unhandled_filter != 0 || !self.pdata.is_empty()
     }
 
     /// Builds the real AMD64 EXCEPTION_RECORD/CONTEXT/EXCEPTION_POINTERS ABI in guest memory
@@ -7576,8 +7613,17 @@ impl Win32Kernel {
                 }
             }
             let code = vmm.read_u32(record).unwrap_or(0);
+            let exc_rip = vmm.read_u64(record + 16).unwrap_or(0);
+            let nparams = vmm.read_u32(record + 24).unwrap_or(0) as usize;
+            let mut params_txt = String::new();
+            for i in 0..nparams.min(4) {
+                let p = vmm.read_u64(record + 32 + i as u64 * 8).unwrap_or(0);
+                params_txt.push_str(&format!("{}0x{p:x}", if i == 0 { "" } else { "," }));
+            }
             self.upcall_stack.pop(); self.exception_depth = self.exception_depth.saturating_sub(1);
-            return Some(UpcallStep::Fault(format!("unhandled guest exception 0x{code:08x}")));
+            return Some(UpcallStep::Fault(format!(
+                "unhandled guest exception 0x{code:08x} at rip=0x{exc_rip:x} params=[{params_txt}]"
+            )));
         }
         match self.upcall_stack.last().cloned() {
             Some(UpcallState::Callback { resume_rip, result, api_symbol, .. }) => {

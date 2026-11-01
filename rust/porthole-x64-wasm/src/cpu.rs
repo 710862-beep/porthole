@@ -723,6 +723,8 @@ impl CpuState {
     ) -> Result<usize, MemoryTrap> {
         let rip = self.rip;
         let page_base = rip & !PAGE_MASK;
+        // Consume execute-side PAGE_GUARD before any icache hit can serve the page.
+        vmm.check_instruction_fetch(rip)?;
         let off = (rip & PAGE_MASK) as usize;
         let cur_epoch = vmm.page_write_epoch(page_base);
 

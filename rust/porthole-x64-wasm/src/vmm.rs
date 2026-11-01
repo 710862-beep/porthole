@@ -554,6 +554,22 @@ impl VirtualMemoryManager {
     /// Consume a one-shot PAGE_GUARD bit on guest access. Loader/HLE host writes do not
     /// call this, and native JIT resolve deliberately fails without consuming the guard so
     /// the interpreter re-executes the faulting instruction and delivers the exception.
+    /// True when a one-shot PAGE_GUARD bit is still armed on the page.
+    pub fn has_guard(&self, page_base: u64) -> bool {
+        self.find_region(page_base)
+            .map(|r| r.protect & PAGE_GUARD != 0)
+            .unwrap_or(false)
+    }
+
+    /// Instruction-fetch access check. Data reads/writes already consume PAGE_GUARD
+    /// through ensure_page_mut/preflight_range, but the CPU icache fast path must
+    /// not bypass execute-side guard semantics.
+    pub fn check_instruction_fetch(&mut self, addr: u64) -> Result<(), MemoryTrap> {
+        let page_base = Self::align_down(addr);
+        self.check_committed(page_base, false)?;
+        self.check_guard(page_base)
+    }
+
     fn check_guard(&mut self, page_base: u64) -> Result<(), MemoryTrap> {
         let page_base = Self::align_down(page_base);
         let Some(reg) = self.find_region(page_base).cloned() else { return Ok(()); };

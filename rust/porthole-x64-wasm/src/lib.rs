@@ -1346,6 +1346,10 @@ impl BrowserX64Emulator {
 
     /// Copies GPRs/RFLAGS into the shared v2 context and arms the artifact at current RIP.
     pub fn jit_enter_block(&mut self) -> String {
+        // A guard page must be consumed by the interpreter's instruction fetch so
+        // the guest receives STATUS_GUARD_PAGE_VIOLATION; native entry must not
+        // silently execute through it.
+        if self.vmm.has_guard(self.cpu.rip) { return String::new(); }
         let epoch = self.vmm.page_write_epoch(self.cpu.rip & !0xFFF);
         let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
         self.jit_ctx[..16].copy_from_slice(&self.cpu.gpr);

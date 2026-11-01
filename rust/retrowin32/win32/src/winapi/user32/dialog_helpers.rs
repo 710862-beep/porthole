@@ -32,6 +32,11 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32{
   0x400=>machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|if d.default_id==0{0}else{0x534b0000|d.default_id}),
   0x401=>{if let Some(d)=machine.state.user32.windows.get_mut(msg.hwnd).and_then(|w|w.dialog.as_mut()){d.default_id=msg.wParam;}1},
   0x28=>{let h=if msg.lParam!=0{HWND::from_raw(msg.wParam)}else{{let focus=GetFocus(machine);GetNextDlgTabItem(machine,msg.hwnd,focus,msg.wParam!=0)}};if !h.is_null(){SetFocus(machine,h);}0},
+  // Modeless dialogs still need the default push-button/cancel translation when the
+  // owner's message loop dispatches WM_KEYDOWN directly (DOOM95's launcher does not
+  // route every key through IsDialogMessage). Enter activates the default ID; Esc
+  // posts IDCANCEL. This is the same command a dialog manager would generate.
+  0x100 if msg.wParam==13||msg.wParam==27=>{let id=if msg.wParam==27{2}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(1,|d|if d.default_id==0{1}else{d.default_id})};let child=GetDlgItem(machine,msg.hwnd,id as i32);Box::pin(dispatch(machine,&send_msg(msg.hwnd,0x111,id,child.to_raw()))).await;0},
   // WM_CLOSE: a modal dialog ends with IDCANCEL; a modeless dialog is destroyed.
   0x10=>{let modal=machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(false,|d|d.modal);if modal{end_dialog(machine,msg.hwnd,2);}else{DestroyWindow(machine,msg.hwnd);}0},
   _=>Box::pin(DefWindowProcA(machine,msg.hwnd,WM::try_from(msg.message),msg.wParam,msg.lParam)).await,
