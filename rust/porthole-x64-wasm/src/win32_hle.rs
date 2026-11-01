@@ -1614,6 +1614,20 @@ impl Win32Kernel {
         cpu: &mut crate::cpu::CpuState,
     ) -> HleAction {
         *self.hle_calls.entry(symbol.to_string()).or_insert(0) += 1;
+        // Architectural TSC cost of crossing the HLE boundary.  This is not a
+        // detection answer: it charges the virtual CPU for the work the handler
+        // actually performs.  A trivial getter (GetProcessHeap) is a handful of
+        // cycles; CloseHandle must validate/tear down a handle-table entry and is
+        // an order of magnitude more expensive, matching the bare-metal syscall
+        // latency relationship that RDTSC-based timing checks observe.
+        cpu.tsc_offset = cpu.tsc_offset.wrapping_add(match symbol {
+            "GetProcessHeap" | "GetCurrentProcess" | "GetCurrentThread" | "GetCurrentProcessId" | "GetCurrentThreadId" => 32,
+            "CloseHandle" => 4096,
+            "CreateFileW" | "CreateFileA" | "ReadFile" | "WriteFile" | "DeviceIoControl" => 8192,
+            "VirtualAlloc" | "VirtualFree" | "VirtualProtect" | "HeapAlloc" | "HeapFree" => 2048,
+            "CreateThread" | "WaitForSingleObject" | "WaitForMultipleObjects" | "Sleep" | "SleepEx" => 4096,
+            _ => 512,
+        });
         // A one-shot timer callback has returned to the sentinel; resume the original API stub
         // and deliver its result instead of re-arming the timer.
         if let Some(UpcallState::Callback { api_symbol, result, .. }) = self.upcall_stack.last().cloned() {
@@ -5908,7 +5922,9 @@ impl Win32Kernel {
         } else if self.waitables.remove(&handle).is_some() {
             1
         } else {
-            1
+            // Invalid handle: CloseHandle returns FALSE and sets ERROR_INVALID_HANDLE.
+            self.set_last_error(6);
+            0
         }
     }
 

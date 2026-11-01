@@ -64,6 +64,10 @@ pub struct CpuState {
     pub fpu_sw: u16,
     pub icache: HashMap<u64, CachedBasicBlock>,
     pub instructions_executed: u64,
+    /// Additional architectural TSC cycles charged by HLE syscalls.  RDTSC is
+    /// instructions*32 + this offset; it models the real work of handle-table
+    /// validation vs. a trivial getter without inventing a separate wall clock.
+    pub tsc_offset: u64,
     pub icache_hits: u64,
     pub icache_misses: u64,
     /// Last executed RIPs, used to explain guest faults without an interactive debugger.
@@ -90,6 +94,7 @@ impl CpuState {
             fpu_sw: self.fpu_sw,
             icache: HashMap::new(),
             instructions_executed: self.instructions_executed,
+            tsc_offset: self.tsc_offset,
             icache_hits: self.icache_hits,
             icache_misses: self.icache_misses,
             rip_history: self.rip_history,
@@ -112,6 +117,7 @@ impl CpuState {
             fpu_sw: 0,
             icache: HashMap::new(),
             instructions_executed: 0,
+            tsc_offset: 0,
             icache_hits: 0,
             icache_misses: 0,
             rip_history: [0; 16],
@@ -1635,7 +1641,7 @@ impl CpuState {
                     }
                     // RDTSC (0F 31)
                     0x31 => {
-                        let tsc = self.instructions_executed.wrapping_mul(32) + 0x1000_0000;
+                        let tsc = self.instructions_executed.wrapping_mul(32).wrapping_add(self.tsc_offset).wrapping_add(0x1000_0000);
                         self.gpr[0] = tsc & 0xFFFF_FFFF;
                         self.gpr[2] = (tsc >> 32) & 0xFFFF_FFFF;
                         ExecOutcome::Next

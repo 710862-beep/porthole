@@ -245,7 +245,7 @@ pub fn EndDialog(machine: &mut Machine, hDlg: HWND, nResult: u32) -> bool {
     dialog_helpers::end_dialog(machine, hDlg, nResult)
 }
 
-fn item_hwnd(machine: &Machine, hDlg: HWND, nIDDlgItem: i32) -> HWND {
+fn item_hwnd(machine: &mut Machine, hDlg: HWND, nIDDlgItem: i32) -> HWND {
     dialog_helpers::GetDlgItem(machine, hDlg, nIDDlgItem)
 }
 
@@ -316,7 +316,7 @@ fn set_item_text(machine: &mut Machine, hDlg: HWND, nIDDlgItem: i32, text: &str)
     true
 }
 
-fn item_text(machine: &Machine, hDlg: HWND, nIDDlgItem: i32) -> Option<String> {
+fn item_text(machine: &mut Machine, hDlg: HWND, nIDDlgItem: i32) -> Option<String> {
     let child = item_hwnd(machine, hDlg, nIDDlgItem);
     if child.is_null() {
         return None;
