@@ -109,13 +109,6 @@ pub fn SetConsoleMode(_machine: &mut Machine, hConsoleHandle: HANDLE<()>, dwMode
     true
 }
 #[win32_derive::dllexport]
-pub fn GetConsoleMode(machine: &mut Machine, hConsoleHandle: HANDLE<()>, lpMode: Option<&mut u32>) -> bool {
-    let _ = hConsoleHandle;
-    if let Some(mode) = lpMode { *mode = 0x0001 | 0x0002; } // ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT
-    else { crate::winapi::kernel32::teb_mut(machine).LastErrorValue = 87; return false; }
-    true
-}
-#[win32_derive::dllexport]
 pub fn ReadConsoleInputA(machine: &mut Machine, hConsoleInput: HANDLE<()>, lpBuffer: u32, nLength: u32, lpNumberOfEventsRead: Option<&mut u32>) -> bool {
     let _ = (hConsoleInput, lpBuffer, nLength);
     if let Some(n) = lpNumberOfEventsRead { *n = 0; }

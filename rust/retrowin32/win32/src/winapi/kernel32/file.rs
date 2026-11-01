@@ -514,11 +514,13 @@ pub fn WriteFile(
 
 #[win32_derive::dllexport]
 pub fn GetConsoleMode(
-    _machine: &mut Machine,
+    machine: &mut Machine,
     hConsoleHandle: HFILE,
     lpMode: Option<&mut u32>,
 ) -> bool {
-    *lpMode.unwrap() = 0;
+    let _ = hConsoleHandle;
+    let Some(mode) = lpMode else { set_last_error(machine, ERROR::INVALID_PARAMETER); return false; };
+    *mode = 0x0001 | 0x0002; // ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT
     true
 }
 
