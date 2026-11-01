@@ -373,6 +373,16 @@ pub fn SetFilePointer(
     if let Some(high) = &mut lpDistanceToMoveHigh {
         lDistanceToMove |= (**high as i64) << 32;
     }
+    // The CRT probes std handles with SetFilePointer(FILE_CURRENT) during startup
+    // and shutdown. Console/character devices have no seekable position; report 0
+    // rather than INVALID_HANDLE so legacy games do not treat the CRT as broken.
+    match hFile {
+        STDIN_HFILE | STDOUT_HFILE | STDERR_HFILE => {
+            set_last_error(machine, ERROR::SUCCESS);
+            return 0;
+        }
+        _ => {}
+    }
     let Some(file) = machine.state.kernel32.files.get_mut(hFile) else {
         log::debug!("SetFilePointer({hFile:?}) unknown handle");
         set_last_error(machine, ERROR::INVALID_HANDLE);
