@@ -200,3 +200,29 @@ test('JIT multi-bit SHR preserves prior OF and parity uses the low byte', async 
   assert.equal(jit.regs.rflags, interp.regs.rflags, 'multi-bit SHR must not clear OF');
   assert.ok((jit.regs.rflags & 0x800) !== 0, 'OF should survive shr eax,2');
 });
+
+test('JIT SAR sign-extends 8/16/32-bit operands before the arithmetic shift', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // mov eax,0x0000fda0; sar eax,0x10  -> 0 (positive)
+  // mov ebx,0x000fff55; sar ebx,0xc   -> 0xfff (positive)
+  // mov ecx,0xfffffda0; sar ecx,0x10  -> 0xfffffda0 (negative, sign preserved)
+  // mov edx,0x0000ffe0; sar edx,0x10  -> 0
+  // mov r8d,0xffffff55; sar r8d,0xc   -> 0xfffff (negative)
+  const code = Buffer.concat([
+    movImm32(0, 0x0000fda0), Buffer.from([0xc1, 0xf8, 0x10]),
+    movImm32(3, 0x000fff55), Buffer.from([0xc1, 0xfb, 0x0c]),
+    movImm32(1, 0xfffffda0), Buffer.from([0xc1, 0xf9, 0x10]),
+    movImm32(2, 0x0000ffe0), Buffer.from([0xc1, 0xfa, 0x10]),
+    movImm32(8, 0xffffff55), Buffer.from([0x41, 0xc1, 0xf8, 0x0c]),
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true, true);
+  assert.equal(jit.status, interp.status);
+  for (const r of ['rax', 'rbx', 'rcx', 'rdx', 'r8']) {
+    assert.equal(jit.regs[r], interp.regs[r], `SAR ${r}`);
+  }
+  assert.equal(BigInt(jit.regs.rcx), 0xfffffda0n, 'negative SAR must keep sign bits');
+  assert.equal(BigInt(jit.regs.r8), 0xfffffn, 'negative 32-bit SAR result zero-extends into r8');
+});
