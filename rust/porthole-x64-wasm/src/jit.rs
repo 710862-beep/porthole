@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 9;
+pub const JIT_COMPILER_VERSION: u64 = 10;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -721,7 +721,7 @@ impl HybridWasmJit {
                     // before the arithmetic shift (SAR 8/16/32/64).
                     let sh = (64 - width as i64 * 8);
                     Self::i64_const(b, sh); b.push(0x86);
-                    Self::i64_const(b, sh); b.push(0x88);
+                    Self::i64_const(b, sh); b.push(0x87);
                 }
                 Self::local_get(b, 19); b.push(0x87);
             }
@@ -738,7 +738,7 @@ impl HybridWasmJit {
             if width < 8 {
                 let sh = (64 - width as i64 * 8);
                 Self::i64_const(b, sh); b.push(0x86);
-                Self::i64_const(b, sh); b.push(0x88);
+                Self::i64_const(b, sh); b.push(0x87);
             }
             Self::i64_const(b, (count - 1) as i64); b.push(0x87);
         }
