@@ -334,6 +334,19 @@ impl BrowserX64Emulator {
                         self.pending_upcall = false;
                         continue;
                     }
+                    Some(UpcallStep::ReturnValue(val)) => {
+                        // The guest callback's RET popped the sentinel, leaving RSP at
+                        // (original HLE stub RSP - 0x28).  Restore and pop the real return addr.
+                        let rsp = self.cpu.gpr[4].wrapping_add(0x28);
+                        let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+                        self.cpu.gpr[0] = val;
+                        self.cpu.gpr[4] = rsp.wrapping_add(8);
+                        self.cpu.rip = ret;
+                        self.pending_upcall = false;
+                        self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(1);
+                        self.trace_event(format!("R sentinel->return-value rax=0x{:x} ret=0x{:x}", val, ret));
+                        continue;
+                    }
                     Some(UpcallStep::ResumeGuest) => {
                         self.pending_upcall = false;
                         continue;
@@ -537,6 +550,19 @@ impl BrowserX64Emulator {
                                     insn_rip, dll, symbol, target, resume_rip, rsp, ret_slot
                                 ));
                                 self.drain_watch();
+                                continue;
+                            }
+                            HleAction::ReturnValue(val) => {
+                                let rsp = self.cpu.gpr[4];
+                                let ret = self.vmm.read_u64(rsp).unwrap_or(0);
+                                self.cpu.gpr[0] = val;
+                                self.cpu.gpr[4] = rsp.wrapping_add(8);
+                                self.cpu.rip = ret;
+                                self.pending_upcall = false;
+                                self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(1);
+                                self.trace_event(format!("R HLE return-value rax=0x{:x} ret=0x{:x}", val, ret));
+                                self.drain_watch();
+                                executed += 1;
                                 continue;
                             }
                             HleAction::ExitProcess(code) => {

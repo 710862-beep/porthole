@@ -140,6 +140,9 @@ pub enum UpcallStep {
     /// All guest work for this API is done: re-enter the API stub at `resume_rip` with the stack
     /// frame exactly as the original guest `call` left it.
     Resume(u64),
+    /// Return a value directly to the HLE caller without re-entering the import thunk.
+    /// Used when the upcalled function may recursively call the same API (CreateWindowExW).
+    ReturnValue(u64),
     /// Exception handler restored the guest CONTEXT; execution continues without re-entering HLE.
     ResumeGuest,
     /// Exception dispatch exhausted all handlers.
@@ -149,6 +152,9 @@ pub enum UpcallStep {
 #[derive(Debug, Clone)]
 pub enum HleAction {
     Return(u64),
+    /// Complete an in-flight upcall from within a nested HLE call (ExitThread).
+    /// The driver pops the return address from the current RSP and sets RAX.
+    ReturnValue(u64),
     Upcall { target: u64, resume_rip: u64, rax: u64 },
     ExitProcess(u32),
     /// Suspend the guest until the browser host answers a modal dialog.
@@ -1700,14 +1706,9 @@ impl Win32Kernel {
             "CreateThread" | "WaitForSingleObject" | "WaitForMultipleObjects" | "Sleep" | "SleepEx" => 4096,
             _ => 512,
         });
-        // A one-shot timer callback has returned to the sentinel; resume the original API stub
-        // and deliver its result instead of re-arming the timer.
-        if let Some(UpcallState::Callback { api_symbol, result, .. }) = self.upcall_stack.last().cloned() {
-            if api_symbol == symbol {
-                self.upcall_stack.pop();
-                return HleAction::Return(result);
-            }
-        }
+        // Callback results are delivered by finish_upcall (UpcallStep::ReturnValue),
+        // never by re-entering the import thunk: a nested call to the same API
+        // (CreateWindowExW inside WM_CREATE) must not consume the parent's frame.
         let a0 = args[0];
         let a1 = args[1];
         let a2 = args[2];
@@ -2720,7 +2721,8 @@ impl Win32Kernel {
                 0 => 1920, 1 => 1080,           // SM_CXSCREEN / SM_CYSCREEN
                 16 => 1920, 17 => 1040,         // SM_CXFULLSCREEN / SM_CYFULLSCREEN
                 19 => 1,                        // SM_MOUSEPRESENT
-                20 => 0, 21 => 0,               // SM_MOUSEWHEELPRESENT? keep conservative
+                20 => 0, 21 => 0,               // SM_MOUSEWHEELPRESENT
+                28 => 160, 29 => 28,            // SM_CXMIN / SM_CYMIN (minimum window size)
                 43 => 0,                        // SM_REMOTESESSION
                 80 => 0,                        // SM_CLEANBOOT
                 _ => 0,
@@ -3891,17 +3893,15 @@ impl Win32Kernel {
                 }
                 // ExitThread never returns to the caller.  If a cooperative thread
                 // upcall is in flight, complete it and resume the CreateThread stub.
-                if let Some(UpcallState::Thread { handle, resume_rip, caller_rsp, .. }) = self.upcall_stack.last().cloned() {
+                if let Some(UpcallState::Thread { handle, caller_rsp, .. }) = self.upcall_stack.last().cloned() {
                     if let Some(t) = self.threads.iter_mut().find(|t| t.handle == handle) {
                         t.finished = true;
                         t.exit_code = a0 as u32;
                     }
                     if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
                     self.upcall_stack.pop();
-                    self.upcall_stack.push(UpcallState::Callback { resume_rip, api_symbol: "CreateThread".into(), result: handle });
-                    cpu.gpr[0] = handle;
                     cpu.gpr[4] = caller_rsp;
-                    return HleAction::Upcall { target: crate::UPCALL_RETURN_THUNK, resume_rip, rax: handle };
+                    return HleAction::ReturnValue(handle);
                 }
                 // Main thread ExitThread behaves as ExitProcess.
                 self.exit_code = Some(a0 as u32);
@@ -7355,8 +7355,10 @@ impl Win32Kernel {
             return Some(UpcallStep::Fault(format!("unhandled guest exception 0x{code:08x}")));
         }
         match self.upcall_stack.last().cloned() {
-            Some(UpcallState::Callback { resume_rip, .. }) => {
-                return Some(UpcallStep::Resume(resume_rip));
+            Some(UpcallState::Callback { resume_rip, result, .. }) => {
+                let _ = resume_rip;
+                self.upcall_stack.pop();
+                return Some(UpcallStep::ReturnValue(result));
             }
             Some(UpcallState::Tls { callbacks, index, reason, resume_rip, entry_rsp }) => {
                 let image_base = self.image_base();
@@ -7388,9 +7390,9 @@ impl Win32Kernel {
                 }
                 if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
                 self.upcall_stack.pop();
-                self.upcall_stack.push(UpcallState::Callback { resume_rip, api_symbol: "CreateThread".into(), result: handle });
+                let _ = resume_rip;
                 cpu.gpr[4] = caller_rsp.wrapping_sub(0x28);
-                return Some(UpcallStep::Resume(resume_rip));
+                return Some(UpcallStep::ReturnValue(handle));
             }
             Some(UpcallState::Initterm {
                 next_slot,
