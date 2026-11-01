@@ -107,6 +107,15 @@ pub enum UpcallState {
         resume_rip: u64,
         entry_rsp: u64,
     },
+    Thread {
+        callbacks: Vec<u64>,
+        index: usize,
+        phase: u8, // 0 = TLS thread-attach callbacks, 1 = thread entry
+        entry: u64,
+        param: u64,
+        handle: u64,
+        resume_rip: u64,
+    },
     Callback {
         resume_rip: u64,
         api_symbol: String,
@@ -259,6 +268,48 @@ struct Waitable {
 }
 
 #[derive(Debug, Clone)]
+struct GuestMsg {
+    hwnd: u64,
+    message: u32,
+    wparam: u64,
+    lparam: u64,
+    time: u32,
+    pt_x: i32,
+    pt_y: i32,
+}
+
+#[derive(Debug, Clone)]
+struct GuestHook {
+    handle: u64,
+    id: i32,
+    proc: u64,
+}
+
+#[derive(Debug, Clone)]
+struct GuestWindow {
+    hwnd: u64,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    proc: u64,
+    parent: u64,
+    id: u64,
+    class: String,
+    visible: bool,
+    destroyed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct GuestTimer {
+    hwnd: u64,
+    id: u64,
+    due: u64,
+    period: u32,
+    proc: u64,
+}
+
+#[derive(Debug, Clone)]
 struct FindEntry {
     name: String,
     is_dir: bool,
@@ -295,6 +346,7 @@ pub struct Win32Kernel {
     pub threads: Vec<GuestThread>,
     pub current_thread: usize,
     pub tls_slots: Vec<Option<u64>>,
+    pub tls_callbacks: Vec<u64>,
     pub crit_sections: HashMap<u64, u32>,
     pub d3d12: D3d12Subsystem,
     /// SDL2 subsystem (Gate 2): guest-presented frames are counted/captured here.
@@ -320,7 +372,15 @@ pub struct Win32Kernel {
     bitmaps: HashMap<u64, Bitmap>,
     dc_brush: HashMap<u64, u32>,
     selected_bitmap: HashMap<u64, u64>,
-    windows: Vec<(u64, u32, u32)>,
+    windows: Vec<GuestWindow>,
+    messages: std::collections::VecDeque<GuestMsg>,
+    hooks: Vec<GuestHook>,
+    wndclasses: HashMap<String, u64>,
+    timers: Vec<GuestTimer>,
+    quit_code: Option<u32>,
+    next_hwnd: u64,
+    input_step: u32,
+    last_click_tick: u64,
     /// Command line handed to the guest (`GetCommandLineA/W`, `__p___argc`, `__p___argv`).
     pub command_line: String,
     crt_argc_ptr: u64,
@@ -388,6 +448,7 @@ impl Win32Kernel {
             threads: Vec::new(),
             current_thread: 0,
             tls_slots: vec![None; 64],
+            tls_callbacks: Vec::new(),
             crit_sections: HashMap::new(),
             d3d12: D3d12Subsystem::new(),
             sdl: crate::sdl_hle::SdlState::new(),
@@ -413,6 +474,14 @@ impl Win32Kernel {
             dc_brush: HashMap::new(),
             selected_bitmap: HashMap::new(),
             windows: Vec::new(),
+            messages: std::collections::VecDeque::new(),
+            hooks: Vec::new(),
+            wndclasses: HashMap::new(),
+            timers: Vec::new(),
+            quit_code: None,
+            next_hwnd: 0x0000_0000_0002_0000,
+            input_step: 0,
+            last_click_tick: 0,
             command_line: String::from("test.exe"),
             crt_argc_ptr: 0,
             crt_argv_var: 0,
@@ -3756,14 +3825,43 @@ impl Win32Kernel {
                     param,
                     exit_code: STILL_ACTIVE,
                     finished: false,
-                    started: false,
+                    started: true,
                     signal_handle: tls_signal,
                 });
+                self.waitables.insert(handle, Waitable { signaled: false, manual_reset: true });
                 if a5 != 0 {
                     let _ = vmm.write_u32(a5, 0x2000 + self.threads.len() as u32);
                 }
+                // Cooperative single-threaded driver: run the new thread's TLS
+                // DLL_THREAD_ATTACH callbacks and entry point before returning the
+                // handle, so synchronous waiters observe a completed thread.
+                let callbacks = self.tls_callbacks.clone();
+                if !callbacks.is_empty() {
+                    cpu.gpr[0] = self.image_base();
+                    cpu.gpr[1] = 2; // DLL_THREAD_ATTACH
+                    cpu.gpr[2] = 0;
+                    self.upcall_stack.push(UpcallState::Thread {
+                        callbacks: callbacks.clone(), index: 0, phase: 0,
+                        entry, param, handle, resume_rip: call_rip,
+                    });
+                    return HleAction::Upcall { target: callbacks[0], resume_rip: call_rip, rax: 0 };
+                }
+                if entry != 0 {
+                    cpu.gpr[0] = param;
+                    self.upcall_stack.push(UpcallState::Thread {
+                        callbacks: Vec::new(), index: 0, phase: 1,
+                        entry, param, handle, resume_rip: call_rip,
+                    });
+                    return HleAction::Upcall { target: entry, resume_rip: call_rip, rax: 0 };
+                }
+                if let Some(t) = self.threads.iter_mut().find(|t| t.handle == handle) {
+                    t.finished = true;
+                    t.exit_code = 0;
+                }
+                if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
                 handle
             }
+            "SwitchToThread" => 0,
             "GetExitCodeThread" => {
                 if let Some(t) = self.threads.iter().find(|t| t.handle == a0) {
                     if a1 != 0 {
@@ -3859,22 +3957,16 @@ impl Win32Kernel {
                 1
             }
             "SetTimer" => {
-                let proc = a3;
                 let id = if a1 != 0 { a1 } else { self.alloc_handle() };
-                self.ticks = self.ticks.wrapping_add(a2.min(60_000));
-                if proc != 0 {
-                    // TIMERPROC(hwnd, WM_TIMER, idEvent, dwTime). Deliver the one-shot callback
-                    // through a real guest upcall; the console message loop then observes it.
-                    cpu.gpr[1] = a0;
-                    cpu.gpr[2] = 0x113; // WM_TIMER
-                    cpu.gpr[8] = id;
-                    cpu.gpr[9] = self.ticks & 0xFFFF_FFFF;
-                    self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: id });
-                    return HleAction::Upcall { target: proc, resume_rip: call_rip, rax: 0 };
-                }
+                let elapse = (a2 as u32).max(10) as u64;
+                self.timers.retain(|t| !(t.hwnd == a0 && t.id == id));
+                self.timers.push(GuestTimer { hwnd: a0, id, due: self.ticks + elapse, period: a2 as u32, proc: a3 });
                 id
             }
-            "KillTimer" => 1,
+            "KillTimer" => {
+                self.timers.retain(|t| !(t.hwnd == a0 && t.id == a1));
+                1
+            }
             "timeGetDevCaps" => {
                 if a0 != 0 {
                     let _ = vmm.write_u32(a0, 1);
@@ -3968,6 +4060,10 @@ impl Win32Kernel {
                             w.signaled = false;
                         }
                         return HleAction::Return(WAIT_OBJECT_0 as u64);
+                    }
+                    if a1 != 0xFFFF_FFFF {
+                        self.ticks = self.ticks.wrapping_add(a1);
+                        return HleAction::Return(WAIT_TIMEOUT as u64);
                     }
                 }
                 // A guest thread handle: run pending threads cooperatively, then report signaled.
@@ -5599,8 +5695,159 @@ impl Win32Kernel {
                 1
             }
             "MoveWindow" => 1,
-            "CreateWindowExA" | "CreateWindowExW" => self.create_window(vmm),
-            "DestroyWindow" => 1,
+            "CreateWindowExA" | "CreateWindowExW" | "CreateWindowA" | "CreateWindowW" => {
+                let ex = symbol.starts_with("CreateWindowEx");
+                let (cls_ptr, style, x, y, w, h, parent, id) = if ex {
+                    (a1, a3, a4 as i32, a5 as i32, a6 as u32, a7 as u32, a8, a9)
+                } else {
+                    (a0, a2, a3 as i32, a4 as i32, a5 as u32, a6 as u32, a7, a8)
+                };
+                let class = if cls_ptr < 0x10000 { format!("#{}", cls_ptr) } else if symbol.ends_with('W') { self.read_wide(vmm, cls_ptr) } else { self.read_ansi(vmm, cls_ptr) };
+                let proc = self.wndclasses.get(&class).copied().unwrap_or(0);
+                let hwnd = self.next_hwnd;
+                self.next_hwnd += 0x10;
+                self.windows.push(GuestWindow {
+                    hwnd, x, y, w, h,
+                    proc, parent, id, class: class.clone(),
+                    visible: style & 0x1000_0000 != 0, destroyed: false,
+                });
+                if proc != 0 {
+                    let cs = self.heap_alloc(vmm, self.process_heap, 64);
+                    if cs != 0 {
+                        let _ = vmm.write_u64(cs, id);         // lpCreateParams
+                        let _ = vmm.write_u64(cs + 8, 0);     // hInstance
+                        let _ = vmm.write_u64(cs + 16, id);   // hMenu
+                        let _ = vmm.write_u64(cs + 24, parent); // hwndParent
+                        let _ = vmm.write_u32(cs + 32, h);    // cy
+                        let _ = vmm.write_u32(cs + 36, w);    // cx
+                        let _ = vmm.write_u32(cs + 40, y as u32); // y
+                        let _ = vmm.write_u32(cs + 44, x as u32); // x
+                        let _ = vmm.write_u32(cs + 48, style as u32); // style
+                        let _ = vmm.write_u64(cs + 56, if ex { a2 } else { a1 }); // lpszName
+                    }
+                    cpu.gpr[0] = hwnd;
+                    cpu.gpr[1] = 0x1; // WM_CREATE
+                    cpu.gpr[2] = cs;
+                    cpu.gpr[3] = 0;
+                    self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: hwnd });
+                    return HleAction::Upcall { target: proc, resume_rip: call_rip, rax: 0 };
+                }
+                hwnd
+            }
+            "RegisterClassW" | "RegisterClassA" => {
+                if a0 == 0 { return HleAction::Return(0); }
+                let proc = vmm.read_u64(a0 + 8).unwrap_or(0);
+                let name_ptr = vmm.read_u64(a0 + 64).unwrap_or(0);
+                let name = if symbol.ends_with('W') { self.read_wide(vmm, name_ptr) } else { self.read_ansi(vmm, name_ptr) };
+                let atom = self.alloc_handle();
+                self.wndclasses.insert(name, proc);
+                self.wndclasses.insert(format!("#{}", atom), proc);
+                atom
+            }
+            "DestroyWindow" => {
+                if let Some(w) = self.windows.iter_mut().find(|w| w.hwnd == a0) {
+                    w.destroyed = true;
+                    w.visible = false;
+                    let proc = w.proc;
+                    let hwnd = w.hwnd;
+                    if proc != 0 {
+                        cpu.gpr[0] = hwnd;
+                        cpu.gpr[1] = 0x2; // WM_DESTROY
+                        cpu.gpr[2] = 0;
+                        cpu.gpr[3] = 0;
+                        self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 1 });
+                        return HleAction::Upcall { target: proc, resume_rip: call_rip, rax: 0 };
+                    }
+                }
+                1
+            }
+            "GetWindowRect" => {
+                if a1 == 0 { return HleAction::Return(0); }
+                if let Some(w) = self.windows.iter().find(|w| w.hwnd == a0 && !w.destroyed) {
+                    let _ = vmm.write_u32(a1, w.x as u32);
+                    let _ = vmm.write_u32(a1 + 4, w.y as u32);
+                    let _ = vmm.write_u32(a1 + 8, (w.x + w.w as i32) as u32);
+                    let _ = vmm.write_u32(a1 + 12, (w.y + w.h as i32) as u32);
+                    1
+                } else { 0 }
+            }
+            "ShowWindow" | "ShowWindowAsync" => {
+                if let Some(w) = self.windows.iter_mut().find(|w| w.hwnd == a0) { w.visible = a1 != 0; }
+                1
+            }
+            "UpdateWindow" => 1,
+            "LoadCursorW" | "LoadCursorA" => 0x7f00,
+            "GetSysColorBrush" => 0x7e00 | (a0 & 0xff),
+            "MessageBeep" => 1,
+            "PostQuitMessage" => { self.quit_code = Some(a0 as u32); 0 }
+            "PostMessageA" | "PostMessageW" => { self.post_message(a0, a1 as u32, a2, a3); 1 }
+            "SendMessageA" | "SendMessageW" => {
+                if let Some(w) = self.windows.iter().find(|w| w.hwnd == a0 && !w.destroyed).cloned() {
+                    if w.proc != 0 {
+                        cpu.gpr[0] = a0; cpu.gpr[1] = a1; cpu.gpr[2] = a2; cpu.gpr[3] = a3;
+                        self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 0 });
+                        return HleAction::Upcall { target: w.proc, resume_rip: call_rip, rax: 0 };
+                    }
+                }
+                0
+            }
+            "TranslateMessage" => 0,
+            "DispatchMessageA" | "DispatchMessageW" => {
+                if a0 == 0 { return HleAction::Return(0); }
+                let hwnd = vmm.read_u64(a0).unwrap_or(0);
+                let msg = vmm.read_u32(a0 + 8).unwrap_or(0);
+                let wp = vmm.read_u64(a0 + 16).unwrap_or(0);
+                let lp = vmm.read_u64(a0 + 24).unwrap_or(0);
+                if let Some(w) = self.windows.iter().find(|w| w.hwnd == hwnd && !w.destroyed).cloned() {
+                    if w.proc != 0 {
+                        cpu.gpr[0] = hwnd; cpu.gpr[1] = msg as u64; cpu.gpr[2] = wp; cpu.gpr[3] = lp;
+                        self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: symbol.to_string(), result: 0 });
+                        return HleAction::Upcall { target: w.proc, resume_rip: call_rip, rax: 0 };
+                    }
+                }
+                0
+            }
+            "DefWindowProcA" | "DefWindowProcW" => 0,
+            "GetMessageA" | "GetMessageW" | "PeekMessageA" | "PeekMessageW" => {
+                // Resume after a hook/timer/dialog upcall.
+                if let Some(UpcallState::Callback { api_symbol, .. }) = self.upcall_stack.last().cloned() {
+                    if api_symbol == "GetMessageHook" || api_symbol == "GetMessageTimer" || api_symbol == "GetMessageDialog" {
+                        self.upcall_stack.pop();
+                    }
+                }
+                let peek = symbol.starts_with("Peek");
+                loop {
+                    if let Some(m) = self.messages.pop_front() {
+                        if a0 != 0 { self.write_msg(vmm, a0, &m); }
+                        if m.message == 0x12 { // WM_QUIT
+                            return HleAction::Return(0);
+                        }
+                        return HleAction::Return(1);
+                    }
+                    if self.quit_code.is_some() {
+                        if a0 != 0 {
+                            self.write_msg(vmm, a0, &GuestMsg { hwnd: 0, message: 0x12, wparam: self.quit_code.unwrap_or(0) as u64, lparam: 0, time: self.ticks as u32, pt_x: 0, pt_y: 0 });
+                        }
+                        return HleAction::Return(0);
+                    }
+                    if peek { return HleAction::Return(0); }
+                    if let Some(action) = self.pump_virtual_input(vmm, cpu, call_rip, symbol) {
+                        return action;
+                    }
+                    if !self.virtual_input || self.input_step > 10_000 { return HleAction::Return(0); }
+                }
+            }
+            "SetWindowsHookExA" | "SetWindowsHookExW" => {
+                let handle = self.alloc_handle();
+                self.hooks.push(GuestHook { handle, id: a0 as i32, proc: a1 });
+                handle
+            }
+            "UnhookWindowsHookEx" => {
+                let before = self.hooks.len();
+                self.hooks.retain(|h| h.handle != a0);
+                if self.hooks.len() < before { 1 } else { 0 }
+            }
+            "CallNextHookEx" => 0,
             "GetDesktopWindow" => crate::d3d12_hle::DESKTOP_HWND,
             "GetDC" => {
                 let h = self.alloc_handle();
@@ -6213,16 +6460,100 @@ impl Win32Kernel {
     }
 
     fn create_window(&mut self, _vmm: &mut VirtualMemoryManager) -> u64 {
-        let hwnd = 0x0000_0000_0002_0000u64 + self.windows.len() as u64 * 0x10;
-        self.windows.push((hwnd, 256, 256));
+        let hwnd = self.next_hwnd;
+        self.next_hwnd += 0x10;
+        self.windows.push(GuestWindow {
+            hwnd, x: 0, y: 0, w: 256, h: 256, proc: 0, parent: 0, id: 0,
+            class: String::new(), visible: true, destroyed: false,
+        });
         hwnd
     }
 
     fn window_client_size(&self, hwnd: u64) -> Option<(u32, u32)> {
-        self.windows
-            .iter()
-            .find(|(h, _, _)| *h == hwnd)
-            .map(|(_, w, h)| (*w, *h))
+        self.windows.iter().find(|w| w.hwnd == hwnd && !w.destroyed).map(|w| (w.w, w.h))
+    }
+
+    fn write_msg(&self, vmm: &mut VirtualMemoryManager, ptr: u64, m: &GuestMsg) {
+        let _ = vmm.write_u64(ptr, m.hwnd);
+        let _ = vmm.write_u32(ptr + 8, m.message);
+        let _ = vmm.write_u64(ptr + 16, m.wparam);
+        let _ = vmm.write_u64(ptr + 24, m.lparam);
+        let _ = vmm.write_u32(ptr + 32, m.time);
+        let _ = vmm.write_u32(ptr + 36, m.pt_x as u32);
+        let _ = vmm.write_u32(ptr + 40, m.pt_y as u32);
+    }
+
+    fn post_message(&mut self, hwnd: u64, message: u32, wparam: u64, lparam: u64) {
+        self.messages.push_back(GuestMsg {
+            hwnd, message, wparam, lparam,
+            time: self.ticks as u32, pt_x: self.cursor_x, pt_y: self.cursor_y,
+        });
+    }
+
+    /// Deterministic virtual pointing-device events for headless reverse-Turing
+    /// probes.  These are real guest callbacks through the installed hook/wndproc,
+    /// not altered detection results.
+    fn pump_virtual_input(&mut self, vmm: &mut VirtualMemoryManager, cpu: &mut crate::cpu::CpuState, call_rip: u64, symbol: &str) -> Option<HleAction> {
+        if !self.virtual_input || self.quit_code.is_some() {
+            return None;
+        }
+        self.input_step = self.input_step.wrapping_add(1);
+        self.ticks = self.ticks.wrapping_add(100);
+        if self.input_step > 10_000 && self.timers.is_empty() && self.hooks.is_empty() {
+            return None;
+        }
+        // Fire due timers first.
+        if let Some(pos) = self.timers.iter().position(|t| self.ticks >= t.due) {
+            let t = self.timers.remove(pos);
+            if t.proc != 0 {
+                cpu.gpr[0] = t.hwnd;
+                cpu.gpr[1] = 0x113;
+                cpu.gpr[2] = t.id;
+                cpu.gpr[3] = self.ticks & 0xFFFF_FFFF;
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: "GetMessageTimer".into(), result: 1 });
+                return Some(HleAction::Upcall { target: t.proc, resume_rip: call_rip, rax: 0 });
+            } else {
+                self.post_message(t.hwnd, 0x113, t.id, 0);
+                if t.period > 0 {
+                    self.timers.push(GuestTimer { due: self.ticks + t.period as u64, ..t });
+                }
+            }
+        }
+        // Low-level mouse hook: deliver click events through the real hook proc.
+        if let Some(hook) = self.hooks.iter().find(|h| h.id == 14).cloned() {
+            let msg = if self.input_step % 2 == 1 { 0x201u64 } else { 0x202u64 }; // WM_LBUTTONDOWN / UP
+            let scratch = self.heap_alloc(vmm, self.process_heap, 32);
+            if scratch != 0 {
+                let _ = vmm.write_u32(scratch, self.cursor_x as u32);
+                let _ = vmm.write_u32(scratch + 4, self.cursor_y as u32);
+                let _ = vmm.write_u32(scratch + 8, 0);
+                let _ = vmm.write_u32(scratch + 12, 0);
+                let _ = vmm.write_u32(scratch + 16, self.ticks as u32);
+                let _ = vmm.write_u64(scratch + 24, 0);
+                cpu.gpr[0] = 0; // HC_ACTION
+                cpu.gpr[1] = msg;
+                cpu.gpr[2] = scratch;
+                self.last_click_tick = self.ticks;
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: "GetMessageHook".into(), result: 1 });
+                return Some(HleAction::Upcall { target: hook.proc, resume_rip: call_rip, rax: 0 });
+            }
+        }
+        // Dialog confirmation: click the OK button of a visible custom window.
+        if let Some(win) = self.windows.iter().find(|w| w.visible && !w.destroyed && !w.class.is_empty() && w.proc != 0).cloned() {
+            let ok = self.windows.iter().find(|w| w.parent == win.hwnd && w.id == 1 && !w.destroyed).cloned();
+            if let Some(btn) = ok {
+                self.cursor_x = win.x + btn.x + (btn.w / 2) as i32;
+                self.cursor_y = win.y + btn.y + (btn.h / 2) as i32;
+                self.last_click_tick = self.ticks;
+                cpu.gpr[0] = win.hwnd;
+                cpu.gpr[1] = 0x111; // WM_COMMAND
+                cpu.gpr[2] = 1;     // ID_OK
+                cpu.gpr[3] = btn.hwnd;
+                self.upcall_stack.push(UpcallState::Callback { resume_rip: call_rip, api_symbol: "GetMessageDialog".into(), result: 1 });
+                return Some(HleAction::Upcall { target: win.proc, resume_rip: call_rip, rax: 0 });
+            }
+        }
+        None
     }
 
     fn stock_brush(&self) -> u64 {
@@ -6840,6 +7171,11 @@ impl Win32Kernel {
         self.dc_brush.clear();
         self.selected_bitmap.clear();
         self.windows.clear();
+        self.messages.clear();
+        self.hooks.clear();
+        self.timers.clear();
+        self.quit_code = None;
+        self.input_step = 0;
         self.handle_map.clear();
         self.export_thunks.clear();
         self.export_thunk_next = 0;
@@ -6876,7 +7212,7 @@ impl Win32Kernel {
     }
 
     pub fn window_sizes(&self) -> Vec<(u64, u32, u32)> {
-        self.windows.clone()
+        self.windows.iter().map(|w| (w.hwnd, w.w, w.h)).collect()
     }
 
     pub fn drain_stdout(&mut self) -> Vec<u8> {
@@ -7014,6 +7350,34 @@ impl Win32Kernel {
                 let _ = vmm.write_u64(entry_rsp, crate::UPCALL_RETURN_THUNK);
                 cpu.rip = resume_rip;
                 return Some(UpcallStep::ResumeGuest);
+            }
+            Some(UpcallState::Thread { callbacks, index, phase, entry, param, handle, resume_rip }) => {
+                if phase == 0 {
+                    let next = index + 1;
+                    if next < callbacks.len() {
+                        if let Some(UpcallState::Thread { index: i, .. }) = self.upcall_stack.last_mut() { *i = next; }
+                        cpu.gpr[0] = self.image_base();
+                        cpu.gpr[1] = 2;
+                        cpu.gpr[2] = 0;
+                        return Some(UpcallStep::Call(callbacks[next]));
+                    }
+                    // TLS callbacks done; run the thread entry point.
+                    if let Some(UpcallState::Thread { phase: p, .. }) = self.upcall_stack.last_mut() { *p = 1; }
+                    if entry != 0 {
+                        cpu.gpr[0] = param;
+                        return Some(UpcallStep::Call(entry));
+                    }
+                }
+                // Thread entry returned (or no entry): mark finished and resume CreateThread.
+                let exit_code = cpu.gpr[0] as u32;
+                if let Some(t) = self.threads.iter_mut().find(|t| t.handle == handle) {
+                    t.finished = true;
+                    t.exit_code = exit_code;
+                }
+                if let Some(w) = self.waitables.get_mut(&handle) { w.signaled = true; }
+                self.upcall_stack.pop();
+                self.upcall_stack.push(UpcallState::Callback { resume_rip, api_symbol: "CreateThread".into(), result: handle });
+                return Some(UpcallStep::Resume(resume_rip));
             }
             Some(UpcallState::Initterm {
                 next_slot,

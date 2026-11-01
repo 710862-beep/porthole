@@ -253,8 +253,11 @@ impl BrowserX64Emulator {
         // sentinel used for CRT initializer tables; finish_upcall restores the entry RSP.
         if !info.tls_callbacks.is_empty() {
             let entry_rsp = self.cpu.gpr[4];
+            self.kernel.tls_callbacks = info.tls_callbacks.clone();
             if let Some(first) = self.kernel.begin_tls(info.tls_callbacks.clone(), info.entry_point, entry_rsp) {
-                let rsp = entry_rsp.wrapping_sub(8);
+                // Stage a full Win64 call frame (sentinel + 0x20 home space + alignment)
+                // so the TLS callback sees RSP % 16 == 8 at entry, exactly as a real CALL.
+                let rsp = entry_rsp.wrapping_sub(0x30);
                 let _ = self.vmm.write_u64(rsp, UPCALL_RETURN_THUNK);
                 self.cpu.gpr[4] = rsp;
                 self.cpu.gpr[0] = info.image_base; // RCX = image base
