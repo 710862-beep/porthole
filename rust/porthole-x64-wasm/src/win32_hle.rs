@@ -1714,6 +1714,7 @@ impl Win32Kernel {
         let a6 = args[6];
         let a7 = args[7];
         let a8 = args[8];
+        let a9 = args[9];
 
         // Resolve well-known d3d12/dxgi entry points first.
         match (dll, symbol) {
@@ -6493,7 +6494,7 @@ impl Win32Kernel {
     /// Deterministic virtual pointing-device events for headless reverse-Turing
     /// probes.  These are real guest callbacks through the installed hook/wndproc,
     /// not altered detection results.
-    fn pump_virtual_input(&mut self, vmm: &mut VirtualMemoryManager, cpu: &mut crate::cpu::CpuState, call_rip: u64, symbol: &str) -> Option<HleAction> {
+    fn pump_virtual_input(&mut self, vmm: &mut VirtualMemoryManager, cpu: &mut crate::cpu::CpuState, call_rip: u64, _symbol: &str) -> Option<HleAction> {
         if !self.virtual_input || self.quit_code.is_some() {
             return None;
         }
