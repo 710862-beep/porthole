@@ -501,6 +501,18 @@ pub fn xor_rm16_rm16(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     x.set(xor(x.get(), y, &mut cpu.flags));
 }
 
+pub fn xor_rm16_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8to16() as u16;
+    let x = rm16(cpu, mem, instr);
+    x.set(xor(x.get(), y, &mut cpu.flags));
+}
+
+pub fn xor_rm16_imm16(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate16();
+    let x = rm16(cpu, mem, instr);
+    x.set(xor(x.get(), y, &mut cpu.flags));
+}
+
 pub fn xor_r8_rm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     let y = op1_rm8(cpu, mem, instr);
     let x = rm8(cpu, mem, instr);
@@ -972,4 +984,48 @@ pub fn not_rm16(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
 pub fn not_rm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     let x = rm8(cpu, mem, instr);
     x.set(!x.get())
+}
+
+#[cfg(test)]
+mod porthole_xor16_tests {
+    use super::*;
+    use crate::registers::Flags;
+    use crate::x86::CPU;
+    use iced_x86::{Decoder, DecoderOptions, Instruction};
+    use memory::Mem;
+
+    fn decode(bytes: &[u8]) -> Instruction {
+        let mut decoder = Decoder::with_ip(32, bytes, 0x1000, DecoderOptions::NONE);
+        let mut instr = Instruction::default();
+        decoder.decode_out(&mut instr);
+        instr
+    }
+
+    #[test]
+    fn xor_rm16_imm8_sign_extends_and_updates_flags() {
+        let mut cpu = CPU::new();
+        let mut memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set16(Register::DI, 0x00ff);
+        let instr = decode(&[0x66, 0x83, 0xf7, 0x01]); // xor di, 1
+        assert_eq!(instr.code(), iced_x86::Code::Xor_rm16_imm8);
+        xor_rm16_imm8(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get16(Register::DI), 0x00fe);
+        assert!(!cpu.flags.contains(Flags::ZF));
+        assert!(!cpu.flags.contains(Flags::CF));
+        assert!(!cpu.flags.contains(Flags::OF));
+    }
+
+    #[test]
+    fn xor_rm16_imm16_and_ax_form() {
+        let mut cpu = CPU::new();
+        let mut memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set16(Register::AX, 0x1234);
+        let instr = decode(&[0x66, 0x35, 0x34, 0x12]); // xor ax, 0x1234
+        assert_eq!(instr.code(), iced_x86::Code::Xor_AX_imm16);
+        xor_rm16_imm16(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get16(Register::AX), 0);
+        assert!(cpu.flags.contains(Flags::ZF));
+    }
 }

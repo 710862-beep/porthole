@@ -1,6 +1,6 @@
 //! Implementation of DirectDraw7 interfaces.
 
-use super::{palette::IDirectDrawPalette, types::*, DD_OK};
+use super::{color_fill, palette::IDirectDrawPalette, types::*, DDERR_INVALIDPARAMS, DD_OK};
 pub use crate::winapi::com::GUID;
 use crate::{
     winapi::{com::vtable, ddraw, kernel32::get_symbol, types::*},
@@ -371,8 +371,13 @@ pub mod IDirectDrawSurface7 {
         }
         let flags = flags.unwrap();
         if flags.contains(DDBLT::COLORFILL) {
-            log::warn!("todo: DDBLT::COLORFILL");
-            return DD_OK;
+            let Some(fx) = lpDDBLTFX else {
+                return DDERR_INVALIDPARAMS;
+            };
+            if fx.dwSize as usize != std::mem::size_of::<DDBLTFX>() {
+                return DDERR_INVALIDPARAMS;
+            }
+            return color_fill(machine, this, lpDstRect, fx.fill);
         }
         log::warn!("Blt: ignoring behavioral flags");
         BltFast(machine, this, 0, 0, lpSrc, None, 0)

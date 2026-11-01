@@ -12,6 +12,9 @@ pub trait Surface {
     /// Show the this surface as the foreground.  Called by ::Flip().
     fn show(&mut self);
 
+    /// Fill a rectangle with an RGBA color (DirectDraw DDBLT_COLORFILL).
+    fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]);
+
     // TODO: the trait object here means we end up needing to cast, but the alternative
     // isn't object safe, bleh.
     fn bit_blt(&mut self, dx: u32, dy: u32, src: &dyn Surface, sx: u32, sy: u32, w: u32, h: u32);

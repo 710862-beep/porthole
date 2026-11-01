@@ -62,6 +62,12 @@ impl win32::Surface for WebSurface {
             .unwrap();
     }
 
+    fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
+        let style = format!("rgba({},{},{},{})", color[0], color[1], color[2], color[3] as f64 / 255.0);
+        self.ctx.set_fill_style(&JsValue::from_str(&style));
+        self.ctx.fill_rect(x as f64, y as f64, w as f64, h as f64);
+    }
+
     fn bit_blt(
         &mut self,
         dx: u32,
@@ -126,7 +132,10 @@ impl win32::Window for JsWindow {
     }
 
     fn fullscreen(&mut self) {
-        log::warn!("todo: fullscreen");
+        // Browser hosts cannot enter OS exclusive fullscreen without a user
+        // gesture. DirectDraw exclusive mode is already represented by the
+        // sized canvas/window; treat the request as satisfied instead of
+        // logging an unimplemented API on every mode set.
     }
 }
 

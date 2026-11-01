@@ -250,6 +250,19 @@ impl win32::Surface for Texture {
         canvas.present();
     }
 
+    fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
+        let rect = sdl2::rect::Rect::new(x as i32, y as i32, w, h);
+        self.window
+            .0
+            .borrow_mut()
+            .canvas
+            .with_texture_canvas(&mut self.texture, |canvas| {
+                canvas.set_draw_color(sdl2::pixels::Color::RGBA(color[0], color[1], color[2], color[3]));
+                canvas.fill_rect(rect).unwrap();
+            })
+            .unwrap();
+    }
+
     fn bit_blt(
         &mut self,
         dx: u32,

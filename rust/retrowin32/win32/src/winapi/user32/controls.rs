@@ -125,6 +125,13 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         0x172 if c.kind==Kind::Static=>{result=c.image;c.image=lp},
         0x173 if c.kind==Kind::Static=>{result=c.image;redraw=false},
         0x30=>{}, // WM_SETFONT: the fixed public-domain bitmap font is the supported profile.
+        // WM_ACTIVATE / WM_ACTIVATEAPP / WM_WINDOWPOSCHANGED are notification
+        // messages for the supported control profile; focus itself is driven by
+        // WM_SETFOCUS/WM_KILLFOCUS and geometry by SetWindowPos before dispatch.
+        0x6|0x1c|0x47=>{redraw=false},
+        // EM_SCROLLCARET: single-line edits have no scrollback; caret is already
+        // visible after selection changes. Return success without repainting.
+        0xb7 if c.kind==Kind::Edit=>{redraw=false},
         0x200=>c.hover=true,
         0x201=>{c.pressed=true;c.focus=true;if c.kind==Kind::Edit{c.start=((lp&0xffff) as usize/8).min(c.text.len());c.end=c.start;}if c.kind==Kind::Listbox{let i=((lp>>16) as usize/12)as i32;if i>=0&&(i as usize)<c.items.len(){c.selected=i;notify=Some(1)}}},
         0x202|0xf5=>{if c.kind==Kind::Button&&(c.pressed||m==0xf5){c.pressed=false;let ty=c.style&15;if ty==3 {c.checked^=1}if ty==6 {c.checked=(c.checked+1)%3}if ty==9{c.checked=1}notify=Some(0)}else if c.kind==Kind::Scroll {let old=c.position;c.position=(c.low+((lp&0xffff)as i64*(c.high as i64-c.low as i64)/w.width.max(1)as i64)as i32).clamp(c.low,c.high);if old!=c.position{notify=Some(0xffff)}}},
