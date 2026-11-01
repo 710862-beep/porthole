@@ -42,6 +42,8 @@ pub struct LoadedPe64Info {
     pub aot_instructions_scanned: usize,
     pub tls_callbacks: Vec<u64>,
     pub resources: Vec<PeResource>,
+    /// .pdata RUNTIME_FUNCTION entries (begin_rva, end_rva, unwind_rva), sorted by begin.
+    pub pdata: Vec<(u32, u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
