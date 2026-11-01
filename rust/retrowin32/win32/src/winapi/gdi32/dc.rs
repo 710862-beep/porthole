@@ -38,6 +38,7 @@ pub struct DC {
     pub brush: HGDIOBJ,
     pub pen: HGDIOBJ,
     pub palette: HGDIOBJ,
+    pub font: HGDIOBJ,
 }
 
 impl DC {
@@ -50,6 +51,7 @@ impl DC {
             brush: Default::default(),
             pen: Default::default(),
             palette: Default::default(),
+            font: Default::default(),
         }
     }
 

@@ -7,6 +7,7 @@ use memory::Pod;
 
 const TRACE_CONTEXT: &'static str = "gdi32/text";
 
+#[derive(Debug)]
 pub struct FONT {}
 pub type HFONT = HANDLE<FONT>;
 
