@@ -7458,10 +7458,14 @@ impl Win32Kernel {
     }
 
     pub fn has_exception_handlers(&self) -> bool {
-        // SEH-only binaries (MSVC __try/__except) carry unwind/handler metadata in
-        // .pdata even when no VEH/UEF is registered. Without this, guard-page and
-        // access-violation exceptions never reach the guest's __except blocks.
-        !self.vectored_handlers.is_empty() || self.unhandled_filter != 0 || !self.pdata.is_empty()
+        // Per-instruction pre-snapshotting is expensive; only VEH/UEF require it on
+        // every instruction. SEH-only binaries are handled lazily at the fault site
+        // via has_seh_pdata() (the faulting instruction has not written back yet).
+        !self.vectored_handlers.is_empty() || self.unhandled_filter != 0
+    }
+
+    pub fn has_seh_pdata(&self) -> bool {
+        !self.pdata.is_empty()
     }
 
     /// Builds the real AMD64 EXCEPTION_RECORD/CONTEXT/EXCEPTION_POINTERS ABI in guest memory

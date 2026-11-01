@@ -182,7 +182,11 @@ impl HybridWasmJit {
         if block.insn_count == 0 { return None; }
         let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
         let mut links = Vec::new();
-        if self.tail_calls && matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) && !self_loop {
+        // Link forward JMP edges with return_call. Direct CALL edges stay dynamic for
+        // now: a linked CALL must preserve the caller's return address across the
+        // callee's RET, and the Doom timedemo exposed a null-target fault when CALL
+        // edges were specialized. JMP tail-calls keep the hot forward edges native.
+        if self.tail_calls && matches!(block.exit, BlockExit::Jump) && !self_loop {
             if let Some(target) = self.artifacts.get(&block.target) {
                 // Do not create cross-module cycles; self-loops are already native loops.
                 let cyclic = self.link_would_cycle(entry_rip, block.target);

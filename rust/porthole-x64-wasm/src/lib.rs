@@ -677,7 +677,10 @@ impl BrowserX64Emulator {
                     return format!("page-fault:{}", addr);
                 }
                 Err(MemoryTrap::GuardPage(addr)) => {
-                    if let Some(snapshot) = exception_snapshot {
+                    let snapshot = exception_snapshot.or_else(|| {
+                        if self.kernel.has_seh_pdata() { Some(self.cpu.exception_snapshot()) } else { None }
+                    });
+                    if let Some(snapshot) = snapshot {
                         if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0x8000_0001, 0, insn_rip, snapshot.gpr[4], &[0, addr]) {
                             self.cpu = snapshot;
                             self.stage_exception(action);
@@ -691,7 +694,10 @@ impl BrowserX64Emulator {
                     return format!("fault:{}", self.fault_message);
                 }
                 Err(MemoryTrap::AccessViolation(addr)) => {
-                    if let Some(snapshot) = exception_snapshot {
+                    let snapshot = exception_snapshot.or_else(|| {
+                        if self.kernel.has_seh_pdata() { Some(self.cpu.exception_snapshot()) } else { None }
+                    });
+                    if let Some(snapshot) = snapshot {
                         if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0xC000_0005, 0, insn_rip, snapshot.gpr[4], &[1, addr]) {
                             self.cpu = snapshot;
                             self.stage_exception(action);
