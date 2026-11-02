@@ -51,6 +51,47 @@ for (const [repo,match,name,zip] of [
     save(name,data.stdout,{url:asset.url,tag:release.tag_name,member});
   } finally {fs.rmSync(tmp,{recursive:true,force:true});}
 });
+// Pinned public mirrors for the remaining compatibility fixtures.  Each blob is
+// fetched through the GitHub API (the only allowed transport), PE-validated, and
+// recorded with its repository/path/checksum.  No search result is used as input.
+for (const [repo, blob, name, min] of [
+  ['willianchanlovegithub/kkrieger', 'd9e7f4678ff5b5861d02ed2454ff142c388cc96c', 'games/kkrieger.exe', 64],
+]) task(`pinned blob ${repo}/${name}`, () => {
+  if (manifest.assets.some(a => a.path === `tests/assets/${name}`)) return;
+  const url = `https://api.github.com/repos/${repo}/git/blobs/${blob}`;
+  const data = json(url);
+  if (data.encoding !== 'base64') throw new Error('Unsupported blob encoding');
+  save(name, Buffer.from(data.content, 'base64'), { url, repository: repo, blob }, min);
+});
+// Wine's own x86 conformance/CLI programs from a pinned upstream build.  The
+// archive is fetched through the GitHub release API and only the named PE members
+// are extracted; Linux ELF binaries are never accepted as Windows fixtures.
+task('pinned Wine x86 build programs', () => {
+  const wanted = [
+    [/\/winetest\.exe$/i, 'wine/winetest.exe', 1048577],
+    [/\/notepad\.exe$/i, 'windows/notepad.exe', 64],
+    [/\/winmine\.exe$/i, 'windows/Minesweeper.exe', 64],
+  ];
+  if (wanted.every(([, name]) => manifest.assets.some(a => a.path === `tests/assets/${name}`))) return;
+  const url = 'https://api.github.com/repos/Kron4ek/Wine-Builds/releases/assets/696306353';
+  const bytes = request(url, true);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'porthole-wine-'));
+  try {
+    const file = path.join(tmp, 'wine.tar.xz'); fs.writeFileSync(file, bytes);
+    const list = spawnSync('tar', ['-tJf', file], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    if (list.status !== 0) throw new Error(`tar list failed: ${list.stderr}`);
+    const members = list.stdout.split('\n').filter(Boolean);
+    for (const [re, name, min] of wanted) {
+      if (manifest.assets.some(a => a.path === `tests/assets/${name}`)) continue;
+      // Prefer the 32-bit Windows program directory, never the Linux ELF tree.
+      const member = members.find(p => re.test(p) && /i386-windows|lib\/wine\/i386|bin\//.test(p)) || members.find(p => re.test(p));
+      if (!member) { manifest.errors.push({ asset: name, reason: `No ${name} member in pinned Wine archive` }); continue; }
+      const r = spawnSync('tar', ['-xJOf', file, member], { maxBuffer: 64 * 1024 * 1024 });
+      if (r.status !== 0) { manifest.errors.push({ asset: name, reason: `tar extract ${member} failed` }); continue; }
+      save(name, r.stdout, { url, repository: 'Kron4ek/Wine-Builds', tag: '11.21', member, archiveSha256: crypto.createHash('sha256').update(bytes).digest('hex') }, min);
+    }
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
 // Deterministic, identified public mirror: search results are not stable inputs.
 task('pinned DOOM95 mirror blob',()=>{
   if(manifest.assets.some(a=>a.path==='tests/assets/games/doom95.exe'))return;

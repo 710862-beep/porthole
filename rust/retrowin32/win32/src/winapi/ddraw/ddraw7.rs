@@ -1,6 +1,6 @@
 //! Implementation of DirectDraw7 interfaces.
 
-use super::{palette::IDirectDrawPalette, types::*, DD_OK};
+use super::{color_fill, palette::IDirectDrawPalette, types::*, DDERR_INVALIDOBJECT, DDERR_INVALIDPARAMS, DD_OK};
 pub use crate::winapi::com::GUID;
 use crate::{
     winapi::{com::vtable, ddraw, kernel32::get_symbol, types::*},
@@ -80,22 +80,22 @@ pub mod IDirectDraw7 {
         EnumDisplayModes: ok,
         EnumSurfaces: todo,
         FlipToGDISurface: todo,
-        GetCaps: todo,
+        GetCaps: ok,
         GetDisplayMode: ok,
         GetFourCCCodes: todo,
         GetGDISurface: todo,
-        GetMonitorFrequency: todo,
-        GetScanLine: todo,
-        GetVerticalBlankStatus: todo,
+        GetMonitorFrequency: ok,
+        GetScanLine: ok,
+        GetVerticalBlankStatus: ok,
         Initialize: todo,
         RestoreDisplayMode: ok,
         SetCooperativeLevel: ok,
         SetDisplayMode: ok,
         WaitForVerticalBlank: ok,
-        GetAvailableVidMem: todo,
+        GetAvailableVidMem: ok,
         GetSurfaceFromDC: todo,
         RestoreAllSurfaces: todo,
-        TestCooperativeLevel: todo,
+        TestCooperativeLevel: ok,
         GetDeviceIdentifier: todo,
         StartModeTest: todo,
         EvaluateMode: todo,
@@ -229,6 +229,55 @@ pub mod IDirectDraw7 {
     }
 
     #[win32_derive::dllexport]
+    pub fn GetCaps(machine: &mut Machine, _this: u32, driver: u32, hel: u32) -> u32 {
+        ddraw::caps::get_caps(machine, driver, hel)
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetMonitorFrequency(_machine: &mut Machine, _this: u32, frequency: Option<&mut u32>) -> u32 {
+        let Some(frequency) = frequency else { return DDERR_INVALIDPARAMS; };
+        *frequency = 60;
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetScanLine(_machine: &mut Machine, _this: u32, scanline: Option<&mut u32>) -> u32 {
+        let Some(scanline) = scanline else { return DDERR_INVALIDPARAMS; };
+        // Software rasterizer has no asynchronous CRT beam; report a stable
+        // visible scanline instead of DDERR_UNSUPPORTED.
+        *scanline = 0;
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetVerticalBlankStatus(machine: &mut Machine, _this: u32, status: Option<&mut u32>) -> u32 {
+        let Some(status) = status else { return DDERR_INVALIDPARAMS; };
+        // Honest 60 Hz software CRT clock: a 1 ms vertical-blank window each 16 ms
+        // refresh. Games that poll for the beam edge (DOOM95) need both states.
+        *status = if machine.host.ticks() % 16 == 0 { 1 } else { 0 };
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetAvailableVidMem(
+        machine: &mut Machine,
+        _this: u32,
+        _caps: Option<&DDSCAPS2>,
+        total: Option<&mut u32>,
+        free: Option<&mut u32>,
+    ) -> u32 {
+        let (Some(total), Some(free)) = (total, free) else { return DDERR_INVALIDPARAMS; };
+        *total = machine.state.ddraw.heap.size;
+        *free = machine.state.ddraw.heap.free_bytes();
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn TestCooperativeLevel(_machine: &mut Machine, _this: u32) -> u32 {
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
     pub fn RestoreDisplayMode(_machine: &mut Machine, this: u32) -> u32 {
         0
     }
@@ -273,15 +322,18 @@ pub mod IDirectDraw7 {
     }
 
     #[win32_derive::dllexport]
-    pub fn WaitForVerticalBlank(
-        _machine: &mut Machine,
-        this: u32,
-        flags: u32,
+    pub async fn WaitForVerticalBlank(
+        machine: &mut Machine,
+        _this: u32,
+        _flags: u32,
         _unused: u32,
     ) -> u32 {
-        // TODO: effect.exe uses this to pace itself; actually sync to a clock here?
-        #[cfg(not(feature = "wasm"))]
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Pace to the next 60 Hz vertical-blank window using the same honest clock
+        // as GetVerticalBlankStatus. The async upcall yields to the host timer so
+        // wall-clock time advances instead of spinning the Wasm instance.
+        let phase = machine.host.ticks() % 16;
+        let delay = if phase == 0 { 16 } else { 16 - phase };
+        crate::winapi::kernel32::Sleep(machine, delay).await;
         DD_OK
     }
 }
@@ -304,23 +356,23 @@ pub mod IDirectDrawSurface7 {
         EnumOverlayZOrders: todo,
         Flip: ok,
         GetAttachedSurface: ok,
-        GetBltStatus: todo,
+        GetBltStatus: ok,
         GetCaps: ok,
         GetClipper: todo,
-        GetColorKey: todo,
+        GetColorKey: ok,
         GetDC: ok,
-        GetFlipStatus: todo,
+        GetFlipStatus: ok,
         GetOverlayPosition: todo,
-        GetPalette: todo,
+        GetPalette: ok,
         GetPixelFormat: ok,
         GetSurfaceDesc: ok,
         Initialize: todo,
-        IsLost: todo,
+        IsLost: ok,
         Lock: ok,
         ReleaseDC: ok,
         Restore: ok,
         SetClipper: ok,
-        SetColorKey: todo,
+        SetColorKey: ok,
         SetOverlayPosition: todo,
         SetPalette: ok,
         Unlock: ok,
@@ -371,8 +423,13 @@ pub mod IDirectDrawSurface7 {
         }
         let flags = flags.unwrap();
         if flags.contains(DDBLT::COLORFILL) {
-            log::warn!("todo: DDBLT::COLORFILL");
-            return DD_OK;
+            let Some(fx) = lpDDBLTFX else {
+                return DDERR_INVALIDPARAMS;
+            };
+            if fx.dwSize as usize != std::mem::size_of::<DDBLTFX>() {
+                return DDERR_INVALIDPARAMS;
+            }
+            return color_fill(machine, this, lpDstRect, fx.fill);
         }
         log::warn!("Blt: ignoring behavioral flags");
         BltFast(machine, this, 0, 0, lpSrc, None, 0)
@@ -434,6 +491,45 @@ pub mod IDirectDrawSurface7 {
 
     #[win32_derive::dllexport]
     pub fn GetCaps(_machine: &mut Machine, this: u32, lpDDSCAPS2: Option<&mut DDSCAPS2>) -> u32 {
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetBltStatus(_machine: &mut Machine, _this: u32, _flags: u32) -> u32 {
+        // All supported blts are synchronous; DD_OK means "not still drawing".
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetFlipStatus(_machine: &mut Machine, _this: u32, _flags: u32) -> u32 {
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn IsLost(_machine: &mut Machine, _this: u32) -> u32 {
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetPalette(machine: &mut Machine, this: u32, palette: Option<&mut u32>) -> u32 {
+        let Some(surface) = machine.state.ddraw.surfaces.get(&this) else { return DDERR_INVALIDOBJECT; };
+        let Some(palette) = palette else { return DDERR_INVALIDPARAMS; };
+        *palette = surface.palette;
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn GetColorKey(machine: &mut Machine, this: u32, _flags: u32, color_key: Option<&mut DDCOLORKEY>) -> u32 {
+        let Some(surface) = machine.state.ddraw.surfaces.get(&this) else { return DDERR_INVALIDOBJECT; };
+        let Some(color_key) = color_key else { return DDERR_INVALIDPARAMS; };
+        *color_key = surface.color_key.clone().unwrap_or_default();
+        DD_OK
+    }
+
+    #[win32_derive::dllexport]
+    pub fn SetColorKey(machine: &mut Machine, this: u32, _flags: u32, color_key: Option<&DDCOLORKEY>) -> u32 {
+        let Some(surface) = machine.state.ddraw.surfaces.get_mut(&this) else { return DDERR_INVALIDOBJECT; };
+        surface.color_key = color_key.cloned();
         DD_OK
     }
 

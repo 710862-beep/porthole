@@ -1,7 +1,7 @@
 //! For some reason kernel32 exports functions that I would've expected to find in the libc...
 
 use crate::{winapi::types::Str16, Machine};
-use memory::ExtensionsMut;
+use memory::{Extensions, ExtensionsMut};
 
 const TRACE_CONTEXT: &'static str = "kernel32/libc";
 
@@ -63,4 +63,15 @@ pub fn lstrcmpiA(_machine: &mut Machine, lpString1: Option<&str>, lpString2: Opt
         std::cmp::Ordering::Greater => 1,
         std::cmp::Ordering::Equal => 0,
     }
+}
+
+#[win32_derive::dllexport]
+pub fn lstrcatA(machine: &mut Machine, lpString1: u32, lpString2: Option<&str>) -> u32 {
+    let Some(src) = lpString2 else { return 0; };
+    let dst_len = machine.mem().slicez(lpString1).len();
+    let total = dst_len + src.len() + 1;
+    let dst = machine.mem().sub32_mut(lpString1, total as u32);
+    dst[dst_len..dst_len + src.len()].copy_from_slice(src.as_bytes());
+    dst[total - 1] = 0;
+    lpString1
 }

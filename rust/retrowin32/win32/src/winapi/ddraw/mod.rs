@@ -19,6 +19,7 @@ pub use palette::IDirectDrawPalette;
 
 use super::{heap::Heap, types::*};
 use crate::{host, machine::Machine, SurfaceOptions};
+use memory::ExtensionsMut;
 use std::collections::HashMap;
 pub use types::*;
 
@@ -33,6 +34,8 @@ pub struct Surface {
     pixels: u32,
     /// Address of attached surface, e.g. back buffer.
     attached: u32,
+    /// Optional DirectDraw color key (SetColorKey/GetColorKey).
+    color_key: Option<DDCOLORKEY>,
 }
 
 impl Surface {
@@ -47,6 +50,7 @@ impl Surface {
             palette: 0,
             pixels: 0,
             attached: 0,
+            color_key: None,
         }
     }
 
@@ -88,6 +92,73 @@ impl Surface {
 
         surfaces
     }
+}
+
+/// DirectDraw DDBLT_COLORFILL. Keeps the locked guest buffer and the host
+/// surface in sync. 8bpp colors are palette indices; 16/32bpp colors are raw
+/// guest pixel values. The host surface is always RGBA.
+pub fn color_fill(machine: &mut Machine, this: u32, rect: Option<&RECT>, color: u32) -> u32 {
+    let Some(surface) = machine.state.ddraw.surfaces.get(&this) else {
+        return DDERR_INVALIDOBJECT;
+    };
+    let (width, height, palette, pixels, attached) =
+        (surface.width, surface.height, surface.palette, surface.pixels, surface.attached);
+    let (x0, y0, x1, y1) = match rect {
+        Some(r) => (
+            r.left.max(0) as u32,
+            r.top.max(0) as u32,
+            (r.right.max(0) as u32).min(width),
+            (r.bottom.max(0) as u32).min(height),
+        ),
+        None => (0, 0, width, height),
+    };
+    if x1 <= x0 || y1 <= y0 {
+        return DD_OK;
+    }
+    let bpp = machine.state.ddraw.bytes_per_pixel.max(1);
+    let rgba: [u8; 4] = if bpp == 1 {
+        let index = (color & 0xff) as usize;
+        match machine
+            .state
+            .ddraw
+            .palettes
+            .get(&palette)
+            .or_else(|| machine.state.ddraw.palettes.get(&machine.state.ddraw.palette_hack))
+            .and_then(|p| p.get(index))
+        {
+            Some(p) => [p.peRed, p.peGreen, p.peBlue, 255],
+            None => [index as u8, index as u8, index as u8, 255],
+        }
+    } else {
+        [(color >> 16) as u8, (color >> 8) as u8, color as u8, 255]
+    };
+    if pixels != 0 {
+        let stride = width * bpp;
+        let row_bytes = (x1 - x0) * bpp;
+        let fill: Vec<u8> = match bpp {
+            1 => vec![(color & 0xff) as u8; row_bytes as usize],
+            2 => [(color & 0xff) as u8, ((color >> 8) & 0xff) as u8]
+                .into_iter()
+                .cycle()
+                .take(row_bytes as usize)
+                .collect(),
+            4 => color.to_le_bytes().into_iter().cycle().take(row_bytes as usize).collect(),
+            _ => vec![0; row_bytes as usize],
+        };
+        let mem = machine.emu.memory.mem();
+        for y in y0..y1 {
+            let addr = pixels + y * stride + x0 * bpp;
+            if (addr as u64) + (row_bytes as u64) <= mem.len() as u64 {
+                mem.sub32_mut(addr, row_bytes).copy_from_slice(&fill);
+            }
+        }
+    }
+    let surface = machine.state.ddraw.surfaces.get_mut(&this).unwrap();
+    surface.host.fill_rect(x0, y0, x1 - x0, y1 - y0, rgba);
+    if attached == 0 {
+        surface.host.show();
+    }
+    DD_OK
 }
 
 pub struct State {
@@ -133,6 +204,8 @@ impl Default for State {
 const DD_OK: u32 = 0;
 // DD error codes are generated with this MAKE_HRESULT macro, maybe it doesn't matter too much.
 const DDERR_GENERIC: u32 = 0x80004005;
+const DDERR_INVALIDOBJECT: u32 = 0x8876_0082; // MAKE_DDHRESULT(130)
+const DDERR_INVALIDPARAMS: u32 = 0x8007_0057; // E_INVALIDARG
 
 #[win32_derive::dllexport]
 pub fn DirectDrawCreate(

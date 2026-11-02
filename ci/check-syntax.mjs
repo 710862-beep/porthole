@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const roots = ['js', 'shims', 'ci', 'tests/node', 'tests/wine', 'scripts'];
+const roots = ['js', 'shims', 'ci', 'tests/node', 'tests/wine', 'tests/wine64', 'tests/torture', 'tests/third-party', 'scripts'];
 const files = ['input-raw.js', 'vfs-persist.js', 'spoof-hardware.js'];
 function visit(relative) {
   if (!fs.existsSync(relative)) return;

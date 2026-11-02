@@ -1,4 +1,4 @@
-use super::{Brush, DCTarget, Pen, BITMAP, COLORREF, HDC};
+use super::{Brush, DCTarget, Pen, BITMAP, COLORREF, HDC, FONT};
 use crate::{
     winapi::{
         bitmap::{Bitmap, BitmapMono, BitmapRGBA32},
@@ -30,6 +30,8 @@ pub enum Object {
     Brush(Brush),
     Bitmap(BitmapType),
     Pen(Pen),
+    Palette(Vec<[u8; 4]>),
+    Font(FONT),
 }
 
 pub type HGDIOBJ = HANDLE<Object>;
@@ -49,12 +51,25 @@ pub enum GetStockObjectArg {
     DKGRAY_BRUSH = 3,
     BLACK_BRUSH = 4,
     NULL_BRUSH = 5,
+    NULL_PEN = 6,
+    WHITE_PEN = 7,
+    BLACK_PEN = 8,
     OEM_FIXED_FONT = 10,
+    ANSI_FIXED_FONT = 11,
+    ANSI_VAR_FONT = 12,
+    SYSTEM_FONT = 13,
+    DEVICE_DEFAULT_FONT = 14,
+    DEFAULT_PALETTE = 15,
+    SYSTEM_FIXED_FONT = 16,
+    DEFAULT_GUI_FONT = 17,
+    DC_BRUSH = 18,
+    DC_PEN = 19,
 }
 
 #[win32_derive::dllexport]
 pub fn GetStockObject(machine: &mut Machine, i: Result<GetStockObjectArg, u32>) -> HGDIOBJ {
-    match i.unwrap() {
+    let Ok(i) = i else { return HGDIOBJ::null(); };
+    match i {
         GetStockObjectArg::WHITE_BRUSH => machine.state.gdi32.objects.add(Object::Brush(Brush {
             color: Some(COLORREF::white()),
         })),
@@ -69,11 +84,38 @@ pub fn GetStockObject(machine: &mut Machine, i: Result<GetStockObjectArg, u32>) 
             .gdi32
             .objects
             .add(Object::Brush(Brush { color: None })),
-        GetStockObjectArg::OEM_FIXED_FONT => {
-            log::error!("returning null stock object");
-            HGDIOBJ::null()
-        }
-        _ => todo!(),
+        GetStockObjectArg::GRAY_BRUSH => machine.state.gdi32.objects.add(Object::Brush(Brush {
+            color: Some(COLORREF::from_rgb(0x80, 0x80, 0x80)),
+        })),
+        GetStockObjectArg::DKGRAY_BRUSH => machine.state.gdi32.objects.add(Object::Brush(Brush {
+            color: Some(COLORREF::from_rgb(0x40, 0x40, 0x40)),
+        })),
+        GetStockObjectArg::NULL_PEN => machine.state.gdi32.objects.add(Object::Pen(Pen {
+            color: COLORREF::from_rgb(0, 0, 0),
+        })),
+        GetStockObjectArg::WHITE_PEN => machine.state.gdi32.objects.add(Object::Pen(Pen {
+            color: COLORREF::white(),
+        })),
+        GetStockObjectArg::BLACK_PEN | GetStockObjectArg::DC_PEN => machine
+            .state
+            .gdi32
+            .objects
+            .add(Object::Pen(Pen { color: COLORREF::from_rgb(0, 0, 0) })),
+        GetStockObjectArg::DC_BRUSH => machine.state.gdi32.objects.add(Object::Brush(Brush {
+            color: Some(COLORREF::white()),
+        })),
+        GetStockObjectArg::OEM_FIXED_FONT
+        | GetStockObjectArg::ANSI_FIXED_FONT
+        | GetStockObjectArg::ANSI_VAR_FONT
+        | GetStockObjectArg::SYSTEM_FONT
+        | GetStockObjectArg::DEVICE_DEFAULT_FONT
+        | GetStockObjectArg::SYSTEM_FIXED_FONT
+        | GetStockObjectArg::DEFAULT_GUI_FONT => machine.state.gdi32.objects.add(Object::Font(FONT {})),
+        GetStockObjectArg::DEFAULT_PALETTE => machine
+            .state
+            .gdi32
+            .objects
+            .add(Object::Palette(Vec::new())),
     }
 }
 
@@ -99,6 +141,8 @@ pub fn SelectObject(machine: &mut Machine, hdc: HDC, hGdiObj: HGDIOBJ) -> HGDIOB
         },
         Object::Brush(_) => std::mem::replace(&mut dc.brush, hGdiObj),
         Object::Pen(_) => std::mem::replace(&mut dc.pen, hGdiObj),
+        Object::Palette(_) => std::mem::replace(&mut dc.palette, hGdiObj),
+        Object::Font(_) => std::mem::replace(&mut dc.font, hGdiObj),
     }
 }
 
@@ -127,6 +171,8 @@ pub fn GetObjectA(machine: &mut Machine, handle: HGDIOBJ, bytes: u32, out: u32) 
             bytes
         }
         Object::Pen(_) => todo!(),
+        Object::Palette(_) => 0,
+        Object::Font(_) => 0,
     }
 }
 

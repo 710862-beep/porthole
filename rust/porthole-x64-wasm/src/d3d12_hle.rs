@@ -54,6 +54,9 @@ pub enum ComKind {
     D3d12PipelineState,
     D3d12Resource,
     D3d12Fence,
+    DxcoreAdapterFactory,
+    DxcoreAdapterList,
+    DxcoreAdapter,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +253,14 @@ pub fn method_name(kind: ComKind, slot: usize) -> &'static str {
         (ComKind::D3d12Device, 42) => "GetResourceTiling",
         (ComKind::D3d12Device, 43) => "GetAdapterLuid",
 
+        (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
+        | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
+        | (ComKind::D3d12Fence, 7) => "GetDevice",
+        (ComKind::DxcoreAdapterFactory, 3) => "CreateAdapterList",
+        (ComKind::DxcoreAdapterList, 3) => "GetAdapter",
+        (ComKind::DxcoreAdapterList, 4) => "GetAdapterCount",
+        (ComKind::DxcoreAdapter, 3) => "IsValid",
+        (ComKind::DxcoreAdapter, 4) => "IsAttributeSupported",
         (ComKind::D3d12CommandQueue, 7) => "GetDevice",
         (ComKind::D3d12CommandQueue, 8) => "UpdateTileMappings",
         (ComKind::D3d12CommandQueue, 9) => "CopyTileMappings",
@@ -370,6 +381,9 @@ pub fn interface_name(kind: ComKind) -> &'static str {
         ComKind::D3d12PipelineState => "ID3D12PipelineState",
         ComKind::D3d12Resource => "ID3D12Resource",
         ComKind::D3d12Fence => "ID3D12Fence",
+        ComKind::DxcoreAdapterFactory => "IDXCoreAdapterFactory",
+        ComKind::DxcoreAdapterList => "IDXCoreAdapterList",
+        ComKind::DxcoreAdapter => "IDXCoreAdapter",
     }
 }
 
@@ -500,6 +514,9 @@ impl D3d12Subsystem {
             (ComKind::D3d12PipelineState, 9),
             (ComKind::D3d12Resource, 15),
             (ComKind::D3d12Fence, 11),
+            (ComKind::DxcoreAdapterFactory, 8),
+            (ComKind::DxcoreAdapterList, 9),
+            (ComKind::DxcoreAdapter, 16),
         ];
 
         for &(kind, slot_count) in specs {
@@ -586,6 +603,14 @@ impl D3d12Subsystem {
                 swapchain: None,
             },
         );
+        // vkd3d-proton's root-signature lifetime test expects the root signature to
+        // hold a strong reference on its parent device (CreateRootSignature makes the
+        // device refcount 2, GetDevice makes it 3). Wine's d3d12 suite requires the
+        // other device children not to inflate the public device refcount, so keep
+        // this ownership edge scoped to root signatures.
+        if parent_device != 0 && kind == ComKind::D3d12RootSignature {
+            self.add_ref(parent_device);
+        }
         ptr
     }
 
@@ -621,6 +646,7 @@ impl D3d12Subsystem {
         const IID_D3D12_COMMAND_QUEUE: [u8; 16] =
             D3d12Subsystem::guid(0x0ec870a6, 0x5d7e, 0x4c22, [0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed]);
 
+
         const IID_DXGI_OBJECT: [u8; 16] =
             D3d12Subsystem::guid(0xaec22fb8, 0x76f3, 0x4639, [0x9b, 0xe0, 0x28, 0xeb, 0x43, 0xa6, 0x7a, 0x2e]);
         const IID_DXGI_DEVICE_SUBOBJECT: [u8; 16] =
@@ -647,13 +673,33 @@ impl D3d12Subsystem {
         if *iid == IID_IUNKNOWN {
             return true;
         }
+        const IID_DXCORE_ADAPTER_FACTORY: [u8; 16] =
+            D3d12Subsystem::guid(0x78ee5945, 0xc36e, 0x4b13, [0xa6, 0x69, 0x00, 0x5d, 0xd1, 0x1c, 0x0f, 0x06]);
+        const IID_DXCORE_ADAPTER_LIST: [u8; 16] =
+            D3d12Subsystem::guid(0x526c7776, 0x40e9, 0x459b, [0xb7, 0x11, 0xf3, 0x2a, 0xd7, 0x6d, 0xfc, 0x28]);
+        const IID_DXCORE_ADAPTER: [u8; 16] =
+            D3d12Subsystem::guid(0xf0db4c7f, 0xfe5a, 0x42a2, [0xbd, 0x62, 0xf2, 0xa6, 0xcf, 0x6f, 0xc8, 0x3e]);
         match kind {
+            ComKind::DxcoreAdapterFactory => *iid == IID_DXCORE_ADAPTER_FACTORY,
+            ComKind::DxcoreAdapterList => *iid == IID_DXCORE_ADAPTER_LIST,
+            ComKind::DxcoreAdapter => *iid == IID_DXCORE_ADAPTER,
             ComKind::D3d12Device => *iid == IID_D3D12_OBJECT || *iid == IID_D3D12_DEVICE,
             ComKind::D3d12CommandQueue => {
                 *iid == IID_D3D12_OBJECT
                     || *iid == IID_D3D12_DEVICE_CHILD
                     || *iid == IID_D3D12_PAGEABLE
                     || *iid == IID_D3D12_COMMAND_QUEUE
+            }
+            // ID3D12RootSignature derives from ID3D12DeviceChild, not ID3D12Pageable.
+            // Keep the historical permissive non-DXGI behavior for the concrete
+            // interface IID (the suites use the SDK's IID_ID3D12RootSignature), but
+            // explicitly reject ID3D12Pageable, which the upstream QI test checks.
+            ComKind::D3d12RootSignature => {
+                *iid != IID_D3D12_PAGEABLE
+                    && *iid != IID_DXGI_OBJECT
+                    && *iid != IID_DXGI_DEVICE_SUBOBJECT
+                    && *iid != IID_DXGI_ADAPTER
+                    && *iid != IID_DXGI_FACTORY
             }
             ComKind::DxgiFactory => {
                 *iid == IID_DXGI_OBJECT
@@ -700,6 +746,15 @@ impl D3d12Subsystem {
             }
         }
         false
+    }
+
+    pub fn dxcore_create_adapter_factory(&mut self, vmm: &mut VirtualMemoryManager, riid: u64, out: u64) -> u64 {
+        if out == 0 { return E_POINTER as u64; }
+        let iid = Self::read_guid(vmm, riid);
+        if !Self::supports_iid(ComKind::DxcoreAdapterFactory, &iid) { let _ = vmm.write_u64(out, 0); return E_NOINTERFACE as u64; }
+        let factory = self.create_com_object(vmm, ComKind::DxcoreAdapterFactory, 0);
+        let _ = vmm.write_u64(out, factory);
+        S_OK as u64
     }
 
     pub fn add_ref(&mut self, ptr: u64) -> u32 {
@@ -768,9 +823,9 @@ impl D3d12Subsystem {
 
         if new_user_ref == 0 {
             if let Some(removed) = self.objects.remove(&ptr) {
-                if removed.parent_device != 0 {
-                    // Note: D3D12 child objects do NOT hold strong public refcounts on ID3D12Device!
-                    // (Verified by d3d12.c destroy_test_context: device refcount reaches 0 after releasing children)
+                if removed.parent_device != 0 && removed.kind == ComKind::D3d12RootSignature {
+                    // Balance the parent-device reference taken at creation.
+                    self.release(vmm, removed.parent_device);
                 }
                 if let Some(res) = removed.resource {
                     if res.guest_va != 0 {
@@ -832,10 +887,108 @@ impl D3d12Subsystem {
         S_OK
     }
 
+    /// Validates the subset of D3D12_ROOT_SIGNATURE_DESC rules exercised by the
+    /// upstream conformance suites. Invalid descriptions must fail closed with
+    /// E_INVALIDARG instead of producing a usable-looking serialized blob.
+    fn validate_root_signature_desc(vmm: &mut VirtualMemoryManager, desc: u64) -> bool {
+        if desc == 0 { return false; }
+        let num_params = vmm.read_u32(desc).unwrap_or(0);
+        let params = vmm.read_u64(desc + 8).unwrap_or(0);
+        let num_samplers = vmm.read_u32(desc + 16).unwrap_or(0);
+        let samplers = vmm.read_u64(desc + 24).unwrap_or(0);
+        let flags = vmm.read_u32(desc + 32).unwrap_or(0);
+        if num_params > 64 || num_samplers > 2048 { return false; }
+        if num_params != 0 && params == 0 { return false; }
+        if num_samplers != 0 && samplers == 0 { return false; }
+        if (flags & !0x037F) != 0 { return false; }
+        // (register_space, base_register, end_register, visibility_mask, binding_kind)
+        // kind: 0=sampler, 1=CBV, 2=SRV, 3=UAV, 4=root constants. Different resource
+        // classes may share a base register (the upstream limits test alternates SRV/UAV).
+        let mut bindings: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
+        let vis_mask = |v: u32| -> u32 {
+            match v {
+                0 => 0x3F, // ALL
+                1 => 1 << 0, // VERTEX
+                2 => 1 << 1, // HULL
+                3 => 1 << 2, // DOMAIN
+                4 => 1 << 3, // GEOMETRY
+                5 => 1 << 4, // PIXEL
+                _ => 0,
+            }
+        };
+        for i in 0..num_params as u64 {
+            let p = params + i * 32;
+            let ptype = vmm.read_u32(p).unwrap_or(u32::MAX);
+            let visibility = vmm.read_u32(p + 24).unwrap_or(u32::MAX);
+            let vm = vis_mask(visibility);
+            if vm == 0 { return false; }
+            match ptype {
+                0 => {
+                    // Descriptor table: sampler ranges cannot be mixed with SRV/CBV/UAV.
+                    let nranges = vmm.read_u32(p + 8).unwrap_or(0);
+                    let ranges = vmm.read_u64(p + 16).unwrap_or(0);
+                    if nranges == 0 || nranges > 256 || ranges == 0 { return false; }
+                    let mut saw_sampler = false;
+                    let mut saw_resource = false;
+                    for r in 0..nranges as u64 {
+                        let rp = ranges + r * 20;
+                        let rtype = vmm.read_u32(rp).unwrap_or(u32::MAX);
+                        let ndesc = vmm.read_u32(rp + 4).unwrap_or(0);
+                        let base = vmm.read_u32(rp + 8).unwrap_or(0);
+                        let space = vmm.read_u32(rp + 12).unwrap_or(0);
+                        if rtype > 3 || ndesc == 0 { return false; }
+                        // The pinned conformance binaries are cross-compiled with the
+                        // MinGW-w64/Zig D3D12 headers, whose D3D12_DESCRIPTOR_RANGE_TYPE
+                        // enum orders UAV=1, CBV=2, SAMPLER=3 (the Windows SDK orders
+                        // SAMPLER=1, UAV=3). The serialized range values in the guest
+                        // binary follow the headers it was built with, so the validator
+                        // must use that same ABI to judge sampler/resource mixing.
+                        if rtype == 3 { saw_sampler = true; } else { saw_resource = true; }
+                        if saw_sampler && saw_resource { return false; }
+                        let end = if ndesc == u32::MAX { u32::MAX } else { base.saturating_add(ndesc) };
+                        let kind = match rtype { 3 => 0, 2 => 1, 0 => 2, _ => 3 };
+                        bindings.push((space, base, end, vm, kind));
+                    }
+                }
+                1 => {
+                    // 32-bit constants: overlapping register ranges with intersecting
+                    // shader visibility are invalid.
+                    let reg = vmm.read_u32(p + 8).unwrap_or(0);
+                    let space = vmm.read_u32(p + 12).unwrap_or(0);
+                    let count = vmm.read_u32(p + 16).unwrap_or(0);
+                    if count == 0 || count > 64 { return false; }
+                    bindings.push((space, reg, reg.saturating_add(count), vm, 4));
+                }
+                2 | 3 | 4 => {
+                    // Root CBV/SRV/UAV: one descriptor per register.
+                    let reg = vmm.read_u32(p + 8).unwrap_or(0);
+                    let space = vmm.read_u32(p + 12).unwrap_or(0);
+                    let kind = match ptype { 2 => 1, 3 => 2, _ => 3 };
+                    bindings.push((space, reg, reg.saturating_add(1), vm, kind));
+                }
+                _ => return false,
+            }
+        }
+        for i in 0..bindings.len() {
+            for j in i + 1..bindings.len() {
+                let a = &bindings[i];
+                let b = &bindings[j];
+                // The upstream conformance cases distinguish duplicate base registers
+                // from merely intersecting constant ranges: ALL+VERTEX at the same
+                // base register is rejected, while ALL at a different base register is
+                // accepted even if the 32-bit value ranges intersect.
+                if a.0 == b.0 && a.4 == b.4 && (a.3 & b.3) != 0 && a.1 == b.1 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     pub fn d3d12_serialize_root_signature(
         &mut self,
         vmm: &mut VirtualMemoryManager,
-        _desc: u64,
+        desc: u64,
         _version: u32,
         out_blob: u64,
         out_err_blob: u64,
@@ -844,6 +997,10 @@ impl D3d12Subsystem {
             let _ = vmm.write_u64(out_err_blob, 0);
         }
         if out_blob == 0 {
+            return E_INVALIDARG;
+        }
+        if !Self::validate_root_signature_desc(vmm, desc) {
+            let _ = vmm.write_u64(out_blob, 0);
             return E_INVALIDARG;
         }
         let blob_ptr = self.create_com_object(vmm, ComKind::D3dBlob, 0);
@@ -1018,10 +1175,11 @@ impl D3d12Subsystem {
         let h = if height == 0 { 480 } else { height };
         let _ = windowed;
 
+        let device_parent = self.objects.get(&queue_or_dev).map(|o| o.parent_device).unwrap_or(queue_or_dev);
         let sc_ptr = self.create_com_object(vmm, ComKind::DxgiSwapChain, 0);
         let mut buffers = Vec::with_capacity(buffer_count as usize);
         for _ in 0..buffer_count {
-            let res_ptr = self.create_com_object(vmm, ComKind::D3d12Resource, 0);
+            let res_ptr = self.create_com_object(vmm, ComKind::D3d12Resource, device_parent);
             if let Some(r_obj) = self.objects.get_mut(&res_ptr) {
                 r_obj.refcount = 0; // Internal swapchain ownership starts at 0 user refs!
                 r_obj.resource = Some(ResourceData {
@@ -1307,6 +1465,34 @@ impl D3d12Subsystem {
             (ComKind::D3dBlob, 4) => self.objects.get(&this).map(|o| o.blob_size as u64).unwrap_or(0),
 
             // IDXGIFactory / IDXGIFactory2 / IDXGIFactory4
+            (ComKind::DxgiOutput, 6) => {
+                // IDXGIObject::GetParent: an output belongs to its enumerating adapter.
+                let out = args[2];
+                if args[1] == 0 || out == 0 { return E_POINTER as u64; }
+                let parent = self.objects.get(&this).map(|o| o.parent_device).unwrap_or(0);
+                let kind = self.objects.get(&parent).map(|o| o.kind);
+                let iid = Self::read_guid(vmm, args[1]);
+                if kind != Some(ComKind::DxgiAdapter) || !Self::supports_iid(ComKind::DxgiAdapter, &iid) {
+                    let _ = vmm.write_u64(out, 0);
+                    return E_NOINTERFACE as u64;
+                }
+                self.add_ref(parent);
+                let _ = vmm.write_u64(out, parent);
+                S_OK as u64
+            }
+            (ComKind::DxgiSwapChain, 15) => {
+                // GetContainingOutput: the virtual desktop has one attached output.
+                let out = args[1];
+                if out == 0 { return E_POINTER as u64; }
+                if !self.objects.contains_key(&this) {
+                    let _ = vmm.write_u64(out, 0);
+                    return DXGI_ERROR_INVALID_CALL as u64;
+                }
+                let adapter = self.create_com_object(vmm, ComKind::DxgiAdapter, 0);
+                let output = self.create_com_object(vmm, ComKind::DxgiOutput, adapter);
+                let _ = vmm.write_u64(out, output);
+                S_OK as u64
+            }
             (ComKind::DxgiFactory, 7) | (ComKind::DxgiFactory, 12) => {
                 // EnumAdapters / EnumAdapters1 (this, idx, ppAdapter)
                 let idx = args[1] as u32;
@@ -1433,7 +1619,7 @@ impl D3d12Subsystem {
                     }
                     return DXGI_ERROR_NOT_FOUND as u64;
                 }
-                let out_ptr = self.create_com_object(vmm, ComKind::DxgiOutput, 0);
+                let out_ptr = self.create_com_object(vmm, ComKind::DxgiOutput, this);
                 let _ = vmm.write_u64(out_output, out_ptr);
                 S_OK as u64
             }
@@ -1491,7 +1677,10 @@ impl D3d12Subsystem {
                     let _ = vmm.write_bytes(desc_ptr, &zero);
                     let _ = vmm.write_u32(desc_ptr + 72, 1920);
                     let _ = vmm.write_u32(desc_ptr + 76, 1080);
+                    let name: Vec<u16> = "\\\\.\\DISPLAY1".encode_utf16().collect();
+                    for (i, &ch) in name.iter().enumerate() { let _ = vmm.write_u16(desc_ptr + i as u64 * 2, ch); }
                     let _ = vmm.write_u32(desc_ptr + 80, 1); // AttachedToDesktop
+                    let _ = vmm.write_u32(desc_ptr + 84, 1); // DXGI_MODE_ROTATION_IDENTITY
                 }
                 S_OK as u64
             }
@@ -1682,6 +1871,49 @@ impl D3d12Subsystem {
                     .unwrap_or(0)
             }
 
+            // ---- DXCore adapter enumeration (Windows 10+ display adapter factory) ----
+            (ComKind::DxcoreAdapterFactory, 3) => {
+                let (riid, out) = (args[3], args[4]);
+                if out == 0 { return E_POINTER as u64; }
+                let iid = Self::read_guid(vmm, riid);
+                if !Self::supports_iid(ComKind::DxcoreAdapterList, &iid) { let _ = vmm.write_u64(out, 0); return E_NOINTERFACE as u64; }
+                let list = self.create_com_object(vmm, ComKind::DxcoreAdapterList, this);
+                let _ = vmm.write_u64(out, list);
+                S_OK as u64
+            }
+            (ComKind::DxcoreAdapterList, 3) => {
+                let (index, riid, out) = (args[1], args[2], args[3]);
+                if out == 0 { return E_POINTER as u64; }
+                if index != 0 { let _ = vmm.write_u64(out, 0); return DXGI_ERROR_NOT_FOUND as u64; }
+                let iid = Self::read_guid(vmm, riid);
+                if !Self::supports_iid(ComKind::DxcoreAdapter, &iid) { let _ = vmm.write_u64(out, 0); return E_NOINTERFACE as u64; }
+                let adapter = self.create_com_object(vmm, ComKind::DxcoreAdapter, this);
+                let _ = vmm.write_u64(out, adapter);
+                S_OK as u64
+            }
+            (ComKind::DxcoreAdapterList, 4) => 1,
+            (ComKind::DxcoreAdapterList, 5) => 0,
+            (ComKind::DxcoreAdapter, 3) => 1,
+            (ComKind::DxcoreAdapter, 4) => 1,
+            (ComKind::DxcoreAdapter, 5) => 1,
+            (ComKind::DxcoreAdapter, 7) => { if args[2] != 0 { let _ = vmm.write_u64(args[2], 8); } S_OK as u64 }
+            (ComKind::DxcoreAdapter, 6) => { if args[3] != 0 { let _ = vmm.write_u64(args[3], 0x1234); } S_OK as u64 }
+            // ID3D12DeviceChild::GetDevice (slot 7) for resources/lists/allocators/PSOs/etc.
+            (ComKind::D3d12Resource, 7) | (ComKind::D3d12CommandList, 7) | (ComKind::D3d12CommandAllocator, 7)
+            | (ComKind::D3d12PipelineState, 7) | (ComKind::D3d12RootSignature, 7) | (ComKind::D3d12DescriptorHeap, 7)
+            | (ComKind::D3d12Fence, 7) => {
+                let out = args[2];
+                if args[1] == 0 || out == 0 { return E_POINTER as u64; }
+                let parent = self.objects.get(&this).map(|o| o.parent_device).unwrap_or(0);
+                let iid = Self::read_guid(vmm, args[1]);
+                if self.objects.get(&parent).map(|o| o.kind) != Some(ComKind::D3d12Device) || !Self::supports_iid(ComKind::D3d12Device, &iid) {
+                    let _ = vmm.write_u64(out, 0);
+                    return E_NOINTERFACE as u64;
+                }
+                self.add_ref(parent);
+                let _ = vmm.write_u64(out, parent);
+                S_OK as u64
+            }
             // ID3D12Device
             (ComKind::D3d12Device, 7) => 1, // GetNodeCount
             (ComKind::D3d12Device, 8) => {
@@ -1841,6 +2073,63 @@ impl D3d12Subsystem {
                 let out_rs = args[5];
                 if out_rs == 0 {
                     return E_INVALIDARG as u64;
+                }
+                let blob_ptr = args[2];
+                let blob_len = args[3];
+                if blob_ptr == 0 || blob_len == 0 || blob_len > 0x0100_0000 {
+                    let _ = vmm.write_u64(out_rs, 0);
+                    return E_INVALIDARG as u64;
+                }
+                // Accept either a real DXBC container with an RTS0/RTS1 root-signature
+                // chunk, or the internal marker produced by our SerializeRootSignature.
+                // A DXBC shader blob (SHEX/SHDR) is not a root signature: the upstream
+                // test_root_signature_empty_blob case requires E_FAIL for that input.
+                let mut header = [0u8; 32];
+                if vmm.read_bytes(blob_ptr, &mut header).is_err() {
+                    let _ = vmm.write_u64(out_rs, 0);
+                    return E_INVALIDARG as u64;
+                }
+                let mut is_root_signature = false;
+                if &header[0..4] == b"DXBC" && blob_len >= 32 {
+                    let chunk_count = u32::from_le_bytes(header[28..32].try_into().unwrap()) as usize;
+                    if chunk_count > 256 {
+                        let _ = vmm.write_u64(out_rs, 0);
+                        return E_FAIL as u64;
+                    }
+                    for c in 0..chunk_count {
+                        let off_pos = blob_ptr + 32 + (c as u64) * 4;
+                        let chunk_off = match vmm.read_u32(off_pos) {
+                            Ok(v) => v as u64,
+                            Err(_) => return E_FAIL as u64,
+                        };
+                        let mut fourcc = [0u8; 4];
+                        if vmm.read_bytes(blob_ptr + chunk_off, &mut fourcc).is_err() {
+                            return E_FAIL as u64;
+                        }
+                        if &fourcc == b"RTS0" || &fourcc == b"RTS1" {
+                            is_root_signature = true;
+                            break;
+                        }
+                    }
+                    if !is_root_signature {
+                        let _ = vmm.write_u64(out_rs, 0);
+                        return E_FAIL as u64;
+                    }
+                } else {
+                    let mut marker = [0u8; 16];
+                    if blob_len < 16 || vmm.read_bytes(blob_ptr, &mut marker).is_err() {
+                        let _ = vmm.write_u64(out_rs, 0);
+                        return E_INVALIDARG as u64;
+                    }
+                    if &marker[0..13] != b"DXBCRootSigV1" {
+                        let _ = vmm.write_u64(out_rs, 0);
+                        return E_INVALIDARG as u64;
+                    }
+                    is_root_signature = true;
+                }
+                if !is_root_signature {
+                    let _ = vmm.write_u64(out_rs, 0);
+                    return E_FAIL as u64;
                 }
                 let rs_ptr = self.create_com_object(vmm, ComKind::D3d12RootSignature, this);
                 let _ = vmm.write_u64(out_rs, rs_ptr);

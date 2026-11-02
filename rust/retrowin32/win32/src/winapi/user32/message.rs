@@ -49,6 +49,12 @@ pub enum WM {
     ACTIVATEAPP = 0x001C,
     WINDOWPOSCHANGED = 0x0047,
     TIMER = 0x0113,
+    KEYDOWN = 0x0100,
+    KEYUP = 0x0101,
+    CHAR = 0x0102,
+    SYSKEYDOWN = 0x0104,
+    SYSKEYUP = 0x0105,
+    SYSCHAR = 0x0106,
     MOUSEMOVE = 0x0200,
     LBUTTONDOWN = 0x0201,
     LBUTTONUP = 0x0202,
@@ -219,7 +225,7 @@ fn find_message(machine: &mut Machine, hwnd: HWND, min: u32, max: u32) -> Option
 }
 
 #[win32_derive::dllexport]
-pub fn PeekMessageA(
+pub async fn PeekMessageA(
     machine: &mut Machine,
     lpMsg: Option<&mut MSG>,
     hWnd: HWND,
@@ -236,7 +242,9 @@ pub fn PeekMessageA(
         *lpMsg = machine.state.user32.messages.get(index).unwrap().clone();
         let remove = wRemoveMsg.unwrap();
         if remove.contains(RemoveMsg::PM_REMOVE) {
-            machine.state.user32.messages.remove(index);
+            let msg = machine.state.user32.messages.remove(index).unwrap();
+            if super::hook::filter_message(machine, &msg).await { return false; }
+            *lpMsg = msg;
         }
         return true;
     }
@@ -244,7 +252,7 @@ pub fn PeekMessageA(
 }
 
 #[win32_derive::dllexport]
-pub fn PeekMessageW(
+pub async fn PeekMessageW(
     machine: &mut Machine,
     lpMsg: Option<&mut MSG>,
     hWnd: HWND,
@@ -259,7 +267,7 @@ pub fn PeekMessageW(
         wMsgFilterMin,
         wMsgFilterMax,
         wRemoveMsg,
-    )
+    ).await
 }
 
 async fn get_message(
@@ -273,21 +281,28 @@ async fn get_message(
     assert_eq!(wMsgFilterMax, 0);
 
     loop {
-        match fill_message_queue(machine, hWnd) {
-            Ok(_) => break,
-            Err(wait_until) => await_message(machine, hWnd, wait_until).await,
+        // Blocking GetMessage must observe the same injected raw-input stream as
+        // PeekMessage; otherwise a modal launcher that only calls GetMessage never
+        // sees the host's mouse/keyboard events.
+        super::raw_input::pump(machine);
+        loop {
+            match fill_message_queue(machine, hWnd) {
+                Ok(_) => break,
+                Err(wait_until) => await_message(machine, hWnd, wait_until).await,
+            }
         }
-    }
 
-    if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
-        let msg = machine.state.user32.messages.get(index).unwrap().clone();
-        machine.state.user32.messages.remove(index);
-        *lpMsg.unwrap() = msg.clone();
-        if msg.message == WM::QUIT as u32 {
-            return 0;
+        if let Some(index) = find_message(machine, hWnd, wMsgFilterMin, wMsgFilterMax) {
+            let msg = machine.state.user32.messages.get(index).unwrap().clone();
+            machine.state.user32.messages.remove(index);
+            if super::hook::filter_message(machine, &msg).await { continue; }
+            *lpMsg.unwrap() = msg.clone();
+            if msg.message == WM::QUIT as u32 {
+                return 0;
+            }
+            return 1;
         }
     }
-    return 1;
 }
 
 // Note: the docs say this returns BOOL, but really it can return -1/0/nonzero.
@@ -320,14 +335,51 @@ pub fn WaitMessage(_machine: &mut Machine) -> bool {
 }
 
 #[win32_derive::dllexport]
-pub fn TranslateMessage(_machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
-    // TODO: translate key-related messages into enqueuing a WM_CHAR.
-    false // no message translated
+pub fn TranslateMessage(machine: &mut Machine, lpMsg: Option<&MSG>) -> bool {
+    let Some(msg) = lpMsg else { return false; };
+    let ch = match msg.message {
+        x if x == WM::KEYDOWN as u32 || x == WM::SYSKEYDOWN as u32 => Some(msg.wParam),
+        _ => None,
+    };
+    let Some(ch) = ch else { return false; };
+    // Legacy ANSI translation: VK codes below 0x20 are already the ASCII control
+    // character produced by the US keyboard layout (Enter=13, Escape=27, etc.).
+    // Printable VK codes are upper-case letters/digits; shift state is tracked by
+    // the host key map, so this is sufficient for dialog/menu navigation.
+    if ch > 0xFF { return false; }
+    let message = if msg.message == WM::SYSKEYDOWN as u32 { WM::SYSCHAR as u32 } else { WM::CHAR as u32 };
+    machine.state.user32.messages.push_back(MSG {
+        hwnd: msg.hwnd,
+        message,
+        wParam: ch,
+        lParam: msg.lParam,
+        time: msg.time,
+        pt_x: msg.pt_x,
+        pt_y: msg.pt_y,
+    });
+    true
 }
 
 pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
+    // Dialog-manager keyboard translation applies to the focused child control as
+    // well as the dialog itself. IsDialogMessage would turn Enter/Esc into WM_COMMAND
+    // before the control's wndproc sees the key; legacy launchers (DOOM95) rely on it.
+    if msg.message == WM::KEYDOWN as u32 && (msg.wParam == 13 || msg.wParam == 27) {
+        let mut h = msg.hwnd;
+        let mut dlg = HWND::null();
+        for _ in 0..64 {
+            let Some(w) = machine.state.user32.windows.get(h) else { break };
+            if w.dialog.is_some() { dlg = h; break; }
+            if w.parent.is_null() { break; }
+            h = w.parent;
+        }
+        if !dlg.is_null() {
+            let translated = MSG { hwnd: dlg, message: msg.message, wParam: msg.wParam, lParam: msg.lParam, time: msg.time, pt_x: msg.pt_x, pt_y: msg.pt_y };
+            return Box::pin(super::dialog_helpers::dispatch(machine, &translated)).await;
+        }
+    }
     let wndproc = match machine.state.user32.windows.get(msg.hwnd) {
-        Some(window) if !msg.hwnd.is_null() => window.wndclass.wndproc,
+        Some(window) if !msg.hwnd.is_null() => window.wndproc_override.unwrap_or(window.wndclass.wndproc),
         _ => {crate::winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0;}
     };
     if wndproc == super::dialog_helpers::DIALOG_PROC {return Box::pin(super::dialog_helpers::dispatch(machine,msg)).await;}
@@ -336,7 +388,6 @@ pub async fn dispatch_message(machine: &mut Machine, msg: &MSG) -> u32 {
         log::error!("window has no wndproc, skipping message dispatch");
         return 0;
     }
-    // TODO: SetWindowLong can change the wndproc.
     machine
         .call_x86(
             wndproc,
@@ -383,6 +434,20 @@ pub fn PostQuitMessage(machine: &mut Machine, nExitCode: i32) {
         pt_x: 0,
         pt_y: 0,
     });
+}
+
+#[win32_derive::dllexport]
+pub fn PostMessageA(machine: &mut Machine, hWnd: HWND, Msg: u32, wParam: u32, lParam: u32) -> bool {
+    PostMessageW(machine, hWnd, Msg, wParam, lParam)
+}
+
+#[win32_derive::dllexport]
+pub fn PostThreadMessageA(machine: &mut Machine, idThread: u32, Msg: u32, wParam: u32, lParam: u32) -> bool {
+    if idThread == 0 { crate::winapi::kernel32::teb_mut(machine).LastErrorValue = 87; return false; }
+    machine.state.user32.messages.push_back(MSG {
+        hwnd: HWND::null(), message: Msg, wParam, lParam, time: 0, pt_x: 0, pt_y: 0,
+    });
+    true
 }
 
 #[win32_derive::dllexport]

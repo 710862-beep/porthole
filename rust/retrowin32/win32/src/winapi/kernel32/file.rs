@@ -373,6 +373,16 @@ pub fn SetFilePointer(
     if let Some(high) = &mut lpDistanceToMoveHigh {
         lDistanceToMove |= (**high as i64) << 32;
     }
+    // The CRT probes std handles with SetFilePointer(FILE_CURRENT) during startup
+    // and shutdown. Console/character devices have no seekable position; report 0
+    // rather than INVALID_HANDLE so legacy games do not treat the CRT as broken.
+    match hFile {
+        STDIN_HFILE | STDOUT_HFILE | STDERR_HFILE => {
+            set_last_error(machine, ERROR::SUCCESS);
+            return 0;
+        }
+        _ => {}
+    }
     let Some(file) = machine.state.kernel32.files.get_mut(hFile) else {
         log::debug!("SetFilePointer({hFile:?}) unknown handle");
         set_last_error(machine, ERROR::INVALID_HANDLE);
@@ -514,11 +524,13 @@ pub fn WriteFile(
 
 #[win32_derive::dllexport]
 pub fn GetConsoleMode(
-    _machine: &mut Machine,
+    machine: &mut Machine,
     hConsoleHandle: HFILE,
     lpMode: Option<&mut u32>,
 ) -> bool {
-    *lpMode.unwrap() = 0;
+    let _ = hConsoleHandle;
+    let Some(mode) = lpMode else { set_last_error(machine, ERROR::INVALID_PARAMETER); return false; };
+    *mode = 0x0001 | 0x0002; // ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT
     true
 }
 
@@ -1189,4 +1201,12 @@ pub fn SearchPathA(machine: &mut Machine, path: Option<&str>, file: Option<&str>
         set_last_error(machine,ERROR::SUCCESS);return needed-1;
     }
     set_last_error(machine,ERROR::FILE_NOT_FOUND);0
+}
+
+#[win32_derive::dllexport]
+pub fn DeviceIoControl(machine: &mut Machine, hDevice: u32, dwIoControlCode: u32, lpInBuffer: u32, nInBufferSize: u32, lpOutBuffer: u32, nOutBufferSize: u32, lpBytesReturned: Option<&mut u32>, lpOverlapped: u32) -> bool {
+    let _ = (hDevice, dwIoControlCode, lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize, lpOverlapped);
+    if let Some(n) = lpBytesReturned { *n = 0; }
+    super::set_last_error(machine, ERROR::NOT_SUPPORTED);
+    false
 }

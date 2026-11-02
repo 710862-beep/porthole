@@ -5787,6 +5787,21 @@ pub mod winmm {
             let fdwSound = <u32>::from_stack(mem, stack_args + 8u32);
             winapi::winmm::PlaySoundW(machine, pszSound, hmod, fdwSound).to_raw()
         }
+        // Wine winmm/winmm.c:287-290 -> MMDRV_GetNum, lolvldrv.c:75+. The Host profile
+        // installs no WinMM MIDI driver, so this is the real "zero devices" answer, not a
+        // synthesized success.
+        pub unsafe fn midiOutGetNumDevs(machine: &mut Machine, stack_args: u32) -> u32 {
+            let mem = machine.mem().detach();
+            winapi::winmm::midiOutGetNumDevs(machine).to_raw()
+        }
+        // Wine winmm.c:571-581: MMDRV_Get(handle, MIDIOUT, TRUE) fails, so the documented
+        // MMSYSERR_INVALHANDLE (5) is returned instead of a fabricated successful volume set.
+        pub unsafe fn midiOutSetVolume(machine: &mut Machine, stack_args: u32) -> u32 {
+            let mem = machine.mem().detach();
+            let hMidiOut = <u32>::from_stack(mem, stack_args + 0u32);
+            let dwVolume = <u32>::from_stack(mem, stack_args + 4u32);
+            winapi::winmm::midiOutSetVolume(machine, hMidiOut, dwVolume).to_raw()
+        }
         pub unsafe fn timeBeginPeriod(machine: &mut Machine, stack_args: u32) -> u32 {
             let mem = machine.mem().detach();
             let uPeriod = <u32>::from_stack(mem, stack_args + 0u32);
@@ -5869,10 +5884,18 @@ pub mod winmm {
             winapi::winmm::waveOutWrite(machine, hwo, pwh, cbwh).to_raw()
         }
     }
-    const SHIMS: [Shim; 13usize] = [
+    const SHIMS: [Shim; 15usize] = [
         Shim {
             name: "PlaySoundW",
             func: Handler::Sync(impls::PlaySoundW),
+        },
+        Shim {
+            name: "midiOutGetNumDevs",
+            func: Handler::Sync(impls::midiOutGetNumDevs),
+        },
+        Shim {
+            name: "midiOutSetVolume",
+            func: Handler::Sync(impls::midiOutSetVolume),
         },
         Shim {
             name: "timeBeginPeriod",

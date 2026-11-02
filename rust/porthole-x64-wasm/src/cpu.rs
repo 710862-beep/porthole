@@ -64,6 +64,10 @@ pub struct CpuState {
     pub fpu_sw: u16,
     pub icache: HashMap<u64, CachedBasicBlock>,
     pub instructions_executed: u64,
+    /// Additional architectural TSC cycles charged by HLE syscalls.  RDTSC is
+    /// instructions*32 + this offset; it models the real work of handle-table
+    /// validation vs. a trivial getter without inventing a separate wall clock.
+    pub tsc_offset: u64,
     pub icache_hits: u64,
     pub icache_misses: u64,
     /// Last executed RIPs, used to explain guest faults without an interactive debugger.
@@ -72,6 +76,32 @@ pub struct CpuState {
 }
 
 impl CpuState {
+    /// Register/FPU snapshot for exception delivery. The decoded-block cache is execution
+    /// state, not architectural state; cloning it per instruction made VEH-enabled guests
+    /// (e.g. kernel32!atom) run at ~0.25 MIPS. Restoring an empty cache is safe.
+    pub fn exception_snapshot(&self) -> Self {
+        Self {
+            gpr: self.gpr,
+            rip: self.rip,
+            rflags: self.rflags,
+            gs_base: self.gs_base,
+            fs_base: self.fs_base,
+            ymm: self.ymm,
+            mxcsr: self.mxcsr,
+            fpu_regs: self.fpu_regs,
+            fpu_top: self.fpu_top,
+            fpu_cw: self.fpu_cw,
+            fpu_sw: self.fpu_sw,
+            icache: HashMap::new(),
+            instructions_executed: self.instructions_executed,
+            tsc_offset: self.tsc_offset,
+            icache_hits: self.icache_hits,
+            icache_misses: self.icache_misses,
+            rip_history: self.rip_history,
+            rip_history_len: self.rip_history_len,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             gpr: [0; 16],
@@ -87,6 +117,7 @@ impl CpuState {
             fpu_sw: 0,
             icache: HashMap::new(),
             instructions_executed: 0,
+            tsc_offset: 0,
             icache_hits: 0,
             icache_misses: 0,
             rip_history: [0; 16],
@@ -367,6 +398,39 @@ impl CpuState {
         }
         if Self::parity8(r as u8) {
             self.rflags |= PF;
+        }
+    }
+
+    /// Apply the architectural flags for the last flag-writing instruction in a JIT block.
+    /// The block's supported ALU ops do not read flags internally, so only the final writer
+    /// needs to be materialized before the interpreter resumes at a conditional branch.
+    /// kind: 1=add 2=or 3=and 4=sub 5=xor 6=imul 7=shl 8=shr 9=sar; width: 4 or 8 bytes.
+    pub fn apply_jit_flags(&mut self, kind: u64, width: u64, lhs: u64, rhs: u64) {
+        let size = match width { 4 => 4, 8 => 8, _ => return };
+        match kind {
+            1 => { self.alu_op(0, lhs, rhs, size); }
+            2 => { self.alu_op(1, lhs, rhs, size); }
+            3 => { self.alu_op(4, lhs, rhs, size); }
+            4 => { self.alu_op(5, lhs, rhs, size); }
+            5 => { self.alu_op(6, lhs, rhs, size); }
+            6 => {
+                let (ovf, res) = match size {
+                    4 => {
+                        let p = (lhs as u32 as i32 as i64) * (rhs as u32 as i32 as i64);
+                        (p < i32::MIN as i64 || p > i32::MAX as i64, p as u32 as u64)
+                    }
+                    _ => {
+                        let p = (lhs as i64 as i128) * (rhs as i64 as i128);
+                        (p < i64::MIN as i128 || p > i64::MAX as i128, p as u64)
+                    }
+                };
+                self.rflags = (self.rflags & !(CF | OF)) | if ovf { CF | OF } else { 0 };
+                let _ = res;
+            }
+            7 => { self.shift_op(4, lhs, rhs as u8, size); }
+            8 => { self.shift_op(5, lhs, rhs as u8, size); }
+            9 => { self.shift_op(7, lhs, rhs as u8, size); }
+            _ => {}
         }
     }
 
@@ -665,6 +729,9 @@ impl CpuState {
         if off + 16 <= 4096 {
             if let Some(cb) = self.icache.get_mut(&page_base) {
                 if cb.page_epoch == cur_epoch && !vmm.is_page_swapped(page_base) {
+                    // Protection changes (including adding PAGE_GUARD) bump the page
+                    // write epoch, so an epoch match proves this cached window is still
+                    // current. The miss path below goes through read_page/check_guard.
                     buf.copy_from_slice(&cb.code_window[off..off + 16]);
                     cb.exec_count = cb.exec_count.wrapping_add(1);
                     self.icache_hits += 1;
@@ -1298,8 +1365,13 @@ impl CpuState {
                 ExecOutcome::Next
             }
 
-            // INT3 (CC)
+            // INT3 (CC) and INT imm8 (CD). Debug-service INT 2D raises a breakpoint
+            // exception; the handler sees RIP after the two-byte instruction.
             0xCC => ExecOutcome::Fault(format!("INT3 breakpoint at 0x{insn_rip:x}")),
+            0xCD => {
+                let vector = code[cursor]; cursor += 1;
+                ExecOutcome::Fault(format!("INT 0x{vector:02x} at 0x{insn_rip:x}"))
+            }
 
             // CALL rel32 (E8)
             0xE8 => {
@@ -1565,6 +1637,8 @@ impl CpuState {
                     }
                     // UD2
                     0x0B => ExecOutcome::Fault(format!("UD2 at 0x{insn_rip:x}")),
+                    // UD1 (0F B9) - raises #UD; used by MinGW as __builtin_trap
+                    0xB9 => ExecOutcome::Fault(format!("UD1 at 0x{insn_rip:x}")),
                     // Multi-byte NOP / ENDBR64 (0F 18..1F)
                     0x18..=0x1F => {
                         let _ = self.decode_modrm_addressing(&pfx, code, &mut cursor);
@@ -1572,7 +1646,7 @@ impl CpuState {
                     }
                     // RDTSC (0F 31)
                     0x31 => {
-                        let tsc = self.instructions_executed.wrapping_mul(32) + 0x1000_0000;
+                        let tsc = self.instructions_executed.wrapping_mul(32).wrapping_add(self.tsc_offset).wrapping_add(0x1000_0000);
                         self.gpr[0] = tsc & 0xFFFF_FFFF;
                         self.gpr[2] = (tsc >> 32) & 0xFFFF_FFFF;
                         ExecOutcome::Next
@@ -2110,5 +2184,32 @@ impl CpuState {
             }
             ExecOutcome::Fault(msg) => Ok(ExecOutcome::Fault(msg)),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vmm::{VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_GUARD};
+
+    #[test]
+    fn cached_code_page_invalidates_when_page_guard_is_added() {
+        let mut vmm = VirtualMemoryManager::new(64);
+        let mut cpu = CpuState::new();
+        let base = 0x8_0000_0000u64;
+        vmm.map_region(base, 0x1000, PAGE_EXECUTE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+        vmm.host_write_bytes(base, &[0xc3]).unwrap();
+        cpu.rip = base;
+        let mut buf = [0u8; 16];
+        assert_eq!(cpu.fetch_insn_bytes(&mut vmm, &mut buf).unwrap(), 16);
+        assert_eq!(buf[0], 0xc3);
+        // Arm a guard after the page is already in the icache. VirtualProtect bumps the
+        // epoch; the next fetch must miss, consume the guard, and report the exception.
+        vmm.virtual_protect(base, 0x1000, PAGE_EXECUTE_READ | PAGE_GUARD);
+        assert_eq!(cpu.fetch_insn_bytes(&mut vmm, &mut buf), Err(MemoryTrap::GuardPage(base)));
+        assert!(!vmm.has_guard(base));
+        assert_eq!(cpu.fetch_insn_bytes(&mut vmm, &mut buf).unwrap(), 16);
+        assert_eq!(buf[0], 0xc3);
     }
 }

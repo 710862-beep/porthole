@@ -102,3 +102,21 @@ pub fn WriteConsoleW(
     }
     return bytes_written == buf.len() as u32;
 }
+
+#[win32_derive::dllexport]
+pub fn SetConsoleMode(_machine: &mut Machine, hConsoleHandle: HANDLE<()>, dwMode: u32) -> bool {
+    let _ = (hConsoleHandle, dwMode);
+    true
+}
+#[win32_derive::dllexport]
+pub fn ReadConsoleInputA(machine: &mut Machine, hConsoleInput: HANDLE<()>, lpBuffer: u32, nLength: u32, lpNumberOfEventsRead: Option<&mut u32>) -> bool {
+    let _ = (hConsoleInput, lpBuffer, nLength);
+    if let Some(n) = lpNumberOfEventsRead { *n = 0; }
+    crate::winapi::kernel32::teb_mut(machine).LastErrorValue = 6; // no console input buffer handle
+    false
+}
+#[win32_derive::dllexport]
+pub fn GetNumberOfConsoleInputEvents(machine: &mut Machine, hConsoleInput: HANDLE<()>, lpcNumberOfEvents: Option<&mut u32>) -> bool {
+    let _ = hConsoleInput;
+    if let Some(n) = lpcNumberOfEvents { *n = 0; true } else { crate::winapi::kernel32::teb_mut(machine).LastErrorValue = 87; false }
+}

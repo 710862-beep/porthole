@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "suites": {
+    "wine": {
+      "repository": "https://github.com/wine-mirror/wine.git",
+      "revision": "0738d528db522f52d9d75f2aec712688dd31d1d2",
+      "license": "LGPL-2.1-or-later (per-file headers govern)",
+      "path": "vendor/wine-source"
+    },
+    "al-khaser": {
+      "repository": "https://github.com/LordNoteworthy/al-khaser.git",
+      "revision": "f0e5559073fe02c4f50cc8c3ed8d5b302a6a0659",
+      "license": "GPL-3.0; upstream LICENSE retained",
+      "path": "tests/upstream/al-khaser"
+    },
+    "pafish": {
+      "repository": "https://github.com/a0rtega/pafish.git",
+      "revision": "b497899ff355ea7b9ecc1f5cd34a9fd1def02aec",
+      "license": "GPL-3.0; upstream LICENSE.txt retained",
+      "path": "tests/upstream/pafish"
+    },
+    "vkd3d-proton": {
+      "repository": "https://github.com/HansKristian-Work/vkd3d-proton.git",
+      "revision": "4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1",
+      "license": "LGPL-2.1-or-later; upstream COPYING/LICENSE retained",
+      "path": "tests/upstream/vkd3d-proton",
+      "submodules": {
+        "khronos/Vulkan-Headers": {"repository": "https://github.com/KhronosGroup/Vulkan-Headers.git", "revision": "ee2ec5fd83dafce291024683b50dc89219333076"},
+        "khronos/SPIRV-Headers": {"repository": "https://github.com/KhronosGroup/SPIRV-Headers.git", "revision": "f88a2d766840fc825af1fc065977953ba1fa4a91"},
+        "subprojects/dxil-spirv": {"repository": "https://github.com/HansKristian-Work/dxil-spirv.git", "revision": "8b48f0e0392d76be4fdcea2a3ba3ea99dddaae5b"}
+      }
+    },
+    "vk-gl-cts": {
+      "repository": "https://github.com/KhronosGroup/VK-GL-CTS.git",
+      "revision": "5a9cb32498158eb60774cf8a3d4e0b8c68f7fe9e",
+      "license": "Apache-2.0; per-component notices retained",
+      "path": "tests/upstream/vk-gl-cts"
+    }
+  }
+}

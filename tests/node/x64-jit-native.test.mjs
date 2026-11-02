@@ -1,0 +1,265 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const require = createRequire(import.meta.url);
+const { X64JitHost } = require('../../js/x64-jit-host.js');
+const wasmDir = process.env.PORTHOLE_X64_WASM_DIR || 'vendor/porthole-x64-wasm';
+
+async function newCore() {
+  const gluePath = path.resolve(wasmDir, 'porthole_x64_wasm.js');
+  const wasmPath = path.resolve(wasmDir, 'porthole_x64_wasm_bg.wasm');
+  if (!fs.existsSync(gluePath) || !fs.existsSync(wasmPath)) return null;
+  const mod = await import(pathToFileURL(gluePath).href);
+  const core = await mod.default(fs.readFileSync(wasmPath));
+  return { emu: new mod.BrowserX64Emulator(8192), memory: core.memory, mod };
+}
+function pe64(code) {
+  const b = Buffer.alloc(0x400);
+  b.write('MZ', 0); b.writeUInt32LE(0x80, 0x3c); b.write('PE\0\0', 0x80);
+  const c = 0x84; b.writeUInt16LE(0x8664, c); b.writeUInt16LE(1, c + 2); b.writeUInt16LE(240, c + 16); b.writeUInt16LE(0x22, c + 18);
+  const o = 0x98; b.writeUInt16LE(0x20b, o); b.writeUInt32LE(0x200, o + 4); b.writeUInt32LE(0x1000, o + 16); b.writeUInt32LE(0x1000, o + 20);
+  b.writeBigUInt64LE(0x140000000n, o + 24); b.writeUInt32LE(0x1000, o + 32); b.writeUInt32LE(0x200, o + 36);
+  b.writeUInt32LE(0x3000, o + 56); b.writeUInt32LE(0x200, o + 60); b.writeUInt16LE(3, o + 68); b.writeUInt32LE(16, o + 108);
+  const s = 0x188; b.write('.text', s); b.writeUInt32LE(0x200, s + 8); b.writeUInt32LE(0x1000, s + 12); b.writeUInt32LE(0x200, s + 16); b.writeUInt32LE(0x200, s + 20); b.writeUInt32LE(0x60000020, s + 36);
+  code.copy(b, 0x200); return b;
+}
+async function run(code, jit, validate = true) {
+  const c = await newCore(); if (!c) return null;
+  c.emu.load_pe(pe64(code)); c.emu.set_jit_enabled(jit);
+  if (jit) c.emu.set_jit_validate_mode(validate ? 1 : 0);
+  const host = jit ? new X64JitHost(c.emu, c.mod, { memory: c.memory }) : null;
+  if (jit) { c.emu.aot_compile_text(); await host.drainPending(); }
+  let status; let n = 0;
+  do { status = host ? await host.runSlice(4096) : c.emu.run_slice(4096); n += 1; } while (status === 'next' && n < 200);
+  const regs = JSON.parse(c.emu.register_json());
+  const rsp = BigInt(regs.rsp);
+  const scratch = c.emu.peek_qwords(rsp - 0x100n, 16);
+  return { status, regs, scratch, stats: host?.stats, artifacts: host ? [...host.artifacts.values()] : [] };
+}
+function movImm32(reg, imm) { return Buffer.from([0x40 | (reg >> 3), 0xb8 | (reg & 7), imm & 255, (imm >>> 8) & 255, (imm >>> 16) & 255, (imm >>> 24) & 255]); }
+function movImm64(reg, imm) { const b = Buffer.alloc(10); b[0] = 0x48 | (reg >> 3); b[1] = 0xb8 | (reg & 7); b.writeBigUInt64LE(imm, 2); return b; }
+
+test('native JIT stores of all integer widths commit and reload exactly', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  const seeded = Buffer.concat([
+    Buffer.from([0x48, 0x89, 0xe6, 0x48, 0x81, 0xee, 0x00, 0x01, 0x00, 0x00]), // rsi=rsp-0x100
+    Buffer.from([0xbb, 0x78, 0x56, 0x34, 0x12]), // mov ebx,0x12345678
+    Buffer.from([0xb9, 0xef, 0xbe, 0x00, 0x00]), // mov ecx,0xbeef
+    Buffer.from([0xb2, 0xa5]),                   // mov dl,0xa5
+    movImm64(0, 0x1122334455667788n),           // mov rax,imm
+    Buffer.from([0x48, 0x89, 0x06]),             // mov [rsi],rax
+    Buffer.from([0x89, 0x5e, 0x08]),             // mov [rsi+8],ebx
+    Buffer.from([0x66, 0x89, 0x4e, 0x10]),       // mov [rsi+16],cx
+    Buffer.from([0x88, 0x56, 0x12]),             // mov [rsi+18],dl
+    Buffer.from([0x48, 0x8b, 0x06]),             // mov rax,[rsi]
+    Buffer.from([0x8b, 0x5e, 0x08]),             // mov ebx,[rsi+8]
+    Buffer.from([0x0f, 0xb7, 0x4e, 0x10]),       // movzx ecx,word [rsi+16]
+    Buffer.from([0x0f, 0xb6, 0x56, 0x12]),       // movzx edx,byte [rsi+18]
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(seeded, false);
+  const jit = await run(seeded, true);
+  assert.equal(jit.status, interp.status);
+  for (const r of ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rflags']) assert.equal(jit.regs[r], interp.regs[r], r);
+  assert.equal(jit.scratch, interp.scratch);
+  assert.ok(jit.stats.executedInstructions > 5, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.compileErrors, 0);
+  assert.equal(jit.stats.traps, 0);
+});
+
+test('native CALL/RET push/pop return addresses and preserve registers', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // entry: mov rax,5; call +2; add rax,1; ret; func: push rbx; mov rbx,rax; add rbx,3; mov rax,rbx; pop rbx; ret
+  const code = Buffer.from([
+    0x48, 0xc7, 0xc0, 0x05, 0x00, 0x00, 0x00, // mov rax,5
+    0xe8, 0x05, 0x00, 0x00, 0x00,             // call func (skip add rax,1 + ret = 5 bytes)
+    0x48, 0x83, 0xc0, 0x01,                   // add rax,1
+    0xc3,                                     // ret
+    0x53,                                     // push rbx
+    0x48, 0x89, 0xc3,                         // mov rbx,rax
+    0x48, 0x83, 0xc3, 0x03,                   // add rbx,3
+    0x48, 0x89, 0xd8,                         // mov rax,rbx
+    0x5b,                                     // pop rbx
+    0xc3,                                     // ret
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.rbx, interp.regs.rbx);
+  assert.equal(jit.regs.rsp, interp.regs.rsp);
+  assert.equal(BigInt(jit.regs.rax), 9n);
+  assert.ok(jit.stats.executedInstructions >= 8, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.traps, 0);
+});
+
+test('linked direct CALL publishes caller state before the callee and preserves callee results', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // entry: mov eax,5; call func; add eax,1; movdqu [rsp-0x100],xmm0; ret
+  // func:  mov ecx,42; mov edx,55; movd xmm0,eax; ret
+  // The callee deliberately changes registers the caller also wrote. A linked CALL
+  // must not write stale caller locals back after the callee returns.
+  const entry = Buffer.from([0xb8, 0x05, 0x00, 0x00, 0x00]);
+  const continuation = Buffer.concat([
+    Buffer.from([0x83, 0xc0, 0x01]),                         // add eax,1
+    Buffer.from([0xf3, 0x0f, 0x7f, 0x84, 0x24, 0x00, 0xff, 0xff, 0xff]), // movdqu [rsp-0x100],xmm0
+    Buffer.from([0xc3]),
+  ]);
+  const func = Buffer.concat([
+    movImm32(1, 42), movImm32(2, 55),
+    Buffer.from([0x66, 0x0f, 0x6e, 0xc0]),                   // movd xmm0,eax
+    Buffer.from([0xc3]),
+  ]);
+  const call = Buffer.alloc(5); call[0] = 0xe8; call.writeInt32LE(continuation.length, 1);
+  const code = Buffer.concat([entry, call, continuation, func]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  for (const r of ['rax', 'rcx', 'rdx', 'rsp', 'rflags']) assert.equal(jit.regs[r], interp.regs[r], r);
+  assert.equal(BigInt(jit.regs.rax), 6n);
+  assert.equal(BigInt(jit.regs.rcx), 42n);
+  assert.equal(BigInt(jit.regs.rdx), 55n);
+  assert.equal(jit.scratch, interp.scratch, 'callee XMM result must survive the linked CALL');
+  assert.equal(jit.stats.traps, 0, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.compileErrors, 0);
+  if (jit.stats.tailCalls) {
+    const entryMeta = jit.artifacts.find(a => BigInt(a.entryRip) === 0x140001000n);
+    assert.ok(entryMeta?.links?.length, 'direct CALL should be specialized when tail calls are available');
+    assert.equal(BigInt(entryMeta.links[0].targetRip), 0x140001000n + BigInt(entry.length + call.length + continuation.length));
+  }
+});
+
+test('tail-call-linked successor stores are rolled back before shadow validation', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // entry (0x1000): mov rbx,[rsp-8]; jmp 0x1020
+  // target (0x1020): mov qword [rsp-8],0x5678; mov rax,rbx; ret
+  // The entry block has no stores, but its linked successor overwrites the exact slot the
+  // entry loaded. Validation must roll back the whole native transaction before shadowing.
+  const code = Buffer.alloc(0x40);
+  Buffer.from([0x48, 0x8b, 0x5c, 0x24, 0xf8, 0xe9, 0x16, 0x00, 0x00, 0x00]).copy(code, 0);
+  Buffer.from([0x48, 0xc7, 0x44, 0x24, 0xf8, 0x78, 0x56, 0x00, 0x00, 0x48, 0x89, 0xd8, 0xc3]).copy(code, 0x20);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.rbx, interp.regs.rbx);
+  assert.equal(jit.stats.traps, 0, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.compileErrors, 0);
+});
+
+test('SSE2 movdqa/paddd/pxor/pmulld execute in v128 locals and store back', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  const code = Buffer.concat([
+    Buffer.from([0x48, 0x89, 0xe6, 0x48, 0x81, 0xee, 0x00, 0x01, 0x00, 0x00]), // rsi = rsp-0x100
+    // seed 32 bytes of stack via two movq stores from rax
+    movImm64(0, 0x0000000200000001n),
+    Buffer.from([0x48, 0x89, 0x06]),             // mov [rsi],rax
+    movImm64(0, 0x0000000400000003n),
+    Buffer.from([0x48, 0x89, 0x46, 0x08]),       // mov [rsi+8],rax
+    movImm64(0, 0x0000000600000005n),
+    Buffer.from([0x48, 0x89, 0x46, 0x10]),       // mov [rsi+16],rax
+    movImm64(0, 0x0000000800000007n),
+    Buffer.from([0x48, 0x89, 0x46, 0x18]),       // mov [rsi+24],rax
+    Buffer.from([0x66, 0x0f, 0x6f, 0x06]),       // movdqa xmm0,[rsi]
+    Buffer.from([0x66, 0x0f, 0x6f, 0x4e, 0x10]), // movdqa xmm1,[rsi+16]
+    Buffer.from([0x66, 0x0f, 0xfe, 0xc1]),       // paddd xmm0,xmm1
+    Buffer.from([0x66, 0x0f, 0xef, 0xd2]),       // pxor xmm2,xmm2
+    Buffer.from([0x66, 0x0f, 0x38, 0x40, 0xc1]), // pmulld xmm0,xmm1
+    Buffer.from([0x66, 0x0f, 0x7f, 0x46, 0x20]), // movdqa [rsi+32],xmm0
+    Buffer.from([0x66, 0x48, 0x0f, 0x7e, 0xc0]), // movq rax,xmm0
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.scratch, interp.scratch);
+  assert.ok(jit.stats.executedInstructions > 10, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.compileErrors, 0);
+  assert.equal(jit.stats.traps, 0);
+});
+
+test('native store to unmapped page traps safely and falls back without corrupting the core', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  const code = Buffer.concat([
+    movImm64(0, 0x1234n),
+    movImm64(1, 0xdead0000n),
+    Buffer.from([0x48, 0x89, 0x01]), // mov [rcx],rax
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.ok(jit.status.startsWith('fault:'), jit.status);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.rcx, interp.regs.rcx);
+});
+
+test('REX low-byte registers use architectural indexes for partial ALU and flags', async t => {
+  const probe = await newCore();
+  if (!probe || !WebAssembly.validate(Buffer.from([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,8,1,6,0,65,7,18,0,11]))) { t.skip('tail-call unsupported'); return; }
+  // mov r15,0x123456789abc006b; cmp r15b,0x6b; sete al; movzx eax,al; ret
+  const code = Buffer.from([0x49,0xbf,0x6b,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x41,0x80,0xff,0x6b,0x0f,0x94,0xc0,0x0f,0xb6,0xc0,0xc3]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.r15, interp.regs.r15);
+  assert.equal(jit.regs.rflags, interp.regs.rflags);
+  assert.equal(BigInt(jit.regs.rax), 1n);
+  assert.equal(jit.stats.traps, 0);
+});
+
+test('JIT multi-bit SHR preserves prior OF and parity uses the low byte', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // add eax,1 sets OF=1 (0x7fffffff -> 0x80000000). shr eax,2 must leave OF
+  // unchanged for count>1, matching the interpreter and the validation samples.
+  const code = Buffer.concat([
+    movImm32(0, 0x7fffffff),
+    Buffer.from([0x40, 0x83, 0xc0, 0x01]), // add eax,1
+    Buffer.from([0x40, 0xc1, 0xe8, 0x02]), // shr eax,2
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true, true);
+  assert.equal(jit.status, interp.status);
+  assert.equal(jit.regs.rax, interp.regs.rax);
+  assert.equal(jit.regs.rflags, interp.regs.rflags, 'multi-bit SHR must not clear OF');
+  assert.ok((jit.regs.rflags & 0x800) !== 0, 'OF should survive shr eax,2');
+});
+
+test('JIT SAR sign-extends 8/16/32-bit operands before the arithmetic shift', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // mov eax,0x0000fda0; sar eax,0x10  -> 0 (positive)
+  // mov ebx,0x000fff55; sar ebx,0xc   -> 0xfff (positive)
+  // mov ecx,0xfffffda0; sar ecx,0x10  -> 0xfffffda0 (negative, sign preserved)
+  // mov edx,0x0000ffe0; sar edx,0x10  -> 0
+  // mov r8d,0xffffff55; sar r8d,0xc   -> 0xfffff (negative)
+  const code = Buffer.concat([
+    movImm32(0, 0x0000fda0), Buffer.from([0xc1, 0xf8, 0x10]),
+    movImm32(3, 0x000fff55), Buffer.from([0xc1, 0xfb, 0x0c]),
+    movImm32(1, 0xfda00000), Buffer.from([0xc1, 0xf9, 0x10]),
+    movImm32(2, 0x0000ffe0), Buffer.from([0xc1, 0xfa, 0x10]),
+    movImm32(8, 0xfff55000), Buffer.from([0x41, 0xc1, 0xf8, 0x0c]),
+    Buffer.from([0xc3]),
+  ]);
+  const interp = await run(code, false);
+  const jit = await run(code, true, true);
+  assert.equal(jit.status, interp.status);
+  for (const r of ['rax', 'rbx', 'rcx', 'rdx', 'r8']) {
+    assert.equal(jit.regs[r], interp.regs[r], `SAR ${r}`);
+  }
+  assert.equal(BigInt(jit.regs.rcx), 0xfffffda0n, 'negative SAR must keep sign bits');
+  assert.equal(BigInt(jit.regs.r8), 0xffffff55n, 'negative 32-bit SAR result zero-extends into r8');
+});

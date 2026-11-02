@@ -11,13 +11,28 @@ use memory::Extensions;
 use std::rc::Rc;
 const TRACE_CONTEXT:&str="user32/dialog_helpers";
 pub const DIALOG_PROC:u32=0xffff0020;
-pub struct DialogInfo {pub proc:u32,pub result:u32,pub default_id:u32}
+pub struct DialogInfo {pub proc:u32,pub result:u32,pub default_id:u32,pub ended:bool,pub modal:bool}
+pub fn end_dialog(machine:&mut Machine,hDlg:HWND,result:u32)->bool{
+ let Some(w)=machine.state.user32.windows.get_mut(hDlg) else{kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+ let Some(d)=w.dialog.as_mut() else{kernel32::teb_mut(machine).LastErrorValue=1400;return false};
+ d.result=result;d.ended=true;w.style.remove(WindowStyle::VISIBLE);
+ if let WindowType::TopLevel(t)=&mut w.typ{t.host.set_visible(false);}
+ true
+}
 fn fail(machine:&mut Machine,code:u32)->HWND{kernel32::teb_mut(machine).LastErrorValue=code;HWND::null()}
 fn text(n:&Name)->Result<String,u32>{match n{Name::None=>Ok(String::new()),Name::Text(s)=>Ok(s.clone()),_=>Err(50)}}
 fn units(n:i16,base:i32,div:i32)->u32{let v=n as i32*base;((v+if v>=0{div/2}else{-div/2})/div)as u32}
 fn send_msg(h:HWND,m:u32,w:u32,l:u32)->MSG{MSG{hwnd:h,message:m,wParam:w,lParam:l,time:0,pt_x:0,pt_y:0}}
 fn tab_items(machine:&Machine,parent:HWND)->Vec<HWND>{let mut v:Vec<_>=machine.state.user32.windows.iter().filter(|w|w.parent==parent&&w.style.contains(WindowStyle::VISIBLE)&&!w.style.contains(WindowStyle::DISABLED)&&w.style.bits()&0x10000!=0).map(|w|w.hwnd).collect();v.sort_by_key(|h|h.to_raw());v}
 pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32{
+ // Dialog-manager keyboard translation happens before the guest dialog procedure:
+ // IsDialogMessage would turn Enter/Esc into WM_COMMAND even if the app forgets to
+ // call it. DOOM95's launcher relies on this to activate the default OK button.
+ if msg.message==0x100&&(msg.wParam==13||msg.wParam==27){
+  let id=if msg.wParam==27{2}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(1,|d|if d.default_id==0{1}else{d.default_id})};
+  let child=GetDlgItem(machine,msg.hwnd,id as i32);
+  return Box::pin(dispatch(machine,&send_msg(msg.hwnd,0x111,id,child.to_raw()))).await;
+ }
  let proc=machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.proc);
  if proc!=0{let handled=machine.call_x86(proc,vec![msg.hwnd.to_raw(),msg.message,msg.wParam,msg.lParam]).await;if handled!=0{return if msg.message==0x110{handled}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.result)}}}
  if machine.state.user32.windows.get(msg.hwnd).is_none(){return 0}
@@ -25,8 +40,13 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32{
   0x400=>machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|if d.default_id==0{0}else{0x534b0000|d.default_id}),
   0x401=>{if let Some(d)=machine.state.user32.windows.get_mut(msg.hwnd).and_then(|w|w.dialog.as_mut()){d.default_id=msg.wParam;}1},
   0x28=>{let h=if msg.lParam!=0{HWND::from_raw(msg.wParam)}else{{let focus=GetFocus(machine);GetNextDlgTabItem(machine,msg.hwnd,focus,msg.wParam!=0)}};if !h.is_null(){SetFocus(machine,h);}0},
-  // Default close hides/destroys a modeless dialog; no fake modal result.
-  0x10=>{DestroyWindow(machine,msg.hwnd);0},
+  // Modeless dialogs still need the default push-button/cancel translation when the
+  // owner's message loop dispatches WM_KEYDOWN directly (DOOM95's launcher does not
+  // route every key through IsDialogMessage). Enter activates the default ID; Esc
+  // posts IDCANCEL. This is the same command a dialog manager would generate.
+  0x100 if msg.wParam==13||msg.wParam==27=>{let id=if msg.wParam==27{2}else{machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(1,|d|if d.default_id==0{1}else{d.default_id})};let child=GetDlgItem(machine,msg.hwnd,id as i32);Box::pin(dispatch(machine,&send_msg(msg.hwnd,0x111,id,child.to_raw()))).await;0},
+  // WM_CLOSE: a modal dialog ends with IDCANCEL; a modeless dialog is destroyed.
+  0x10=>{let modal=machine.state.user32.windows.get(msg.hwnd).and_then(|w|w.dialog.as_ref()).map_or(false,|d|d.modal);if modal{end_dialog(machine,msg.hwnd,2);}else{DestroyWindow(machine,msg.hwnd);}0},
   _=>Box::pin(DefWindowProcA(machine,msg.hwnd,WM::try_from(msg.message),msg.wParam,msg.lParam)).await,
  }
 }
@@ -34,7 +54,7 @@ async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:T
  // Menus, custom dialog classes and resource image captions need unported APIs.
  if t.menu!=Name::None||!matches!(&t.class,Name::None|Name::Id(32770)){return fail(machine,50)}
  let title=match text(&t.title){Ok(t)=>t,Err(e)=>return fail(machine,e)};
- if !machine.state.user32.wndclasses.iter().any(|c|c.name=="#32770") {machine.state.user32.wndclasses.push(Rc::new(WndClass{name:"#32770".into(),wndproc:DIALOG_PROC,background:HBRUSH::null()}));}
+ if !machine.state.user32.wndclasses.iter().any(|c|c.name=="#32770") {machine.state.user32.wndclasses.push(Rc::new(WndClass{name:"#32770".into(),wndproc:DIALOG_PROC,background:HBRUSH::null(),hInstance:0,cbWndExtra:0}));}
  // Base units match the existing fixed 8x8 raster font, not Wine's GDI fonts.
  if let Some(font)=&t.font{log::warn!("DIALOG_FONT_FALLBACK requested={font:?}, fixed 8x8 raster");}
  let title=String16::from(title.as_str());let class=String16::from("#32770");
@@ -43,7 +63,7 @@ async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:T
  AdjustWindowRectEx(machine,Some(&mut rect),Ok(WindowStyle::from_bits_truncate(t.style)),false,Ok(WindowStyleEx::from_bits_truncate(t.ex)));
  let hwnd=Box::pin(CreateWindowExW(machine,Err(t.ex),CreateWindowClassName::Name(class.as_str16()),Some(title.as_str16()),Err(t.style&!0x10000000),units(t.x,8,4),units(t.y,8,8),(rect.right-rect.left)as u32,(rect.bottom-rect.top)as u32,parent,0,inst,0)).await;
  if hwnd.is_null(){return hwnd}
- machine.state.user32.windows.get_mut(hwnd).unwrap().dialog=Some(DialogInfo{proc,result:0,default_id:0});
+ machine.state.user32.windows.get_mut(hwnd).unwrap().dialog=Some(DialogInfo{proc,result:0,default_id:0,ended:false,modal:false});
  for item in t.items{
   let cls=match dialog_template::class_name(&item.class){Ok(c)=>c,Err(e)=>{DestroyWindow(machine,hwnd);return fail(machine,e)}};
   let caption=match text(&item.title){Ok(t)=>t,Err(e)=>{DestroyWindow(machine,hwnd);return fail(machine,e)}};
@@ -53,7 +73,11 @@ async fn create(machine:&mut Machine,inst:u32,parent:HWND,proc:u32,param:u32,t:T
   if child.is_null(){if t.style&0x10!=0{continue}DestroyWindow(machine,hwnd);return HWND::null()}
   if item.style&0xf==1 {machine.state.user32.windows.get_mut(hwnd).unwrap().dialog.as_mut().unwrap().default_id=item.id;}
  }
- let focus=GetNextDlgTabItem(machine,hwnd,HWND::null(),false);
+ // Prefer the default push-button as the initial focus. Legacy launchers (DOOM95)
+ // often dispatch WM_KEYDOWN directly instead of calling IsDialogMessage, so Enter
+ // must land on the OK button to activate the default command.
+ let default_id=machine.state.user32.windows.get(hwnd).and_then(|w|w.dialog.as_ref()).map_or(0,|d|d.default_id);
+ let focus=if default_id!=0{let h=GetDlgItem(machine,hwnd,default_id as i32);if h.is_null(){GetNextDlgTabItem(machine,hwnd,HWND::null(),false)}else{h}}else{GetNextDlgTabItem(machine,hwnd,HWND::null(),false)};
  let handled=Box::pin(dispatch(machine,&send_msg(hwnd,0x110,focus.to_raw(),param))).await;
  if machine.state.user32.windows.get(hwnd).is_some(){
   if handled!=0{let focus=GetNextDlgTabItem(machine,hwnd,HWND::null(),false);if !focus.is_null(){SetFocus(machine,focus);}}

@@ -27,7 +27,7 @@ impl Control {
 }
 pub fn register(machine:&mut Machine,name:&str, _kind:Kind) {
     if !machine.state.user32.wndclasses.iter().any(|c|c.name.eq_ignore_ascii_case(name)) {
-        machine.state.user32.wndclasses.push(Rc::new(WndClass{name:name.into(),wndproc:NATIVE_PROC,background:super::HBRUSH::null()}));
+        machine.state.user32.wndclasses.push(Rc::new(WndClass{name:name.into(),wndproc:NATIVE_PROC,background:super::HBRUSH::null(),hInstance:0,cbWndExtra:0}));
     }
 }
 pub fn standard(machine:&mut Machine) {
@@ -125,6 +125,13 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         0x172 if c.kind==Kind::Static=>{result=c.image;c.image=lp},
         0x173 if c.kind==Kind::Static=>{result=c.image;redraw=false},
         0x30=>{}, // WM_SETFONT: the fixed public-domain bitmap font is the supported profile.
+        // WM_ACTIVATE / WM_ACTIVATEAPP / WM_WINDOWPOSCHANGED are notification
+        // messages for the supported control profile; focus itself is driven by
+        // WM_SETFOCUS/WM_KILLFOCUS and geometry by SetWindowPos before dispatch.
+        0x6|0x1c|0x47=>{redraw=false},
+        // EM_SCROLLCARET: single-line edits have no scrollback; caret is already
+        // visible after selection changes. Return success without repainting.
+        0xb7 if c.kind==Kind::Edit=>{redraw=false},
         0x200=>c.hover=true,
         0x201=>{c.pressed=true;c.focus=true;if c.kind==Kind::Edit{c.start=((lp&0xffff) as usize/8).min(c.text.len());c.end=c.start;}if c.kind==Kind::Listbox{let i=((lp>>16) as usize/12)as i32;if i>=0&&(i as usize)<c.items.len(){c.selected=i;notify=Some(1)}}},
         0x202|0xf5=>{if c.kind==Kind::Button&&(c.pressed||m==0xf5){c.pressed=false;let ty=c.style&15;if ty==3 {c.checked^=1}if ty==6 {c.checked=(c.checked+1)%3}if ty==9{c.checked=1}notify=Some(0)}else if c.kind==Kind::Scroll {let old=c.position;c.position=(c.low+((lp&0xffff)as i64*(c.high as i64-c.low as i64)/w.width.max(1)as i64)as i32).clamp(c.low,c.high);if old!=c.position{notify=Some(0xffff)}}},
@@ -138,6 +145,11 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         0xc5 if c.kind==Kind::Edit=>c.limit=if wp==0{32767}else{wp.min(65535)as usize},
         0xc2 if c.kind==Kind::Edit=>{if c.style&0x800==0{c.replace(&incoming);notify=Some(0x300)}},
         0x102 if c.kind==Kind::Edit=>{if c.style&0x800==0&&wp>=32&&wp<127{c.replace(&[wp as u8]);notify=Some(0x300)}},
+        // Legacy launchers sometimes dispatch WM_KEYDOWN straight to the focused
+        // default button instead of routing it through IsDialogMessage. Enter/Space
+        // must still produce the real BN_CLICKED WM_COMMAND to the parent dialog.
+        0x100 if c.kind==Kind::Button&&(wp==0x0d||wp==0x20)=>{if !c.pressed{c.pressed=true;notify=Some(0);}}
+        0x101 if c.kind==Kind::Button&&(wp==0x0d||wp==0x20)=>{c.pressed=false;}
         0x100 if c.kind==Kind::Edit=>{
             match wp {8 if c.style&0x800==0=>{if c.start==c.end&&c.start>0{c.start-=1}c.replace(&[]);notify=Some(0x300)},0x2e if c.style&0x800==0=>{if c.start==c.end{c.end=(c.end+1).min(c.text.len())}c.replace(&[]);notify=Some(0x300)},0x25=>{c.end=c.start.min(c.end).saturating_sub(1);c.start=c.end},0x27=>{c.end=(c.start.max(c.end)+1).min(c.text.len());c.start=c.end},0x24=>{c.start=0;c.end=0},0x23=>{c.start=c.text.len();c.end=c.start},_=>{redraw=false}}
         }

@@ -1,0 +1,40 @@
+name: retrowin32 backend build
+
+on:
+  push:
+    branches: [arena/633a2716-porthole]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
+      - name: Build pinned retrowin32 web backend
+        run: |
+          git clone https://github.com/evmar/retrowin32 /tmp/retrowin32
+          git -C /tmp/retrowin32 checkout 7c9243072755da54054bcaa9e1351371af638ded
+          cd /tmp/retrowin32/web/glue
+          cargo build -F x86-emu --target wasm32-unknown-unknown --release
+          wasm-bindgen --out-dir pkg --typescript --target web --reference-types \
+            ../../target/wasm32-unknown-unknown/release/glue.wasm
+      - name: Stage backend for blob transport
+        run: |
+          mkdir -p artifacts/torture/retrowin32
+          cp /tmp/retrowin32/web/glue/pkg/glue_bg.wasm artifacts/torture/retrowin32/retrowin32.wasm
+          cp /tmp/retrowin32/web/glue/pkg/glue.js artifacts/torture/retrowin32/glue.js
+          cp /tmp/retrowin32/web/glue/pkg/glue.d.ts artifacts/torture/retrowin32/glue.d.ts
+          sha256sum artifacts/torture/retrowin32/* | tee artifacts/torture/retrowin32/SHA256SUMS
+      - name: Publish backend blobs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/publish-torture-blobs.py

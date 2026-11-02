@@ -461,6 +461,122 @@ pub fn ror_rm8_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     x.set(ror(x.get(), y, &mut cpu.flags));
 }
 
+
+/// Rotate through carry left. The carry flag participates as a ninth/seventeenth/thirty-third bit.
+fn rcl<I: Int>(x: I, y: u8, flags: &mut Flags) -> I {
+    let bits = I::bits();
+    let count = (y as usize) & 0x1f;
+    if count == 0 {
+        return x;
+    }
+    let count = count % (bits + 1);
+    if count == 0 {
+        return x;
+    }
+    let mask = (1u64 << bits) - 1;
+    let mut v = x.as_usize() as u64 & mask;
+    let mut carry = flags.contains(Flags::CF) as u64;
+    for _ in 0..count {
+        let msb = (v >> (bits - 1)) & 1;
+        v = ((v << 1) | carry) & mask;
+        carry = msb;
+    }
+    flags.set(Flags::CF, carry != 0);
+    // OF is defined only for a one-bit rotate.
+    if count == 1 {
+        flags.set(Flags::OF, carry != ((v >> (bits - 1)) & 1));
+    }
+    I::from(v).unwrap()
+}
+
+/// Rotate through carry right.
+fn rcr<I: Int>(x: I, y: u8, flags: &mut Flags) -> I {
+    let bits = I::bits();
+    let count = (y as usize) & 0x1f;
+    if count == 0 {
+        return x;
+    }
+    let count = count % (bits + 1);
+    if count == 0 {
+        return x;
+    }
+    let mask = (1u64 << bits) - 1;
+    let mut v = x.as_usize() as u64 & mask;
+    let mut carry = flags.contains(Flags::CF) as u64;
+    for _ in 0..count {
+        let lsb = v & 1;
+        v = (v >> 1) | (carry << (bits - 1));
+        carry = lsb;
+    }
+    flags.set(Flags::CF, carry != 0);
+    // OF is the XOR of the two top bits of the result for a one-bit rotate.
+    if count == 1 {
+        flags.set(Flags::OF, ((v >> (bits - 1)) & 1) != ((v >> (bits - 2)) & 1));
+    }
+    I::from(v).unwrap()
+}
+
+pub fn rcl_rm8_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = cpu.regs.get8(Register::CL);
+    let x = rm8(cpu, mem, instr);
+    x.set(rcl(x.get(), y, &mut cpu.flags));
+}
+pub fn rcl_rm8_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8();
+    let x = rm8(cpu, mem, instr);
+    x.set(rcl(x.get(), y, &mut cpu.flags));
+}
+pub fn rcl_rm16_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = cpu.regs.get8(Register::CL);
+    let x = rm16(cpu, mem, instr);
+    x.set(rcl(x.get(), y, &mut cpu.flags));
+}
+pub fn rcl_rm16_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8();
+    let x = rm16(cpu, mem, instr);
+    x.set(rcl(x.get(), y, &mut cpu.flags));
+}
+pub fn rcl_rm32_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = cpu.regs.get8(Register::CL);
+    let x = rm32(cpu, mem, instr);
+    x.set(rcl(x.get(), y, &mut cpu.flags));
+}
+pub fn rcl_rm32_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8();
+    let x = rm32(cpu, mem, instr);
+    x.set(rcl(x.get(), y, &mut cpu.flags));
+}
+pub fn rcr_rm8_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = cpu.regs.get8(Register::CL);
+    let x = rm8(cpu, mem, instr);
+    x.set(rcr(x.get(), y, &mut cpu.flags));
+}
+pub fn rcr_rm8_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8();
+    let x = rm8(cpu, mem, instr);
+    x.set(rcr(x.get(), y, &mut cpu.flags));
+}
+pub fn rcr_rm16_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = cpu.regs.get8(Register::CL);
+    let x = rm16(cpu, mem, instr);
+    x.set(rcr(x.get(), y, &mut cpu.flags));
+}
+pub fn rcr_rm16_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8();
+    let x = rm16(cpu, mem, instr);
+    x.set(rcr(x.get(), y, &mut cpu.flags));
+}
+pub fn rcr_rm32_cl(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = cpu.regs.get8(Register::CL);
+    let x = rm32(cpu, mem, instr);
+    x.set(rcr(x.get(), y, &mut cpu.flags));
+}
+pub fn rcr_rm32_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8();
+    let x = rm32(cpu, mem, instr);
+    x.set(rcr(x.get(), y, &mut cpu.flags));
+}
+
 fn xor<I: Int>(x: I, y: I, flags: &mut Flags) -> I {
     let result = x ^ y;
     // The OF and CF flags are cleared; the SF, ZF, and PF flags are set according to the result. The state of the AF flag is undefined.
@@ -497,6 +613,18 @@ pub fn xor_rm8_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
 
 pub fn xor_rm16_rm16(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     let y = op1_rm16(cpu, mem, instr);
+    let x = rm16(cpu, mem, instr);
+    x.set(xor(x.get(), y, &mut cpu.flags));
+}
+
+pub fn xor_rm16_imm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate8to16() as u16;
+    let x = rm16(cpu, mem, instr);
+    x.set(xor(x.get(), y, &mut cpu.flags));
+}
+
+pub fn xor_rm16_imm16(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
+    let y = instr.immediate16();
     let x = rm16(cpu, mem, instr);
     x.set(xor(x.get(), y, &mut cpu.flags));
 }
@@ -972,4 +1100,109 @@ pub fn not_rm16(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
 pub fn not_rm8(cpu: &mut CPU, mem: Mem, instr: &Instruction) {
     let x = rm8(cpu, mem, instr);
     x.set(!x.get())
+}
+
+#[cfg(test)]
+mod porthole_rotate_through_carry_tests {
+    use super::*;
+    use crate::registers::Flags;
+    use crate::x86::CPU;
+    use iced_x86::{Decoder, DecoderOptions, Instruction};
+    use memory::Mem;
+
+    fn decode(bytes: &[u8]) -> Instruction {
+        let mut decoder = Decoder::with_ip(32, bytes, 0x1000, DecoderOptions::NONE);
+        let mut instr = Instruction::default();
+        decoder.decode_out(&mut instr);
+        instr
+    }
+
+    #[test]
+    fn rcl_rm8_1_rotates_through_carry() {
+        let mut cpu = CPU::new();
+        let memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set8(Register::AL, 0x80);
+        cpu.flags.insert(Flags::CF);
+        let instr = decode(&[0xd0, 0xd0]); // rcl al, 1
+        assert_eq!(instr.code(), iced_x86::Code::Rcl_rm8_1);
+        rcl_rm8_imm8(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get8(Register::AL), 0x01);
+        assert!(cpu.flags.contains(Flags::CF));
+        assert!(cpu.flags.contains(Flags::OF));
+    }
+
+    #[test]
+    fn rcr_rm8_cl_rotates_through_carry() {
+        let mut cpu = CPU::new();
+        let memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set8(Register::AL, 0x01);
+        cpu.regs.set8(Register::CL, 1);
+        cpu.flags.insert(Flags::CF);
+        let instr = decode(&[0xd2, 0xd8]); // rcr al, cl
+        assert_eq!(instr.code(), iced_x86::Code::Rcr_rm8_CL);
+        rcr_rm8_cl(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get8(Register::AL), 0x80);
+        assert!(cpu.flags.contains(Flags::CF));
+        assert!(cpu.flags.contains(Flags::OF));
+    }
+
+    #[test]
+    fn rcl_rm8_zero_count_preserves_flags() {
+        let mut cpu = CPU::new();
+        let memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set8(Register::AL, 0x80);
+        cpu.regs.set8(Register::CL, 0);
+        cpu.flags.insert(Flags::CF);
+        let instr = decode(&[0xd2, 0xd0]); // rcl al, cl
+        rcl_rm8_cl(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get8(Register::AL), 0x80);
+        assert!(cpu.flags.contains(Flags::CF));
+    }
+}
+
+#[cfg(test)]
+mod porthole_xor16_tests {
+    use super::*;
+    use crate::registers::Flags;
+    use crate::x86::CPU;
+    use iced_x86::{Decoder, DecoderOptions, Instruction};
+    use memory::Mem;
+
+    fn decode(bytes: &[u8]) -> Instruction {
+        let mut decoder = Decoder::with_ip(32, bytes, 0x1000, DecoderOptions::NONE);
+        let mut instr = Instruction::default();
+        decoder.decode_out(&mut instr);
+        instr
+    }
+
+    #[test]
+    fn xor_rm16_imm8_sign_extends_and_updates_flags() {
+        let mut cpu = CPU::new();
+        let mut memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set16(Register::DI, 0x00ff);
+        let instr = decode(&[0x66, 0x83, 0xf7, 0x01]); // xor di, 1
+        assert_eq!(instr.code(), iced_x86::Code::Xor_rm16_imm8);
+        xor_rm16_imm8(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get16(Register::DI), 0x00fe);
+        assert!(!cpu.flags.contains(Flags::ZF));
+        assert!(!cpu.flags.contains(Flags::CF));
+        assert!(!cpu.flags.contains(Flags::OF));
+    }
+
+    #[test]
+    fn xor_rm16_imm16_and_ax_form() {
+        let mut cpu = CPU::new();
+        let mut memory = vec![0u8; 16];
+        let mem = Mem::from_slice(&memory);
+        cpu.regs.set16(Register::AX, 0x1234);
+        let instr = decode(&[0x66, 0x35, 0x34, 0x12]); // xor ax, 0x1234
+        assert_eq!(instr.code(), iced_x86::Code::Xor_AX_imm16);
+        xor_rm16_imm16(&mut cpu, mem, &instr);
+        assert_eq!(cpu.regs.get16(Register::AX), 0);
+        assert!(cpu.flags.contains(Flags::ZF));
+    }
 }

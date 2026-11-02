@@ -24,3 +24,10 @@ pub fn InitCommonControlsEx(machine:&mut Machine,icex:u32)->bool {
     if flags&0x10!=0 {controls::register(machine,"msctls_updown32",controls::Kind::Updown)}
     true
 }
+
+#[win32_derive::dllexport]
+pub fn PropertySheetA(machine:&mut Machine, lppsph:u32)->i32 {
+    let _ = lppsph;
+    kernel32::teb_mut(machine).LastErrorValue=50;
+    -1
+}

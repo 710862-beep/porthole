@@ -11,7 +11,7 @@ use crate::{
     Host, Machine, SurfaceOptions,
 };
 use bitflags::bitflags;
-use memory::{Extensions, Mem};
+use memory::{Extensions, ExtensionsMut, Mem};
 use std::rc::Rc;
 
 const TRACE_CONTEXT: &'static str = "user32/window";
@@ -87,6 +87,9 @@ pub struct Window {
     pub height: u32,
     pub wndclass: Rc<WndClass>,
     pub style: WindowStyle,
+    pub wndproc_override: Option<u32>,
+    pub user_data: u32,
+    pub extra: Vec<u8>,
 }
 
 pub enum WindowType {
@@ -173,6 +176,8 @@ pub struct WndClass {
     pub name: String,
     pub wndproc: u32,
     pub background: HBRUSH,
+    pub hInstance: u32,
+    pub cbWndExtra: u32,
 }
 
 fn register_class(machine: &mut Machine, wndclass: WndClass) -> u32 {
@@ -228,6 +233,8 @@ pub fn RegisterClassW(machine: &mut Machine, lpWndClass: Option<&WNDCLASSA>) -> 
         name: name.to_string(),
         wndproc: lpWndClass.lpfnWndProc,
         background: background.to_brush(machine),
+        hInstance: lpWndClass.hInstance,
+        cbWndExtra: lpWndClass.cbWndExtra,
     };
     register_class(machine, wndclass)
 }
@@ -277,6 +284,8 @@ pub fn RegisterClassExA(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXA
         wndproc: lpWndClassEx.lpfnWndProc,
         background: unsafe { BrushOrColor::from_arg(machine.mem(), lpWndClassEx.hbrBackground) }
             .to_brush(machine),
+        hInstance: lpWndClassEx.hInstance,
+        cbWndExtra: lpWndClassEx.cbWndExtra,
     };
     register_class(machine, wndclass)
 }
@@ -292,6 +301,8 @@ pub fn RegisterClassExW(machine: &mut Machine, lpWndClassEx: Option<&WNDCLASSEXW
         wndproc: lpWndClassEx.lpfnWndProc,
         background: unsafe { BrushOrColor::from_arg(machine.mem(), lpWndClassEx.hbrBackground) }
             .to_brush(machine),
+        hInstance: lpWndClassEx.hInstance,
+        cbWndExtra: lpWndClassEx.cbWndExtra,
     };
     register_class(machine, wndclass)
 }
@@ -504,8 +515,11 @@ pub async fn CreateWindowExW(
         typ,
         width,
         height,
-        wndclass,
+        wndclass: wndclass.clone(),
         style,
+        wndproc_override: None,
+        user_data: 0,
+        extra: vec![0; wndclass.cbWndExtra as usize],
     };
     machine.state.user32.windows.set(hwnd, window);
 
@@ -1038,10 +1052,71 @@ pub fn ReleaseDC(machine: &mut Machine, hwnd: HWND, hdc: HDC) -> bool {
     }
 }
 
+fn window_long(machine: &mut Machine, hWnd: HWND, nIndex: i32) -> Option<u32> {
+    let w = machine.state.user32.windows.get(hWnd)?;
+    Some(match nIndex {
+        -4 => w.wndproc_override.unwrap_or(w.wndclass.wndproc),
+        -6 => w.wndclass.hInstance,
+        -8 => w.parent.to_raw(),
+        -12 => w.id,
+        -16 => w.control.as_ref().map_or(w.style.bits(), |c| c.style),
+        -20 => 0,
+        -21 => w.user_data,
+        n if n >= 0 => {
+            let n = n as usize;
+            if n + 4 > w.extra.len() { return None; }
+            u32::from_le_bytes(w.extra[n..n + 4].try_into().unwrap())
+        }
+        _ => return None,
+    })
+}
+
 #[win32_derive::dllexport]
 pub fn GetWindowLongA(machine: &mut Machine, hWnd: HWND, nIndex: i32) -> i32 {
-    let Some(w)=machine.state.user32.windows.get(hWnd)else{winapi::kernel32::teb_mut(machine).LastErrorValue=1400;return 0};
-    match nIndex {-16=>w.control.as_ref().map_or(w.style.bits(),|c|c.style)as i32,-20=>0,-12=>w.id as i32,-8=>w.parent.to_raw() as i32,_=>{winapi::kernel32::teb_mut(machine).LastErrorValue=1413;0}}
+    match window_long(machine, hWnd, nIndex) {
+        Some(v) => v as i32,
+        None => { winapi::kernel32::teb_mut(machine).LastErrorValue = if machine.state.user32.windows.get(hWnd).is_some() { 1413 } else { 1400 }; 0 }
+    }
+}
+
+#[win32_derive::dllexport]
+pub fn GetWindowLongW(machine: &mut Machine, hWnd: HWND, nIndex: i32) -> i32 { GetWindowLongA(machine, hWnd, nIndex) }
+
+#[win32_derive::dllexport]
+pub fn SetWindowLongA(machine: &mut Machine, hWnd: HWND, nIndex: i32, dwNewLong: i32) -> i32 {
+    let previous = match window_long(machine, hWnd, nIndex) { Some(v) => v, None => { winapi::kernel32::teb_mut(machine).LastErrorValue = 1413; return 0; } };
+    let w = machine.state.user32.windows.get_mut(hWnd).unwrap();
+    match nIndex {
+        -4 => w.wndproc_override = Some(dwNewLong as u32),
+        -8 => w.parent = HWND::from_raw(dwNewLong as u32),
+        -12 => w.id = dwNewLong as u32,
+        -16 => w.style = WindowStyle::from_bits_truncate(dwNewLong as u32),
+        -21 => w.user_data = dwNewLong as u32,
+        n if n >= 0 => { let n = n as usize; w.extra[n..n + 4].copy_from_slice(&dwNewLong.to_le_bytes()); }
+        _ => {}
+    }
+    previous as i32
+}
+
+#[win32_derive::dllexport]
+pub fn SetWindowLongW(machine: &mut Machine, hWnd: HWND, nIndex: i32, dwNewLong: i32) -> i32 { SetWindowLongA(machine, hWnd, nIndex, dwNewLong) }
+
+#[win32_derive::dllexport]
+pub fn GetWindowTextA(machine: &mut Machine, hWnd: HWND, lpString: u32, nMaxCount: i32) -> i32 {
+    if nMaxCount <= 0 || lpString == 0 { return 0; }
+    let title = machine.state.user32.windows.get(hWnd).map(|w| w.title.clone()).unwrap_or_default();
+    let bytes = title.as_bytes();
+    let count = (nMaxCount as usize - 1).min(bytes.len());
+    let mem = machine.mem();
+    if lpString.checked_add(count as u32 + 1).map_or(true, |end| end as usize > mem.as_slice().len()) { return 0; }
+    mem.sub32_mut(lpString, count as u32).copy_from_slice(&bytes[..count]);
+    mem.put_pod::<u8>(lpString + count as u32, 0);
+    count as i32
+}
+
+#[win32_derive::dllexport]
+pub fn GetWindowTextLengthA(machine: &mut Machine, hWnd: HWND) -> i32 {
+    machine.state.user32.windows.get(hWnd).map(|w| w.title.len() as i32).unwrap_or(0)
 }
 
 #[win32_derive::dllexport]

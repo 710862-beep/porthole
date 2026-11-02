@@ -548,3 +548,83 @@ check-run `output.summary` (`porthole-x64-trace:*`, `porthole-x64-game`) and rea
 D3D12, DXBC/DXIL translation, and any other graphics backend are later work. DXBC is not DXIL;
 Shader Model 6 requires `dxil-spirv` or an equivalent translator before WebGPU can execute those
 shaders.
+
+## Phase 2 basic-block JIT — measured microbench gate
+
+The one-instruction JIT handoff was replaced by a real basic-block compiler in
+`rust/porthole-x64-wasm/src/jit.rs` (ABI v2, 32 i64 context slots):
+
+- Decodes multi-instruction GPR blocks until JMP/Jcc/RET/CALL, an unsupported
+  instruction, or a page boundary. GPRs and RFLAGS are Wasm locals for the whole
+  block; the CPU context is read once and written back on exit.
+- Hot self-back-edges are lowered to a native Wasm `loop`/`br_if` with a
+  whole-block instruction budget, so a hot loop does not cross JS per iteration.
+- Static forward JMP edges can be linked with `return_call` when the host's
+  `WebAssembly.validate` probe accepts tail calls; otherwise the dispatcher
+  resumes the successor. The core build stays baseline because wasm-bindgen
+  0.2.92 cannot parse a `+tail-call` core module.
+- Unsupported/memory-writing instructions terminate the block before their side
+  effect; the interpreter resumes at the exact RIP. SMC/page epochs invalidate
+  artifacts and linked predecessors. Correctness lanes shadow-validate the first
+  execution of each artifact/epoch, then commit atomically.
+
+Measured authored hot-loop A/B (`tests/bench/jit-microbench.mjs`, N=20,000,000,
+Node v22.22.3, candidate from CI run `41158464780`):
+
+| mode | instructions | ms | MIPS |
+|---|---:|---:|---:|
+| interpreter | 40,000,002 | 2731 | 14.648 |
+| jit-validate | 40,000,002 | 130 | 307.527 |
+| jit-fast | 40,000,002 | 64 | 629.648 |
+
+The JIT now exceeds the interpreter's ~10–15 MIPS on the microbench by >40x.
+`x64-jit-differential` and the new `x64-jit-alu-direction` regression pass against
+the candidate core. Chocolate Doom remains a separate compatibility gate: the
+guest still stalls in `NET_Init` before timedemo gametics, so Doom throughput is
+reported as a failure rather than a JIT PASS.
+
+### Final Phase 2 CI Doom A/B (`41160535076`)
+
+Core SUCCESS and Node unit/differential SUCCESS. Doom 900 s A/B remains FAIL:
+interpreter 0.04 MIPS (timeout, 0 gametics), JIT 0.05 MIPS (guest exit -1, 0
+gametics), 0 Wasm compile errors after the SAR opcode fix. The authored JIT
+microbench gate is cleared (hundreds of MIPS); Doom compatibility is not.
+
+## Phase 3 — "Compile Everything" pipeline (AOT + cache + telemetry)
+
+Phase 3 added exact fallback telemetry, evidence-selected JIT coverage, a `.text`
+AOT scanner, a SHA-256 keyed persistent Wasm cache, and loader lag JSON. The
+34,691 Phase 2 "validation fallbacks" were diagnosed as two compiler bugs (code
+hash collision across entry RIPs; ALU ModRM forms 2/3 decoded as immediate), not
+unsupported opcodes. After fixes, Doom validation fallbacks fell below 100.
+
+- Decoder: `iced-x86` replaces the hand-written ModRM parser; lowers integer ALU
+  (reg/imm/mem-src), partial registers, MOV loads, MOVZX/MOVSX/MOVSXD, LEA, POP,
+  SETcc, immediate shifts, native self-loops. Memory reads import a core helper;
+  faults flush locals and resume the interpreter precisely. Stores/CALL/indirect
+  jumps/SIMD still exit before side effects (next coverage targets named by the
+  unsupported histogram: byte stores, SSE2 movdqa/movdqu, shift-by-CL, CALL).
+- AOT: `pe64.rs` linear-sweeps `.text` for instruction boundaries/branch targets
+  and compiles with the runtime JIT decoder; cached RIPs are skipped. Artifacts
+  persist to `cache/<sha256_of_exe>.jitcache` (OPFS / Node fs).
+- Telemetry: loader prints `disk_read_time_ms`, `aot_compilation_time_ms`,
+  `cache_load_time_ms`, `total_startup_lag_ms`, `cache_hit_count`,
+  `cache_miss_count`, `jit_compile_time_ms`, `jit_fallbacks_during_play`.
+
+Measured (final candidate, CI `41218942915` core SUCCESS, Node 30/30 PASS):
+
+| Benchmark | Result |
+|---|---|
+| Microbench interpreter / jit-validate / jit-fast | 17.593 / 328.319 / 748.520 MIPS |
+| Doom cold local 180 s | 0.09 MIPS, timeout, 25 fallbacks, 22,736 AOT blocks |
+| Doom warm local 120 s | 0.09 MIPS, timeout, 25 fallbacks, 23,220 cache hits / 0 misses |
+| CI Doom baseline 900 s | FAIL timeout, 38M insns, 0.04 MIPS, 0 gametics |
+| CI Doom JIT 900 s | FAIL timeout, 38M insns, 0.04 MIPS, 0 gametics, **27 fallbacks**, 0 compile errors |
+
+The Phase 3 acceptance gate (<100 JIT validation fallbacks + exact telemetry JSON)
+is met. Doom throughput remains a compatibility FAIL: stores/CALL/SIMD still
+force tiny blocks and a JS/Wasm handoff per few instructions, so 35.15M of 38M
+guest instructions are interpreted. The startup spike is WebAssembly compilation
+(~2.5 s), not disk I/O (~24 ms). See `docs/OPTIMIZATION-AND-TESTING-REPORT.md`
+§"Phase 3 Performance Projection" for the 600 MIPS / 60 FPS = 10M
+instructions/frame math and the memory/GPU/I/O bottleneck assessment.

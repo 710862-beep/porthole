@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use std::cmp::min;
+use memory::Extensions;
 
 const TRACE_CONTEXT: &'static str = "gdi32/bitmap";
 
@@ -568,4 +569,32 @@ pub fn StretchDIBits(
         machine, hdc, xDest, yDest, SrcWidth, SrcHeight, xSrc, ySrc, 0, SrcHeight, lpBits, lpbmi,
         iUsage,
     )
+}
+
+#[win32_derive::dllexport]
+pub fn CreateDIBitmap(machine: &mut Machine, hdc: HDC, lpbmih: Option<&BITMAPINFOHEADER>, fdwInit: u32, lpbInit: u32, lpBmi: Option<&BITMAPINFOHEADER>, fuUsage: u32) -> HGDIOBJ {
+    let _ = (hdc, fdwInit, lpbInit, fuUsage);
+    let bi = lpBmi.or(lpbmih);
+    let Some(bi) = bi else { return HGDIOBJ::null(); };
+    if bi.biSize != std::mem::size_of::<BITMAPINFOHEADER>() as u32 || bi.biBitCount != 32 { return HGDIOBJ::null(); }
+    let w = bi.width(); let h = bi.height();
+    let mut pixels = Vec::new();
+    pixels.resize((w * h) as usize, [0, 0, 0, 255]);
+    if lpbInit != 0 {
+        let mem = machine.mem();
+        let stride = bi.stride();
+        if let Some(bytes) = mem.as_slice().get(lpbInit as usize..) {
+            for y in 0..h as usize {
+                let src_row = if bi.is_top_down() { y } else { h as usize - 1 - y };
+                let off = src_row * stride;
+                if off + w as usize * 4 > bytes.len() { break; }
+                for x in 0..w as usize {
+                    let b = &bytes[off + x * 4..off + x * 4 + 4];
+                    pixels[y * w as usize + x] = [b[2], b[1], b[0], 255];
+                }
+            }
+        }
+    }
+    let bitmap = BitmapRGBA32 { width: w, height: h, pixels: PixelData::Owned(pixels.into_boxed_slice()) };
+    machine.state.gdi32.objects.add(Object::Bitmap(BitmapType::RGBA32(bitmap)))
 }

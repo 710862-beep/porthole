@@ -13,7 +13,10 @@ export function validatePE(bytes, minSize = 64) {
   if (bytes.length < Math.max(64, minSize)) throw new Error(`Size ${bytes.length} below ${minSize}`);
   if (bytes.toString('ascii', 0, 2) !== 'MZ') throw new Error('Missing MZ');
   const offset = bytes.readUInt32LE(60);
-  if (offset < 64 || offset + 24 > bytes.length || bytes.readUInt32LE(offset) !== 0x4550) throw new Error('Invalid PE signature/offset');
+  // e_lfanew must point at a real PE signature inside the file.  Some packed
+  // production PEs (kkrieger) place it below the usual 0x40 DOS stub area; the
+  // signature/machine checks, not an arbitrary offset floor, decide validity.
+  if (offset < 4 || offset + 24 > bytes.length || bytes.readUInt32LE(offset) !== 0x4550) throw new Error('Invalid PE signature/offset');
   return { machine: bytes.readUInt16LE(offset + 4), size: bytes.length };
 }
 const revision = '7c9243072755da54054bcaa9e1351371af638ded';

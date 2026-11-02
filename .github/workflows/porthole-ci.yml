@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: porthole-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -67,6 +67,11 @@ jobs:
         run: |
           mkdir -p artifacts
           node scripts/fetch-with-fallbacks.mjs 2>&1 | tee artifacts/fetch-fallbacks.log
+      - name: Build the authored PE32 fixtures
+        # The validation lanes below execute tests/synthetic/*.exe, which are compiled from
+        # the in-tree C sources by the pinned zig 0.13.0 toolchain installed above. Without
+        # this step every lane fails with ENOENT instead of exercising the guest.
+        run: npm run build:synthetic
       - name: thread-validation
         if: always()
         run: node scripts/run-synthetic.mjs thread-validation
@@ -84,7 +89,13 @@ jobs:
         run: node scripts/run-synthetic.mjs installer-test
       - name: Probe acquired PE executables
         if: always()
-        run: node scripts/probe-test-assets.mjs
+        run: |
+          node scripts/probe-test-assets.mjs || rc=$?
+          for f in artifacts/guest-probes.json artifacts/guest-probes-candidate.json artifacts/doom95-candidate.json; do
+            [ -f "$f" ] && { echo "=== $f"; cat "$f"; }
+          done
+          exit "${rc:-0}"
+
       - name: Enforce same-source candidate gameplay promotion gates
         if: always()
         env:
@@ -105,6 +116,9 @@ jobs:
           npm run test:wine 2>&1 | tee artifacts/wine.log
           code=${PIPESTATUS[0]}; if [ "$code" -ne 0 ]; then status=1; fi
           exit "$status"
+      - name: Surface lane evidence as check annotations
+        if: always()
+        run: node scripts/ci-annotate-artifacts.mjs artifacts || true
       - name: Publish sanitized diagnostics
         if: always()
         uses: actions/upload-artifact@v4

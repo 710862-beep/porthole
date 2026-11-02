@@ -27,6 +27,7 @@
       this.root = null;
       this.vmemDir = null;
       this.jitDir = null;
+      this.cacheDir = null;
       this.gameDir = null;
       this.stats = {
         mounted: false,
@@ -61,6 +62,7 @@
       this.root = handle;
       this.vmemDir = await handle.getDirectoryHandle('.porthole_vmem', { create: true });
       this.jitDir = await handle.getDirectoryHandle('.porthole_jit_cache', { create: true });
+      this.cacheDir = await handle.getDirectoryHandle('cache', { create: true });
       try {
         this.gameDir = await handle.getDirectoryHandle('Game', { create: true });
       } catch (error) {
@@ -202,6 +204,50 @@
           this.stats.jitModulesLoaded += 1;
         }
         return out;
+      });
+    }
+
+    // ------------------------------------------------- SHA-256 keyed JIT archive
+
+    /** Persist all portable blocks for one executable as cache/<sha256>.jitcache. */
+    async saveJitCache(exeSha256, entries) {
+      return this.enqueue(async () => {
+        if (!this.cacheDir) throw new Error('NVMe não montado: cache JIT indisponível.');
+        if (!/^[0-9a-f]{64}$/.test(exeSha256)) throw new Error('SHA-256 do executável inválido.');
+        const blocks = entries.map(({ meta, wasmBytes }) => ({
+          meta,
+          wasmBase64: btoa(String.fromCharCode(...wasmBytes)),
+        }));
+        const payload = JSON.stringify({ version: 1, abi: 3, exeSha256, blocks });
+        const handle = await this.cacheDir.getFileHandle(`${exeSha256}.jitcache`, { create: true });
+        const writable = await handle.createWritable();
+        await writable.write(payload);
+        await writable.close();
+        this.stats.jitModulesSaved = blocks.length;
+        return { blocks: blocks.length, bytes: payload.length };
+      });
+    }
+
+    async loadJitCache(exeSha256) {
+      return this.enqueue(async () => {
+        if (!this.cacheDir || !/^[0-9a-f]{64}$/.test(exeSha256)) return [];
+        try {
+          const handle = await this.cacheDir.getFileHandle(`${exeSha256}.jitcache`);
+          const file = await handle.getFile();
+          const payload = JSON.parse(await file.text());
+          if (payload.exeSha256 !== exeSha256 || payload.abi !== 3 || !Array.isArray(payload.blocks)) return [];
+          const out = payload.blocks.map(({ meta, wasmBase64 }) => ({
+            meta,
+            wasmBytes: Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0)),
+          }));
+          this.stats.jitModulesLoaded = out.length;
+          return out;
+        } catch (error) {
+          if (error?.name === 'NotFoundError') return [];
+          this.stats.readErrors += 1;
+          this.stats.lastError = error.message;
+          return [];
+        }
       });
     }
 

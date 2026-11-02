@@ -2,7 +2,7 @@ name: x86-64 emulator (Wasm core + real Wine64 conformance)
 
 on:
   push:
-    branches: [arena/e737e676-porthole, arena/0213f8bc-porthole]
+    branches: [arena/633a2716-porthole]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: porthole-x64-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   rust-unit-tests:
@@ -160,7 +160,7 @@ jobs:
         run: |
           mkdir -p artifacts
           set -o pipefail
-          node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
+          PORTHOLE_JIT_TELEMETRY=1 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
       - name: Publish the Tier B guest report through the Checks API
         if: always()
         env:
@@ -282,7 +282,7 @@ jobs:
             echo "::warning::artifacts/game-report.txt missing"
           fi
       - name: Run Wine conformance inside the Wasm x86-64 emulator
-        run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64
+        run: node tests/wine64/run-wine64.mjs --report artifacts/wine64-report.json --fixtures tests/assets/wine64 --timeout-ms 600000
       - name: Preserve JS regressions for the existing runtime
         run: |
           npm run check:syntax

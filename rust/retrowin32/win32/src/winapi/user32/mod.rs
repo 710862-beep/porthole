@@ -14,6 +14,8 @@ mod paint;
 mod rect;
 mod raw_input;
 pub use raw_input::*;
+mod hook;
+pub use hook::*;
 mod resource;
 mod timer;
 mod window;
@@ -39,6 +41,8 @@ pub use window::*;
 pub struct State {
     pub focused: HWND,
     pub captured: HWND,
+    pub hooks: Vec<hook::Hook>,
+    pub clip: Option<[i32; 4]>,
     raw_registered: bool,
     raw_next: u32,
     raw_packets: std::collections::HashMap<u32,(i32,i32)>,

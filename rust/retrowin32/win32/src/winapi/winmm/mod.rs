@@ -12,3 +12,5 @@ pub use wave::*;
 
 mod midi;
 pub use midi::*;
+mod joystick;
+pub use joystick::*;

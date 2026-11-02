@@ -222,6 +222,13 @@
       await this._save();
     }
 
+    deleteKeySync(path) {
+      const normalized = cleanPath(path);
+      if (!normalized.pieces.length) return ERROR.ACCESS_DENIED;
+      if (Array.from(this.keys.keys()).some((key) => key.startsWith(`${normalized.key}\\`))) return ERROR.ACCESS_DENIED;
+      if (!this.keys.delete(normalized.key)) return ERROR.FILE_NOT_FOUND;
+      return ERROR.SUCCESS;
+    }
     async deleteKey(path) {
       await this.ready;
       const normalized = cleanPath(path);
