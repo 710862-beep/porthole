@@ -21,6 +21,10 @@
       this.exeSha256 = options.exeSha256 || null;
       this.persistent = new Map();
       this.cacheTelemetry = { hits: 0, misses: 0, loadMs: 0, saveMs: 0, bytes: 0 };
+      this.cacheDirty = false;
+      this.metaCache = new Map();
+      this.budgetView = null;
+      this.budgetBuffer = null;
       this.jitCompileMs = 0;
       this.modules = new Map();
       this.instances = new Map();
@@ -100,12 +104,13 @@
     }
 
     async flushCache() {
-      if (!this.exeSha256 || !this.cache?.saveJitCache || !this.persistent.size) return;
+      if (!this.exeSha256 || !this.cache?.saveJitCache || !this.persistent.size || !this.cacheDirty) return;
       const t0 = performance.now();
       const entries = [...this.persistent.values()];
       try {
         await this.cache.saveJitCache(this.exeSha256, entries);
         this.stats.saved = entries.length;
+        this.cacheDirty = false;
         this.cacheTelemetry.bytes = entries.reduce((n, e) => n + e.wasmBytes.length, 0);
       } catch (error) {
         this.stats.cacheErrors += 1;
@@ -135,6 +140,7 @@
             this.jitCompileMs += performance.now() - tc;
             this.stats.compiled += 1;
             this.persistent.set(meta.codeHash, { meta, wasmBytes: bytes });
+            this.cacheDirty = true;
           } catch (error) {
             this.stats.compileErrors += 1;
             this.stats.lastError = String(error?.message || error);
@@ -165,6 +171,7 @@
       this.cacheTelemetry.hits += 1;
       this.artifacts.set(String(meta.entryRip), meta);
       this.persistent.set(meta.codeHash, { meta, wasmBytes });
+      this.cacheDirty = true;
       if (!this.modules.has(meta.codeHash)) {
         const tc = performance.now();
         this.modules.set(meta.codeHash, await WebAssembly.compile(wasmBytes));
@@ -212,6 +219,7 @@
       this.modules.set(meta.codeHash, mod);
       this.stats.compiled += 1;
       this.persistent.set(meta.codeHash, { meta, wasmBytes: bytes });
+      this.cacheDirty = true;
       if (!this.exeSha256 && this.cache?.saveJitModule && !(meta.links || []).length) {
         try {
           await this.cache.saveJitModule(BigInt(meta.entryRip), bytes, meta);
@@ -227,7 +235,8 @@
     writeBudget(ctx, remaining) {
       const buffer = this.memory?.buffer;
       if (!buffer) throw new Error('Wasm memory export unavailable');
-      new DataView(buffer).setBigUint64((ctx >>> 0) + 20 * 8, BigInt(remaining), true);
+      if (this.budgetBuffer !== buffer) { this.budgetBuffer = buffer; this.budgetView = new DataView(buffer); }
+      this.budgetView.setBigUint64((ctx >>> 0) + 20 * 8, BigInt(remaining), true);
     }
 
     interpretWithJitDisabled(budget) {
@@ -250,10 +259,21 @@
         if (remaining === 0) { await this.drainPending(); return 'next'; }
         const raw = this.emu.jit_enter_block();
         if (!raw) { this.stats.discarded += 1; status = 'next'; continue; }
-        const meta = JSON.parse(raw);
+        let meta = this.metaCache.get(raw);
+        if (!meta) {
+          meta = JSON.parse(raw);
+          if (this.metaCache.size >= 8192) this.metaCache.clear();
+          this.metaCache.set(raw, meta);
+        }
         try {
-          const mod = await this.moduleFor(meta);
-          const instance = await this.instanceFor(meta, mod);
+          // Hot blocks are already compiled/instantiated. Avoid two awaited promises per
+          // block; only a cache miss needs the asynchronous compile/instantiate path.
+          this.artifacts.set(String(meta.entryRip), meta);
+          let mod = this.modules.get(meta.codeHash);
+          if (mod) this.stats.cacheHits += 1;
+          else mod = await this.moduleFor(meta);
+          let instance = this.instances.get(meta.codeHash);
+          if (!instance) instance = await this.instanceFor(meta, mod);
           this.writeBudget(meta.ctx, remaining);
           if (typeof this.emu.jit_clear_mem_fault === 'function') this.emu.jit_clear_mem_fault();
           new DataView(this.memory.buffer).setBigUint64((meta.ctx >>> 0) + 24 * 8, 0n, true);

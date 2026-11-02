@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 10;
+pub const JIT_COMPILER_VERSION: u64 = 11;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -51,6 +51,21 @@ pub struct CompiledJitArtifact {
     pub interpret_rip: u64,
     pub wasm_bytes: Vec<u8>,
     pub links: Vec<JitLink>,
+}
+
+impl CompiledJitArtifact {
+    /// Active-transaction metadata without the emitted Wasm byte vector. The host fetches
+    /// bytes from the artifact table only on a module-cache miss; copying them on every
+    /// block entry made Doom's dispatch loop memcpy-bound.
+    pub fn metadata_only(&self) -> Self {
+        Self {
+            entry_rip: self.entry_rip, page_base: self.page_base, page_epoch: self.page_epoch,
+            byte_len: self.byte_len, insn_count: self.insn_count, ends_with_ret: self.ends_with_ret,
+            has_stores: self.has_stores, has_simd: self.has_simd, self_loop: self.self_loop,
+            dynamic_count: self.dynamic_count, code_hash: self.code_hash, interpret_rip: self.interpret_rip,
+            wasm_bytes: Vec::new(), links: self.links.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,11 +197,11 @@ impl HybridWasmJit {
         if block.insn_count == 0 { return None; }
         let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
         let mut links = Vec::new();
-        // Link forward JMP edges with return_call. Direct CALL edges stay dynamic for
-        // now: a linked CALL must preserve the caller's return address across the
-        // callee's RET, and the Doom timedemo exposed a null-target fault when CALL
-        // edges were specialized. JMP tail-calls keep the hot forward edges native.
-        if self.tail_calls && matches!(block.exit, BlockExit::Jump) && !self_loop {
+        // Link forward JMP edges with return_call and direct CALL edges with a
+        // regular Wasm call. The emitter publishes the caller's GPR/XMM/RFLAGS
+        // *before* invoking a CALL target, then returns the callee's result without
+        // overwriting the callee's final registers with stale caller locals.
+        if self.tail_calls && matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) && !self_loop {
             if let Some(target) = self.artifacts.get(&block.target) {
                 // Do not create cross-module cycles; self-loops are already native loops.
                 let cyclic = self.link_would_cycle(entry_rip, block.target);
@@ -1163,16 +1178,17 @@ impl HybridWasmJit {
         for reg in 0..16u8 { if gpr_wr & (1 << reg) != 0 { Self::ctx_store_local(&mut b, reg as u32, reg + 1); } }
         for x in 0..16u8 { if xmm_wr & (1 << x) != 0 { Self::xmm_store_ctx(&mut b, x); } }
         Self::ctx_store_local(&mut b, 19, 17); Self::ctx_store_local(&mut b, 18, 24); Self::ctx_store_local(&mut b, 20, 23);
-        if !links.is_empty() && matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) {
+        // All caller state is now published to ctx. A linked CALL may run the callee
+        // to its RET and leave the final architectural state in ctx; return its count
+        // immediately. Writing caller locals again here would clobber callee results
+        // (and restore the pre-RET RSP), which is the null-return fault Doom exposed.
+        if !links.is_empty() && matches!(block.exit, BlockExit::Call { indirect: false }) {
             Self::local_get(&mut b, 0);
-            if matches!(block.exit, BlockExit::Call { indirect: false }) {
-                b.push(0x10); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
-                // The callee initializes its executed counter from ctx[18], which already
-                // includes this caller's committed count, so return its total directly.
-                b.push(0x0F);
-            } else {
-                b.push(0x12); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
-            }
+            b.push(0x10); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
+            b.push(0x0F);
+        } else if !links.is_empty() && matches!(block.exit, BlockExit::Jump) {
+            Self::local_get(&mut b, 0);
+            b.push(0x12); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
         } else {
             Self::local_get(&mut b, 24); b.push(0x0F);
         }

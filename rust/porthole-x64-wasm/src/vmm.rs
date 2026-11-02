@@ -465,6 +465,7 @@ impl VirtualMemoryManager {
                 while page < reg.base + reg.size {
                     self.page_cache.remove(&page);
                     self.swapped_out_pages.remove(&page);
+                    self.bump_write_epoch(page);
                     page += PAGE_SIZE as u64;
                 }
                 return true;
@@ -483,6 +484,7 @@ impl VirtualMemoryManager {
                     while page < aligned.saturating_add(decommit_len) && page < reg_base + reg.size {
                         self.page_cache.remove(&page);
                         self.swapped_out_pages.remove(&page);
+                        self.bump_write_epoch(page);
                         page += PAGE_SIZE as u64;
                     }
                     return true;
@@ -1020,6 +1022,58 @@ impl VirtualMemoryManager {
         Ok(out)
     }
 
+    /// Read already-resident committed memory without changing *any* VMM state.
+    ///
+    /// Unlike loader `host_read_bytes`, this observation API cannot demand-zero a page,
+    /// change LRU order, fault in swap, mark dirty, or consume PAGE_GUARD. PAGE_NOACCESS
+    /// and reserved/unmapped ranges are deliberately invisible. A diagnostic must not
+    /// turn an integer argument that happens to look like a pointer into an allocation.
+    pub fn audit_read_bytes(&self, addr: u64, out: &mut [u8]) -> Result<(), MemoryTrap> {
+        let mut cursor = 0usize;
+        while cursor < out.len() {
+            let cur_va = addr.wrapping_add(cursor as u64);
+            let page_base = Self::align_down(cur_va);
+            let Some(region) = self.find_region(page_base) else {
+                return Err(MemoryTrap::AccessViolation(page_base));
+            };
+            if region.state & MEM_COMMIT == 0
+                || (region.protect & !(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE)) == PAGE_NOACCESS
+                || self.swapped_out_pages.contains(&page_base)
+            {
+                return Err(MemoryTrap::AccessViolation(page_base));
+            }
+            let Some(entry) = self.page_cache.get(&page_base) else {
+                return Err(MemoryTrap::PageFault(page_base));
+            };
+            let off = (cur_va & PAGE_MASK) as usize;
+            let chunk = (PAGE_SIZE - off).min(out.len() - cursor);
+            out[cursor..cursor + chunk].copy_from_slice(&entry.data[off..off + chunk]);
+            cursor += chunk;
+        }
+        Ok(())
+    }
+
+    /// Bounded observational C-string read; see [`Self::audit_read_bytes`].
+    pub fn audit_read_c_string(&self, mut addr: u64, max_len: usize) -> Result<Vec<u8>, MemoryTrap> {
+        if addr == 0 { return Ok(Vec::new()); }
+        let mut out = Vec::new();
+        for _ in 0..max_len {
+            let mut b = [0u8; 1];
+            self.audit_read_bytes(addr, &mut b)?;
+            if b[0] == 0 { break; }
+            out.push(b[0]);
+            addr = addr.wrapping_add(1);
+        }
+        Ok(out)
+    }
+
+    /// Observational qword read; never allocates a page or consumes PAGE_GUARD.
+    pub fn audit_read_u64(&self, addr: u64) -> Result<u64, MemoryTrap> {
+        let mut b = [0u8; 8];
+        self.audit_read_bytes(addr, &mut b)?;
+        Ok(u64::from_le_bytes(b))
+    }
+
     pub fn read_wide_string(&mut self, mut addr: u64, max_chars: usize) -> Result<Vec<u16>, MemoryTrap> {
         if addr == 0 {
             return Ok(Vec::new());
@@ -1093,6 +1147,30 @@ mod tests {
         let restored = vmm.read_page(base).unwrap();
         assert_eq!(&restored[..3], &[0x41, 9, 0]);
         assert_eq!(restored[4095], 0x5a);
+    }
+
+    #[test]
+    fn audit_reads_observe_only_committed_accessible_resident_pages() {
+        let mut vmm = VirtualMemoryManager::new(64);
+        let base = 0x1_0000u64;
+        vmm.map_region(base, PAGE_SIZE as u64, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+        vmm.map_region(base + 0x1000, PAGE_SIZE as u64, PAGE_READWRITE, MEM_RESERVE, MEM_PRIVATE, false);
+        vmm.map_region(base + 0x2000, PAGE_SIZE as u64, PAGE_NOACCESS, MEM_COMMIT, MEM_PRIVATE, false);
+        vmm.host_write_bytes(base, b"visible\0").unwrap();
+        let pages = vmm.resident_page_count();
+        let layout = vmm.layout_epoch;
+        let mut out = [0u8; 8];
+        assert!(vmm.audit_read_bytes(base, &mut out).is_ok());
+        assert_eq!(&out, b"visible\0");
+        assert_eq!(vmm.audit_read_c_string(base, 16).unwrap(), b"visible");
+        assert!(vmm.audit_read_bytes(base + 0x1000, &mut out).is_err(), "reserved");
+        assert!(vmm.audit_read_bytes(base + 0x2000, &mut out).is_err(), "noaccess");
+        assert!(vmm.audit_read_bytes(base + 0x9000, &mut out).is_err(), "unmapped");
+        assert_eq!(vmm.resident_page_count(), pages);
+        assert_eq!(vmm.layout_epoch, layout);
+        vmm.virtual_protect(base, PAGE_SIZE as u64, PAGE_READWRITE | PAGE_GUARD);
+        assert!(vmm.audit_read_bytes(base, &mut out).is_ok());
+        assert!(vmm.has_guard(base), "observation must not consume PAGE_GUARD");
     }
 
     #[test]

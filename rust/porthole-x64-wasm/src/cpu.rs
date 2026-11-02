@@ -729,11 +729,9 @@ impl CpuState {
         if off + 16 <= 4096 {
             if let Some(cb) = self.icache.get_mut(&page_base) {
                 if cb.page_epoch == cur_epoch && !vmm.is_page_swapped(page_base) {
-                    // A cached code page can still acquire PAGE_GUARD after it was
-                    // cached (VirtualProtect bumps the epoch, but be fail-closed).
-                    if vmm.has_guard(page_base) {
-                        vmm.check_instruction_fetch(rip)?;
-                    }
+                    // Protection changes (including adding PAGE_GUARD) bump the page
+                    // write epoch, so an epoch match proves this cached window is still
+                    // current. The miss path below goes through read_page/check_guard.
                     buf.copy_from_slice(&cb.code_window[off..off + 16]);
                     cb.exec_count = cb.exec_count.wrapping_add(1);
                     self.icache_hits += 1;
@@ -2186,5 +2184,32 @@ impl CpuState {
             }
             ExecOutcome::Fault(msg) => Ok(ExecOutcome::Fault(msg)),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vmm::{VirtualMemoryManager, MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_GUARD};
+
+    #[test]
+    fn cached_code_page_invalidates_when_page_guard_is_added() {
+        let mut vmm = VirtualMemoryManager::new(64);
+        let mut cpu = CpuState::new();
+        let base = 0x8_0000_0000u64;
+        vmm.map_region(base, 0x1000, PAGE_EXECUTE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+        vmm.host_write_bytes(base, &[0xc3]).unwrap();
+        cpu.rip = base;
+        let mut buf = [0u8; 16];
+        assert_eq!(cpu.fetch_insn_bytes(&mut vmm, &mut buf).unwrap(), 16);
+        assert_eq!(buf[0], 0xc3);
+        // Arm a guard after the page is already in the icache. VirtualProtect bumps the
+        // epoch; the next fetch must miss, consume the guard, and report the exception.
+        vmm.virtual_protect(base, 0x1000, PAGE_EXECUTE_READ | PAGE_GUARD);
+        assert_eq!(cpu.fetch_insn_bytes(&mut vmm, &mut buf), Err(MemoryTrap::GuardPage(base)));
+        assert!(!vmm.has_guard(base));
+        assert_eq!(cpu.fetch_insn_bytes(&mut vmm, &mut buf).unwrap(), 16);
+        assert_eq!(buf[0], 0xc3);
     }
 }

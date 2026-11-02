@@ -909,14 +909,17 @@ impl BrowserX64Emulator {
         out
     }
 
-    /// Reads only committed, resident-or-swapped guest pages; never allocates a page merely
-    /// because an integer argument happens to look like a pointer.
-    fn audit_snapshots(&mut self, args: &[u64; 10]) -> Vec<String> {
+    /// Observes only committed, resident guest pages. Inaccessible or swapped pointers
+    /// produce null snapshots; diagnostics never allocate pages or initiate swap I/O.
+    fn audit_snapshots(&self, args: &[u64; 10]) -> Vec<String> {
         args.iter().take(6).map(|&addr| {
             if addr < 0x10000 { return "null".to_string(); }
             let mut bytes = [0u8; 64];
             let len = (4096 - (addr & 0xfff)).min(64) as usize;
-            match self.vmm.read_bytes(addr, &mut bytes[..len]) {
+            // The audit is an observer, not a guest/loader access. It must not consume
+            // PAGE_GUARD, allocate zero pages for pointer-looking integers, alter LRU,
+            // or demand in swap. audit_read_bytes only observes resident committed VAs.
+            match self.vmm.audit_read_bytes(addr, &mut bytes[..len]) {
                 Ok(()) => format!("\"{}\"", bytes[..len].iter().map(|b| format!("{b:02x}")).collect::<String>()),
                 Err(_) => "null".to_string(),
             }
@@ -931,9 +934,9 @@ impl BrowserX64Emulator {
         }
         self.audit_seq += 1;
         let after = self.audit_snapshots(args);
-        let caller = self.vmm.read_u64(self.cpu.gpr[4]).unwrap_or(0);
+        let caller = self.vmm.audit_read_u64(self.cpu.gpr[4]).unwrap_or(0);
         let debug = if api.ends_with("!OutputDebugStringA") {
-            self.vmm.read_c_string(args[0], 16384).ok()
+            self.vmm.audit_read_c_string(args[0], 16384).ok()
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
                 .map(|s| format!(",\"debugString\":\"{}\"", Self::audit_json_escape(&s)))
                 .unwrap_or_default()
@@ -1347,7 +1350,10 @@ impl BrowserX64Emulator {
     /// Discards an entry whose host WebAssembly.compile failed. Without this the next slice
     /// would hand off the same invalid artifact forever instead of using the interpreter.
     pub fn jit_invalidate_entry(&mut self, entry_rip: u64) { self.jit.invalidate_entry(entry_rip); }
-    pub fn jit_active_wasm(&self) -> Vec<u8> { self.jit_active.as_ref().map(|a| a.wasm_bytes.clone()).unwrap_or_default() }
+    pub fn jit_active_wasm(&self) -> Vec<u8> {
+        let Some(active) = &self.jit_active else { return Vec::new(); };
+        self.jit.artifact(active.entry_rip).map(|a| a.wasm_bytes.clone()).unwrap_or_default()
+    }
     pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
 
     /// Copies GPRs/RFLAGS into the shared v2 context and arms the artifact at current RIP.
@@ -1357,7 +1363,7 @@ impl BrowserX64Emulator {
         // silently execute through it.
         if self.vmm.has_guard(self.cpu.rip) { return String::new(); }
         let epoch = self.vmm.page_write_epoch(self.cpu.rip & !0xFFF);
-        let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).cloned() else { return String::new(); };
+        let Some(art) = self.jit.get_valid_artifact(self.cpu.rip, epoch).map(|a| a.metadata_only()) else { return String::new(); };
         self.jit_ctx[..16].copy_from_slice(&self.cpu.gpr);
         self.jit_ctx[16] = jit::JIT_STATUS_OK;
         self.jit_ctx[17] = self.cpu.rip;
@@ -1369,7 +1375,10 @@ impl BrowserX64Emulator {
         self.jit_ctx[23] = self.cpu.gs_base;
         self.jit_ctx[24] = 0;
         self.jit_begin_block();
-        self.jit_shadow = Some(self.cpu.clone());
+        // Only correctness lanes that will actually shadow-validate need a pre-block CPU.
+        // Cloning the icache on every proven block made the fast path memcpy-bound.
+        let needs_shadow = self.jit_validate && (self.jit_validate_always || !self.jit.is_proven(art.entry_rip));
+        self.jit_shadow = if needs_shadow { Some(self.cpu.exception_snapshot()) } else { None };
         let meta = jit::HybridWasmJit::meta_json(&art, self.jit_context_ptr());
         self.jit_active = Some(art);
         meta
@@ -1675,6 +1684,40 @@ impl BrowserX64Emulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_audit_observes_guarded_string_without_consuming_the_guard() {
+        let mut emu = BrowserX64Emulator::new(64);
+        let base = 0x8_0000_0000u64;
+        emu.vmm.map_region(base, 0x1000, vmm::PAGE_READWRITE, vmm::MEM_COMMIT, vmm::MEM_PRIVATE, false);
+        emu.vmm.host_write_bytes(base, b"guarded audit string\0").unwrap();
+        emu.vmm.virtual_protect(base, 0x1000, vmm::PAGE_READWRITE | vmm::PAGE_GUARD);
+        emu.enable_api_audit(8);
+        let mut args = [0u64; 10]; args[0] = base;
+        let before = emu.audit_snapshots(&args);
+        emu.record_api_audit("kernel32.dll!OutputDebugStringA", &args, 0, base, &before, true);
+        assert!(emu.vmm.has_guard(base), "audit must leave the one-shot guard armed");
+        let audit = emu.take_api_audit();
+        assert!(audit.contains("guarded audit string"), "audit should still capture the string: {audit}");
+        // The guest's own next access is the one that consumes the guard.
+        assert_eq!(emu.vmm.read_u8(base), Err(vmm::MemoryTrap::GuardPage(base)));
+        assert!(!emu.vmm.has_guard(base));
+        assert_eq!(emu.vmm.read_u8(base).unwrap(), b'g');
+    }
+
+    #[test]
+    fn api_audit_does_not_allocate_pages_for_pointer_looking_integers() {
+        let mut emu = BrowserX64Emulator::new(64);
+        let resident = emu.resident_pages();
+        let mut args = [0u64; 10];
+        args[0] = 0x8_0000_0000; // unmapped
+        args[1] = 0x1234_5678;   // integer that looks like a VA
+        let snapshots = emu.audit_snapshots(&args);
+        assert_eq!(snapshots[0], "null");
+        assert_eq!(snapshots[1], "null");
+        assert_eq!(emu.resident_pages(), resident, "audit must not demand-zero pages");
+        assert!(emu.vmm.find_region(args[0]).is_none());
+    }
 
     #[test]
     fn emulator_constructs_without_a_pe() {

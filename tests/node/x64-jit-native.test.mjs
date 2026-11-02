@@ -37,7 +37,7 @@ async function run(code, jit, validate = true) {
   const regs = JSON.parse(c.emu.register_json());
   const rsp = BigInt(regs.rsp);
   const scratch = c.emu.peek_qwords(rsp - 0x100n, 16);
-  return { status, regs, scratch, stats: host?.stats };
+  return { status, regs, scratch, stats: host?.stats, artifacts: host ? [...host.artifacts.values()] : [] };
 }
 function movImm32(reg, imm) { return Buffer.from([0x40 | (reg >> 3), 0xb8 | (reg & 7), imm & 255, (imm >>> 8) & 255, (imm >>> 16) & 255, (imm >>> 24) & 255]); }
 function movImm64(reg, imm) { const b = Buffer.alloc(10); b[0] = 0x48 | (reg >> 3); b[1] = 0xb8 | (reg & 7); b.writeBigUInt64LE(imm, 2); return b; }
@@ -96,6 +96,43 @@ test('native CALL/RET push/pop return addresses and preserve registers', async t
   assert.equal(BigInt(jit.regs.rax), 9n);
   assert.ok(jit.stats.executedInstructions >= 8, JSON.stringify(jit.stats));
   assert.equal(jit.stats.traps, 0);
+});
+
+test('linked direct CALL publishes caller state before the callee and preserves callee results', async t => {
+  const probe = await newCore();
+  if (!probe || probe.emu.jit_context_slots() !== 64) { t.skip('core predates ABI v3'); return; }
+  // entry: mov eax,5; call func; add eax,1; movdqu [rsp-0x100],xmm0; ret
+  // func:  mov ecx,42; mov edx,55; movd xmm0,eax; ret
+  // The callee deliberately changes registers the caller also wrote. A linked CALL
+  // must not write stale caller locals back after the callee returns.
+  const entry = Buffer.from([0xb8, 0x05, 0x00, 0x00, 0x00]);
+  const continuation = Buffer.concat([
+    Buffer.from([0x83, 0xc0, 0x01]),                         // add eax,1
+    Buffer.from([0xf3, 0x0f, 0x7f, 0x84, 0x24, 0x00, 0xff, 0xff, 0xff]), // movdqu [rsp-0x100],xmm0
+    Buffer.from([0xc3]),
+  ]);
+  const func = Buffer.concat([
+    movImm32(1, 42), movImm32(2, 55),
+    Buffer.from([0x66, 0x0f, 0x6e, 0xc0]),                   // movd xmm0,eax
+    Buffer.from([0xc3]),
+  ]);
+  const call = Buffer.alloc(5); call[0] = 0xe8; call.writeInt32LE(continuation.length, 1);
+  const code = Buffer.concat([entry, call, continuation, func]);
+  const interp = await run(code, false);
+  const jit = await run(code, true);
+  assert.equal(jit.status, interp.status);
+  for (const r of ['rax', 'rcx', 'rdx', 'rsp', 'rflags']) assert.equal(jit.regs[r], interp.regs[r], r);
+  assert.equal(BigInt(jit.regs.rax), 6n);
+  assert.equal(BigInt(jit.regs.rcx), 42n);
+  assert.equal(BigInt(jit.regs.rdx), 55n);
+  assert.equal(jit.scratch, interp.scratch, 'callee XMM result must survive the linked CALL');
+  assert.equal(jit.stats.traps, 0, JSON.stringify(jit.stats));
+  assert.equal(jit.stats.compileErrors, 0);
+  if (jit.stats.tailCalls) {
+    const entryMeta = jit.artifacts.find(a => BigInt(a.entryRip) === 0x140001000n);
+    assert.ok(entryMeta?.links?.length, 'direct CALL should be specialized when tail calls are available');
+    assert.equal(BigInt(entryMeta.links[0].targetRip), 0x140001000n + BigInt(entry.length + call.length + continuation.length));
+  }
 });
 
 test('tail-call-linked successor stores are rolled back before shadow validation', async t => {
