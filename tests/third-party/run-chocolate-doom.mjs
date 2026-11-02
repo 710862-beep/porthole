@@ -154,6 +154,16 @@ function writeReport(report) {
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
   const run = report.run || {};
+  const jit = report.jit || {};
+  const diagnostics = jit.diagnostics || {};
+  const diagnosticsSummary = {
+    validation: diagnostics.validation ?? 0,
+    traps: diagnostics.traps ?? 0,
+    unsupportedExits: diagnostics.unsupported?.exits ?? 0,
+    fallbackByReason: diagnostics.byReason || {},
+    fallbackByOpcode: diagnostics.byOpcode || {},
+    unsupportedByOpcode: diagnostics.unsupported?.byOpcode || {},
+  };
   const lines = [
     `GATE 1 Tier B / GATE 2 (Chocolate Doom): ${report.status}`,
     `binary=${report.binary} sha256=${report.binarySha256 || 'unknown'} bytes=${report.binaryBytes || 0}`,
@@ -169,6 +179,11 @@ function writeReport(report) {
     `reason=${report.reason || 'none'}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
+    `jit_enabled=${jit.enabled ?? 'unknown'} jit_validate=${jit.validate ?? 'unknown'}`,
+    `STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup || {})}`,
+    `JIT_EXECUTION_STATS_JSON=${JSON.stringify(jit.stats || {})}`,
+    `JIT_DIAGNOSTICS_SUMMARY_JSON=${JSON.stringify(diagnosticsSummary)}`,
+    `CORE_TELEMETRY_JSON=${run.telemetry || '{}'}`,
     `named_blockers(unimplemented)=${run.unimplemented || '(none reported)'}`,
     `hle=${run.hle || ''}`,
     'guest_output:',
@@ -397,6 +412,7 @@ async function main() {
   report.jit.diagnostics = jit.diagnosticReport();
   await jit.flushCache();
   report.startup.jit_fallbacks_during_play = jit.stats.traps;
+  report.startup.fallback_instructions = jit.stats.fallbackInstructions;
   report.startup.jit_compile_time_ms = Number(jit.jitCompileMs.toFixed(3));
   report.startup.cache_miss_count = jit.cacheTelemetry.misses;
   report.startup.aot_cache_size_bytes = jit.cacheTelemetry.bytes;

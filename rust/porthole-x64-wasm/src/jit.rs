@@ -1,21 +1,20 @@
 //! Basic-block x86-64 -> WebAssembly compiler.
 //!
-//! ABI v2 exports `run_block(ctx:i32)->i64`. The context is 32 i64 slots in the core's
+//! ABI v3 exports `run_block(ctx:i32)->i64`. The context is 64 i64 slots in the core's
 //! exported memory: 0..15 GPRs, 16 status, 17 exit RIP, 18 executed instructions,
-//! 19 RFLAGS, 20 instruction budget, 21 entry RIP. Registers and RFLAGS are Wasm locals
-//! for the whole block; the context is read once and written on exit. A backward branch
-//! to the block entry is lowered to a native Wasm loop so hot loops do not cross JS.
-//! Static forward JMP edges can be linked with `return_call` when the host enables the
-//! tail-call feature and the target artifact already exists. Unsupported instructions,
-//! CALL, and page boundaries terminate the artifact and resume the interpreter at the
-//! exact next RIP. Memory-writing instructions are deliberately not translated yet:
-//! they terminate the block before their side effect, so SMC/page faults stay precise.
+//! 19 RFLAGS, 20 instruction budget, 21 entry RIP, 22..23 FS/GS bases, 25..31 memory
+//! transaction state, and 32..63 XMM registers. GPRs, flags, and XMM values are Wasm locals
+//! for the whole block. A backward branch to the block entry is a native Wasm loop; stores,
+//! stack operations, direct/indirect CALL/RET exits, and covered SSE2 operations are lowered
+//! to Wasm. AOT direct CALLs can link the callee and return continuation so a matching RET
+//! resumes the caller inside Wasm. Unsupported instructions and memory traps return to the
+//! host at the precise guest RIP; native writes are rolled back before interpreter replay.
 
 use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 11;
+pub const JIT_COMPILER_VERSION: u64 = 12;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -25,7 +24,7 @@ pub const JIT_STATUS_OK: u64 = 0;
 pub const JIT_STATUS_BUDGET: u64 = 1;
 pub const JIT_STATUS_INTERPRET: u64 = 2;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JitLink {
     pub target_rip: u64,
     pub page_epoch: u32,
@@ -178,15 +177,54 @@ impl HybridWasmJit {
         false
     }
 
-    /// Second-pass AOT relink: once forward targets exist, specialize an unlinked
-    /// JMP/CALL artifact into a native Wasm call/return_call edge.
+    fn append_link(&self, links: &mut Vec<JitLink>, entry_rip: u64, target_rip: u64) {
+        if links.iter().any(|link| link.target_rip == target_rip) || self.link_would_cycle(entry_rip, target_rip) {
+            return;
+        }
+        if let Some(target) = self.artifacts.get(&target_rip) {
+            links.push(JitLink {
+                target_rip,
+                page_epoch: target.page_epoch,
+                import_name: format!("b{:016x}", target_rip),
+            });
+        }
+    }
+
+    /// Compute the acyclic static Wasm edges available for a block. A linked direct CALL
+    /// carries two edges where possible: the callee, then the caller's fallthrough block.
+    /// The CALL block invokes the callee and tail-calls that continuation only if the callee
+    /// returns to the statically known guest return address. A callee that branches, faults,
+    /// or reaches an HLE/unsupported instruction still returns to the normal host dispatcher.
+    fn links_for_block(&self, entry_rip: u64, block: &DecodedBlock) -> Vec<JitLink> {
+        let mut links = Vec::new();
+        if !self.tail_calls { return links; }
+        let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
+        match block.exit {
+            BlockExit::Jump if !self_loop => self.append_link(&mut links, entry_rip, block.target),
+            BlockExit::Call { indirect: false } => {
+                self.append_link(&mut links, entry_rip, block.target);
+                // A continuation is useful only if the callee itself is linked. The return
+                // RIP is the next guest instruction, not the call target.
+                if links.iter().any(|link| link.target_rip == block.target) {
+                    let return_rip = entry_rip.wrapping_add(block.byte_len as u64);
+                    self.append_link(&mut links, entry_rip, return_rip);
+                }
+            }
+            _ => {}
+        }
+        links
+    }
+
+    /// Second-pass AOT relink: once forward targets exist, specialize an unlinked or
+    /// partially-linked JMP/CALL artifact into native Wasm call/return_call edges.
     pub fn try_relink_block(&mut self, entry_rip: u64, page_epoch: u32, bytes: &[u8]) -> Option<CompiledJitArtifact> {
         let existing = self.artifacts.get(&entry_rip)?;
-        if !existing.links.is_empty() || existing.self_loop { return None; }
+        if existing.self_loop { return None; }
         let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
         let block = Self::decode_block(entry_rip, &bytes[..bytes.len().min(page_remain)])?;
-        let target = match block.exit { BlockExit::Jump | BlockExit::Call { indirect: false } => block.target, _ => return None };
-        if !self.artifacts.contains_key(&target) || self.link_would_cycle(entry_rip, target) { return None; }
+        if !matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) { return None; }
+        let wanted = self.links_for_block(entry_rip, &block);
+        if wanted.is_empty() || wanted == existing.links { return None; }
         self.try_compile_block(entry_rip, page_epoch, bytes)
     }
 
@@ -196,20 +234,7 @@ impl HybridWasmJit {
         let block = Self::decode_block(entry_rip, window)?;
         if block.insn_count == 0 { return None; }
         let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
-        let mut links = Vec::new();
-        // Link forward JMP edges with return_call and direct CALL edges with a
-        // regular Wasm call. The emitter publishes the caller's GPR/XMM/RFLAGS
-        // *before* invoking a CALL target, then returns the callee's result without
-        // overwriting the callee's final registers with stale caller locals.
-        if self.tail_calls && matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) && !self_loop {
-            if let Some(target) = self.artifacts.get(&block.target) {
-                // Do not create cross-module cycles; self-loops are already native loops.
-                let cyclic = self.link_would_cycle(entry_rip, block.target);
-                if !cyclic {
-                    links.push(JitLink { target_rip: block.target, page_epoch: target.page_epoch, import_name: format!("b{:016x}", block.target) });
-                }
-            }
-        }
+        let links = self.links_for_block(entry_rip, &block);
         let has_stores = Self::has_stores(&block);
         let has_simd = block.ops.iter().any(|op| matches!(op, JitOp::XmmLoad { .. } | JitOp::XmmStore { .. } | JitOp::XmmReg { .. } | JitOp::XmmAlu { .. } | JitOp::XmmAluMem { .. } | JitOp::MovdToXmm { .. } | JitOp::MovdFromXmm { .. }));
         let wasm_bytes = Self::emit_wasm_module(entry_rip, &block, &links);
@@ -387,9 +412,9 @@ impl HybridWasmJit {
     }
 
     /// Decode a basic block with iced-x86 (correct ModRM/SIB/RIP-relative/segment parsing)
-    /// and lower the supported integer + memory-load subset. Stores, CALL, indirect jumps
-    /// and SIMD terminate the block *before* their side effect; the interpreter executes
-    /// exactly that RIP. This is the same decoder used by the AOT `.text` scanner.
+    /// and lower the integer, native store/stack, direct and indirect CALL/RET, and covered
+    /// SSE2 subsets. Unsupported forms terminate the block before their side effect so the
+    /// interpreter resumes at the exact RIP. This is the same decoder used by the AOT scanner.
     pub fn decode_block(entry_rip: u64, bytes: &[u8]) -> Option<DecodedBlock> {
         let mut decoder = Decoder::try_new(64, bytes, DecoderOptions::NONE).ok()?;
         decoder.set_ip(entry_rip);
@@ -670,6 +695,12 @@ impl HybridWasmJit {
     fn uses_memory(ops: &[JitOp], exit: BlockExit) -> bool {
         ops.iter().any(|op| matches!(op, JitOp::Load { .. } | JitOp::AluLoad { .. } | JitOp::Pop { .. } | JitOp::Store { .. } | JitOp::StoreImm { .. } | JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmLoad { .. } | JitOp::XmmStore { .. } | JitOp::XmmAluMem { .. } | JitOp::IndirectTarget { addr: Some(_), .. }))
             || matches!(exit, BlockExit::Ret | BlockExit::Call { .. })
+    }
+
+    fn link_func_index(links: &[JitLink], mem_ops: bool, target_rip: u64) -> Option<u32> {
+        let import_base = if mem_ops { 1 } else { 0 };
+        links.iter().position(|link| link.target_rip == target_rip)
+            .map(|position| import_base + position as u32)
     }
 
     fn or_flag(b: &mut Vec<u8>, mask: i64) {
@@ -1075,7 +1106,7 @@ impl HybridWasmJit {
         if mem_ops { types.extend_from_slice(&[0x60, 2, 0x7E, 0x7F, 1, 0x7F]); }
         Self::push_section(&mut wasm, 1, &types);
         let resolve_func: u32 = 0;
-        let func_imports = if mem_ops { 1 } else { 0 } + links.len() as u32;
+        let func_imports = (if mem_ops { 1 } else { 0 }) + links.len() as u32;
         let mut imp = Vec::new();
         Self::push_u32_leb(&mut imp, 1 + func_imports);
         imp.push(3); imp.extend_from_slice(b"env"); imp.push(3); imp.extend_from_slice(b"mem"); imp.extend_from_slice(&[2, 0, 1]);
@@ -1178,17 +1209,45 @@ impl HybridWasmJit {
         for reg in 0..16u8 { if gpr_wr & (1 << reg) != 0 { Self::ctx_store_local(&mut b, reg as u32, reg + 1); } }
         for x in 0..16u8 { if xmm_wr & (1 << x) != 0 { Self::xmm_store_ctx(&mut b, x); } }
         Self::ctx_store_local(&mut b, 19, 17); Self::ctx_store_local(&mut b, 18, 24); Self::ctx_store_local(&mut b, 20, 23);
-        // All caller state is now published to ctx. A linked CALL may run the callee
-        // to its RET and leave the final architectural state in ctx; return its count
-        // immediately. Writing caller locals again here would clobber callee results
-        // (and restore the pre-RET RSP), which is the null-return fault Doom exposed.
-        if !links.is_empty() && matches!(block.exit, BlockExit::Call { indirect: false }) {
-            Self::local_get(&mut b, 0);
-            b.push(0x10); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
-            b.push(0x0F);
-        } else if !links.is_empty() && matches!(block.exit, BlockExit::Jump) {
-            Self::local_get(&mut b, 0);
-            b.push(0x12); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
+        // All caller state is now published to ctx. A direct CALL can tail-call its
+        // callee when no static continuation is available. If both edges are linked,
+        // keep a Wasm frame across the callee: after its native RET, check the actual
+        // popped guest RIP and tail-call the fallthrough block only on a successful
+        // return. The context is authoritative; never write stale caller locals back.
+        let direct_call_target = match block.exit {
+            BlockExit::Call { indirect: false } => Self::link_func_index(links, mem_ops, block.target),
+            _ => None,
+        };
+        let direct_call_return_rip = entry_rip.wrapping_add(block.byte_len as u64);
+        let direct_call_continuation = if direct_call_target.is_some() {
+            Self::link_func_index(links, mem_ops, direct_call_return_rip)
+        } else { None };
+        if let Some(target_func) = direct_call_target {
+            if let Some(continuation_func) = direct_call_continuation {
+                Self::local_get(&mut b, 0);
+                b.push(0x10); Self::push_u32_leb(&mut b, target_func);
+                Self::local_set(&mut b, 24);
+                Self::ctx_load(&mut b, 16); Self::i64_const(&mut b, JIT_STATUS_OK as i64); b.push(0x51);
+                Self::ctx_load(&mut b, 17); Self::i64_const(&mut b, direct_call_return_rip as i64); b.push(0x51);
+                b.push(0x71); // status==OK && exitRip==the CALL's return address
+                b.push(0x04); b.push(0x7E); // if (result i64)
+                Self::local_get(&mut b, 0);
+                b.push(0x12); Self::push_u32_leb(&mut b, continuation_func); // return_call continuation
+                b.push(0x05); // else: callee branched, trapped-to-interpreter, or exhausted its budget
+                Self::local_get(&mut b, 24);
+                b.push(0x0B);
+                b.push(0x0F);
+            } else {
+                Self::local_get(&mut b, 0);
+                b.push(0x12); Self::push_u32_leb(&mut b, target_func);
+            }
+        } else if let BlockExit::Jump = block.exit {
+            if let Some(target_func) = Self::link_func_index(links, mem_ops, block.target) {
+                Self::local_get(&mut b, 0);
+                b.push(0x12); Self::push_u32_leb(&mut b, target_func);
+            } else {
+                Self::local_get(&mut b, 24); b.push(0x0F);
+            }
         } else {
             Self::local_get(&mut b, 24); b.push(0x0F);
         }

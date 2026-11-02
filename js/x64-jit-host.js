@@ -254,6 +254,10 @@
         const before = Number(this.emu.instructions_executed());
         status = this.emu.run_slice(remaining);
         const interpreted = Number(this.emu.instructions_executed()) - before;
+        // Count the interpreter work done before the core's next JIT handoff (or while
+        // it completes a slice). Trap-replay and short-tail interpretation below are
+        // counted separately because those calls bypass this dispatch loop.
+        this.stats.fallbackInstructions += Math.max(0, interpreted);
         remaining = Math.max(0, remaining - interpreted);
         if (status !== 'jit') { await this.drainPending(); return status; }
         if (remaining === 0) { await this.drainPending(); return 'next'; }

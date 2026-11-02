@@ -105,7 +105,9 @@ impl BrowserX64Emulator {
             audit_seq: 0,
             audit_dropped: 0,
             jit_enabled: false,
-            // ABI v2: 0..15 GPRs; 16 status; 17 exit RIP; 18 executed; 19 RFLAGS; 20 budget; 21 entry.
+            // ABI v3: 0..15 GPRs; 16 status; 17 exit RIP; 18 executed; 19 RFLAGS;
+            // 20 budget; 21 entry; 22..23 FS/GS; 24 scratch; 25..31 MMU transaction;
+            // 32..63 XMM0..15 (low/high qwords).
             jit_ctx: vec![0; jit::JIT_CONTEXT_SLOTS],
             jit_active: None,
             jit_shadow: None,
@@ -1356,7 +1358,7 @@ impl BrowserX64Emulator {
     }
     pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
 
-    /// Copies GPRs/RFLAGS into the shared v2 context and arms the artifact at current RIP.
+    /// Copies GPRs/RFLAGS/XMM state into the shared v3 context and arms the artifact at current RIP.
     pub fn jit_enter_block(&mut self) -> String {
         // A guard page must be consumed by the interpreter's instruction fetch so
         // the guest receives STATUS_GUARD_PAGE_VIOLATION; native entry must not
