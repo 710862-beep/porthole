@@ -102,3 +102,51 @@ forward (see HANDBOOK): new code must avoid `unwrap()` on guest-influenced data 
 it in a comment; a panic in Wasm is a trap that JS sees as a crash, so treat each site as
 a potential guest-triggered DoS until audited. A dedicated audit pass is the fix; it has
 not been done — this entry is the tracking record.
+
+## Compatibility CI: the five synthetic lanes were never executing (fixed) — and what they now report
+
+`.github/workflows/porthole-ci.yml` ran `run-synthetic.mjs thread-validation` … without
+ever building `tests/synthetic/*.exe` from the in-tree C sources, so all five lanes failed
+with `ENOENT` rather than running a guest. `npm run build:synthetic` (zig 0.13.0) is now a
+step in that workflow. With the fixtures built, the lanes fail on real PE32 API gaps:
+
+| lane | first blocking assertion |
+| --- | --- |
+| `registry-test` | `REQUIRE(mm && midiCount && midiCount() == 0)` — `GetProcAddress(winmm.dll, "midiOutGetNumDevs")` returned NULL because `midiOutGetNumDevs`/`midiOutSetVolume` were implemented in `winapi/winmm/midi.rs` but absent from `winmm.dll`'s shim table (fixed in `9f07a98`) |
+| `thread-validation` | `CreateMutexA` + `WaitForSingleObject(...,0)` + `ReleaseMutex` ownership, then `WaitForMultipleObjects(3, threads, TRUE, …)` |
+| `network-test` | `WSAStartup` / `gethostbyname("localhost")` / `getaddrinfo` / `send`+`recv` over the guest loopback bridge |
+| `installer-test` | `CreateDirectoryA` + `RegCreateKeyExA(HKEY_LOCAL_MACHINE, …)` |
+| `input-test` | `GetErrorMode`/`SetErrorMode`, `GetAsyncKeyState`, `SystemParametersInfoA`, `SearchPathA`, `RegisterRawInputDevices` + `GetRawInputData` |
+
+Note the ordering constraint: `run-synthetic.mjs` loads
+`process.env.PORTHOLE_WASM || vendor/retrowin32/retrowin32.wasm`, i.e. the **vendored**
+Wasm, not a fresh `rust/retrowin32` build. Backend fixes therefore only reach this lane
+after the candidate workflow promotes a new `vendor/retrowin32`, which is itself gated.
+
+## Asset acquisition is the hard blocker for the candidate and compatibility workflows
+
+`artifacts/asset-acquisition.json` reports `ACQUISITION_PARTIAL` with
+`missing = ["wine/winetest.exe", "windows/Minesweeper.exe"]`, and every configured source
+404s:
+
+- `wine/winetest.exe` — `ArtifexSoftware/wine` release asset 404,
+  `test.winehq.org/builds/winetest-latest.exe` 404,
+  `web.archive.org/.../winetest.exe` 404.
+- `windows/Minesweeper.exe` — no reachable source found.
+
+`check-promotion.mjs` refuses to promote while anything is missing, so
+`Rust Wasm candidate` fails at "Acquire real upstream and game probes" and the
+compatibility workflow's promotion step fails with `COMPATIBILITY_GATES_FAILED`. `winetest`
+is acquisition-only (`tests: []` in `tests/wine/manifest.json` — it is never executed), so
+the honest resolutions are either to find a source or to stop requiring a never-executed
+asset for promotion; neither has been done.
+
+## The Chocolate Doom runner disables the JIT whenever HLE tracing is on
+
+`tests/third-party/run-chocolate-doom.mjs` enables the HLE trace ring unless
+`PORTHOLE_DOOM_TRACE` is exactly `0`, and `BrowserX64Emulator::run_slice` only hands off to
+a native artifact when `!self.trace_enabled`. The x64 workflow's Tier B lane sets neither
+variable, so the 3.72 MIPS / 2664-gametic PASS on 53e1fad is an **interpreter** result.
+Flipping the default to opt-in tracing would move that lane to ~1.1 MIPS (the measured JIT
+rate) and turn a green gate red, so the coupling is recorded here rather than changed. It
+must be unwound in the same commit that makes the JIT faster than the interpreter.
