@@ -123,7 +123,9 @@ failures** (432 tests, 14 todo, 2 skipped — itemized failure lines still not c
 harness summary; `SetEnvironmentStringsW` confirmed unimplemented). Gate 5 therefore stands at
 `directory` closed, `environ` open.
 
-## GATE 1 Tier B + GATE 2 (rendering) — Chocolate Doom: **PASS** (EXECUTION + RENDERING; Node/Wasm on CI)
+## Historical GATE 1 Tier B + GATE 2 (rendering) — Chocolate Doom: **PASS** (pre-Phase-4 JIT; Node/Wasm on CI)
+
+This PASS is the earlier interpreter-era result, not evidence for the Phase 4 native-JIT path. The latest Phase 4 timedemo rerun is recorded at the end of this document and failed before any gametics completed.
 
 ### Pinned third-party binaries (run UNMODIFIED)
 
@@ -628,3 +630,19 @@ guest instructions are interpreted. The startup spike is WebAssembly compilation
 (~2.5 s), not disk I/O (~24 ms). See `docs/OPTIMIZATION-AND-TESTING-REPORT.md`
 §"Phase 3 Performance Projection" for the 600 MIPS / 60 FPS = 10M
 instructions/frame math and the memory/GPU/I/O bottleneck assessment.
+
+## Phase 4 native JIT rerun — current result (CI run `41382919127`, commit `73d2a0e`)
+
+The required optimization and testing reports were read before implementation. Existing native integer stores, CALL/RET stack updates, and covered SSE2 `v128` lowering were already present; this phase did not duplicate them or add synthetic tests. The JIT change links only leaf-RET callees/continuations, with compiler version 13, to prevent unbounded direct-CALL link graphs. The Doom runner now leaves instruction tracing off by default because tracing prevents the core's JIT handoff; tracing remains opt-in via `PORTHOLE_DOOM_TRACE=1`.
+
+**Result: FAIL — no timedemo gametics.** The real JIT path ran 466,037,644 guest instructions and failed with an unhandled guest access violation while executing at `0x300f70d31`, attempting a write to `0x33000` (`0xc0000005`, exception parameters `[0x1,0x33000]`). The runner recorded 416 presented frames and 221 distinct frame checksums, but `timedemo_gametics=0` and `realtics=0`; this is not a Doom PASS. Runtime was 246,550 ms, 1.89 MIPS, with zero page faults.
+
+Exact execution counters from Tier B check `125079041463`:
+
+```json
+{"compiled":26543,"executedBlocks":47626970,"executedInstructions":441590005,"traps":0,"cacheHits":47625811,"cacheMisses":1159,"saved":26543,"loaded":0,"fallbackInstructions":24447639,"discarded":0,"compileErrors":0,"cacheErrors":0,"commitPageFaults":0,"tailCalls":true}
+```
+
+`fallbackInstructions=24,447,639` (about 5.2% of the 466,037,644 guest instructions); JIT traps and validation mismatches were both 0. Core diagnostics reported 212,506 unsupported-exit observations (raw-opcode histogram is in the linked check report). Startup lag was 3,638.303 ms, including 3,614.190 ms of AOT compilation; 25,274 AOT blocks were scanned/compiled. The full startup, diagnostics, and core telemetry JSON is published in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463).
+
+Rust core tests and the Wasm build passed on this commit; Tier A 7-Zip and the real-Wine reference gates also passed. The Tier B failure remains the blocker. An earlier traced run executed zero JIT blocks, which exposed and motivated the default-trace fix; an intermediate unbounded-link run hit `fault:jit-link-depth`, motivating the leaf-only direct-CALL links above. Neither intermediate run is substituted for the current result.

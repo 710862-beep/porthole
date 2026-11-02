@@ -693,3 +693,23 @@ Warm-cache local JSON (23,220 hits, 0 misses, 0 AOT recompiles):
 ```json
 {"disk_read_time_ms":13.386,"aot_compilation_time_ms":235.313,"cache_load_time_ms":2668.096,"total_startup_lag_ms":2916.795,"aot_blocks_compiled":0,"aot_cache_size_bytes":9820947,"cache_hit_count":23220,"cache_miss_count":0,"jit_compile_time_ms":2233.418,"aot":{"blocks":0,"wasmBytes":0,"instructionsScanned":99023,"textBase":"5368713216","textSize":392704},"jit_fallbacks_during_play":25}
 ```
+
+### Phase 4 measured results (CI run `41382919127`, commit `73d2a0e`)
+
+Existing native integer stores, CALL/RET stack updates, and covered SSE2 `v128` lowering were already present; this phase did not duplicate those paths or add synthetic tests. It extended direct-CALL links to leaf-RET callees and, when available, a leaf-RET return continuation (compiler version 13), bounding the transitive link graph. The Chocolate Doom runner now keeps tracing opt-in (`PORTHOLE_DOOM_TRACE=1`), since the core deliberately disables JIT handoff while instruction tracing is active.
+
+**The JIT timedemo failed and produced zero gametics.** On the real JIT path, Chocolate Doom executed 466,037,644 guest instructions before an unhandled access violation: guest RIP `0x300f70d31`, write address `0x33000`, exception `0xc0000005` with parameters `[0x1,0x33000]`. It presented 416 frames with 221 distinct frame checksums, but `timedemo_gametics=0`, `realtics=0`; do not treat the earlier pre-Phase-4 2,664-gametic run as evidence for this JIT build. Runtime was 246,550 ms (1.89 MIPS), page faults 0.
+
+Exact startup telemetry from Tier B check `125079041463`:
+
+```json
+{"disk_read_time_ms":23.537,"aot_compilation_time_ms":3614.19,"cache_load_time_ms":0.577,"total_startup_lag_ms":3638.303,"aot_blocks_compiled":25274,"aot_cache_size_bytes":20511047,"cache_hit_count":0,"cache_miss_count":1159,"jit_compile_time_ms":3766.143,"aot":{"blocks":25274,"wasmBytes":20049837,"instructionsScanned":99023,"textBase":"5368713216","textSize":392704},"jit_fallbacks_during_play":0,"fallback_instructions":24447639}
+```
+
+Exact execution statistics:
+
+```json
+{"compiled":26543,"executedBlocks":47626970,"executedInstructions":441590005,"traps":0,"cacheHits":47625811,"cacheMisses":1159,"saved":26543,"loaded":0,"fallbackInstructions":24447639,"discarded":0,"compileErrors":0,"cacheErrors":0,"commitPageFaults":0,"tailCalls":true}
+```
+
+The JIT executed 441,590,005 instructions; the interpreter executed 24,447,639 (about 5.2% of total). JIT traps and validation mismatches were both zero. Core diagnostics recorded 212,506 unsupported-exit observations; their complete raw-opcode histogram, plus `JIT_DIAGNOSTICS_SUMMARY_JSON` and `CORE_TELEMETRY_JSON`, is preserved in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463). Rust core tests, Wasm build, Tier A 7-Zip, and the real-Wine reference gate passed on this commit; the Doom Tier B gate failed as stated. The old traced run had zero executed JIT blocks, and the first untraced direct-CALL run exposed `fault:jit-link-depth`; both were corrected before recording the current result, but the guest access violation remains unresolved.
