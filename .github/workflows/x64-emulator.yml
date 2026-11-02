@@ -2,7 +2,7 @@ name: x86-64 emulator (Wasm core + real Wine64 conformance)
 
 on:
   push:
-    branches: [arena/633a2716-porthole]
+    branches: [arena/633a2716-porthole, 'arena/**']
   workflow_dispatch:
 
 permissions:
