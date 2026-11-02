@@ -6,15 +6,16 @@
 //! transaction state, and 32..63 XMM registers. GPRs, flags, and XMM values are Wasm locals
 //! for the whole block. A backward branch to the block entry is a native Wasm loop; stores,
 //! stack operations, direct/indirect CALL/RET exits, and covered SSE2 operations are lowered
-//! to Wasm. AOT direct CALLs can link the callee and return continuation so a matching RET
-//! resumes the caller inside Wasm. Unsupported instructions and memory traps return to the
-//! host at the precise guest RIP; native writes are rolled back before interpreter replay.
+//! to Wasm. AOT direct CALLs may link a leaf callee and leaf return continuation so a matching
+//! RET resumes the caller inside Wasm without expanding the transitive link graph. Other calls
+//! return to the host dispatcher at the precise guest RIP. Unsupported instructions and memory
+//! traps return to the host; native writes are rolled back before interpreter replay.
 
 use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 12;
+pub const JIT_COMPILER_VERSION: u64 = 13;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -168,10 +169,11 @@ impl HybridWasmJit {
 
     fn link_would_cycle(&self, entry_rip: u64, target_rip: u64) -> bool {
         let mut stack = vec![target_rip];
-        let mut seen = 0usize;
+        let mut seen = HashSet::new();
         while let Some(rip) = stack.pop() {
             if rip == entry_rip { return true; }
-            seen += 1; if seen > 256 { return true; }
+            if !seen.insert(rip) { continue; }
+            if seen.len() > 256 { return true; }
             if let Some(a) = self.artifacts.get(&rip) { stack.extend(a.links.iter().map(|l| l.target_rip)); }
         }
         false
@@ -190,8 +192,8 @@ impl HybridWasmJit {
         }
     }
 
-    /// Compute the acyclic static Wasm edges available for a block. A linked direct CALL
-    /// carries two edges where possible: the callee, then the caller's fallthrough block.
+    /// Compute the acyclic static Wasm edges available for a block. A direct CALL may link
+    /// a leaf RET callee and, when it is also a leaf RET block, the return continuation.
     /// The CALL block invokes the callee and tail-calls that continuation only if the callee
     /// returns to the statically known guest return address. A callee that branches, faults,
     /// or reaches an HLE/unsupported instruction still returns to the normal host dispatcher.
@@ -202,12 +204,23 @@ impl HybridWasmJit {
         match block.exit {
             BlockExit::Jump if !self_loop => self.append_link(&mut links, entry_rip, block.target),
             BlockExit::Call { indirect: false } => {
+                // CALL is still emitted natively when it returns to the host dispatcher. Link
+                // only leaf RET blocks here: linking arbitrary callees and continuations makes
+                // the static call graph grow without bound and can trip the host's link-depth
+                // guard. A leaf cannot acquire further links during AOT's second-pass relink.
+                let callee_is_leaf_ret = self.artifacts.get(&block.target)
+                    .map(|target| target.ends_with_ret && target.links.is_empty())
+                    .unwrap_or(false);
+                if !callee_is_leaf_ret { return links; }
                 self.append_link(&mut links, entry_rip, block.target);
-                // A continuation is useful only if the callee itself is linked. The return
-                // RIP is the next guest instruction, not the call target.
                 if links.iter().any(|link| link.target_rip == block.target) {
                     let return_rip = entry_rip.wrapping_add(block.byte_len as u64);
-                    self.append_link(&mut links, entry_rip, return_rip);
+                    let continuation_is_leaf_ret = self.artifacts.get(&return_rip)
+                        .map(|target| target.ends_with_ret && target.links.is_empty())
+                        .unwrap_or(false);
+                    if continuation_is_leaf_ret {
+                        self.append_link(&mut links, entry_rip, return_rip);
+                    }
                 }
             }
             _ => {}
