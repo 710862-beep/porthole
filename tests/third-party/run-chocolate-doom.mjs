@@ -315,7 +315,10 @@ async function main() {
       }
     }
   } catch { /* missing DEMO1 is reported by the guest console */ }
-  if (process.env.PORTHOLE_DOOM_TRACE !== '0' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
+  // Instruction tracing disables native JIT handoff in the core and makes the long
+  // timedemo run interpreter-only. Keep the conformance/performance path JIT-capable by
+  // default; opt into trace collection explicitly when debugging.
+  if (process.env.PORTHOLE_DOOM_TRACE === '1' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
     emu.enable_trace?.(200000);
     emu.set_hle_trace_only?.(true);
     if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
