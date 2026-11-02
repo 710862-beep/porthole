@@ -22,6 +22,8 @@
       this.persistent = new Map();
       this.cacheTelemetry = { hits: 0, misses: 0, loadMs: 0, saveMs: 0, bytes: 0 };
       this.cacheDirty = false;
+      this.lastCacheFlushMs = 0;
+      this.minCacheFlushIntervalMs = 60000;
       this.metaCache = new Map();
       this.budgetView = null;
       this.budgetBuffer = null;
@@ -29,7 +31,7 @@
       this.modules = new Map();
       this.instances = new Map();
       this.artifacts = new Map(); // entryRip string -> meta
-      this.stats = { compiled: 0, executedBlocks: 0, executedInstructions: 0, traps: 0, cacheHits: 0, cacheMisses: 0, saved: 0, loaded: 0, fallbackInstructions: 0, discarded: 0, compileErrors: 0, cacheErrors: 0, commitPageFaults: 0, tailCalls: false };
+      this.stats = { compiled: 0, executedBlocks: 0, executedInstructions: 0, traps: 0, cacheHits: 0, cacheMisses: 0, saved: 0, loaded: 0, fallbackInstructions: 0, discarded: 0, compileErrors: 0, cacheErrors: 0, commitPageFaults: 0, tailCalls: false, statusCounts: Object.create(null), commitCounts: Object.create(null) };
       this.diagnosticsEnabled = options.diagnostics === true;
       this.diagnostics = { validation: 0, traps: 0, unsupported: 0, byReason: Object.create(null), byOpcode: Object.create(null), samples: [], droppedSamples: 0 };
       this.enabled = options.enabled !== false;
@@ -103,8 +105,17 @@
       this.cacheTelemetry.bytes = [...this.persistent.values()].reduce((n, e) => n + e.wasmBytes.length, 0);
     }
 
-    async flushCache() {
+    /**
+     * Persists the JIT module cache. `saveJitCache` rewrites the *whole* archive (every
+     * compiled block, ~20 MB for Chocolate Doom), so an unthrottled flush on each
+     * drainPending turns a long run quadratic. Callers that need durability (start/end of
+     * run, crash recovery) pass `force`; background flushes are rate-limited.
+     */
+    async flushCache({ force = true } = {}) {
       if (!this.exeSha256 || !this.cache?.saveJitCache || !this.persistent.size || !this.cacheDirty) return;
+      const now = performance.now();
+      if (!force && now - this.lastCacheFlushMs < this.minCacheFlushIntervalMs) return;
+      this.lastCacheFlushMs = now;
       const t0 = performance.now();
       const entries = [...this.persistent.values()];
       try {
@@ -160,7 +171,8 @@
         }
       }
       this.emu.jit_clear_pending();
-      await this.flushCache();
+      // Rate-limited: the runner flushes explicitly at start and end of run.
+      await this.flushCache({ force: false });
     }
 
     async importCached(meta, wasmBytes) {
@@ -171,7 +183,7 @@
       this.cacheTelemetry.hits += 1;
       this.artifacts.set(String(meta.entryRip), meta);
       this.persistent.set(meta.codeHash, { meta, wasmBytes });
-      this.cacheDirty = true;
+      // Restored from disk: it is already in the archive, so do not mark it dirty.
       if (!this.modules.has(meta.codeHash)) {
         const tc = performance.now();
         this.modules.set(meta.codeHash, await WebAssembly.compile(wasmBytes));
@@ -239,6 +251,22 @@
       this.budgetView.setBigUint64((ctx >>> 0) + 20 * 8, BigInt(remaining), true);
     }
 
+    /**
+     * Arms the shared JIT context for one block execution: slice budget at slot 20 and a
+     * cleared memory-fault slot at 24. Both writes use a DataView cached against the
+     * current `WebAssembly.Memory` buffer; allocating a DataView per block (and per GC
+     * cycle) dominated the host-side cost of the run loop.
+     */
+    prepareContext(ctx, remaining) {
+      const buffer = this.memory?.buffer;
+      if (!buffer) throw new Error('Wasm memory export unavailable');
+      if (this.budgetBuffer !== buffer) { this.budgetBuffer = buffer; this.budgetView = new DataView(buffer); }
+      const base = ctx >>> 0;
+      this.budgetView.setBigUint64(base + 20 * 8, BigInt(remaining), true);
+      this.budgetView.setBigUint64(base + 24 * 8, 0n, true);
+      if (typeof this.emu.jit_clear_mem_fault === 'function') this.emu.jit_clear_mem_fault();
+    }
+
     interpretWithJitDisabled(budget) {
       const had = this.enabled;
       if (typeof this.emu.set_jit_enabled === 'function') this.emu.set_jit_enabled(false);
@@ -250,15 +278,24 @@
       if (!this.enabled || typeof this.emu.jit_enter_block !== 'function') return this.emu.run_slice(maxInstructions);
       let remaining = maxInstructions >>> 0;
       let status = 'next';
+      // `needSlice` gates the core interpreter. After a block commits cleanly the CPU sits on
+      // another guest RIP, and `jit_enter_block()` already refuses non-JIT-able addresses
+      // (import thunks, guard pages, trace lanes, TF-single-step), so asking it directly
+      // avoids one full `run_slice` round trip plus two `instructions_executed()` calls per
+      // block. Any miss falls back to the interpreter on the next iteration.
+      let needSlice = true;
       while (remaining > 0) {
-        const before = Number(this.emu.instructions_executed());
-        status = this.emu.run_slice(remaining);
-        const interpreted = Number(this.emu.instructions_executed()) - before;
-        remaining = Math.max(0, remaining - interpreted);
-        if (status !== 'jit') { await this.drainPending(); return status; }
-        if (remaining === 0) { await this.drainPending(); return 'next'; }
+        if (needSlice) {
+          const before = Number(this.emu.instructions_executed());
+          status = this.emu.run_slice(remaining);
+          this.stats.statusCounts[status] = (this.stats.statusCounts[status] || 0) + 1;
+          const interpreted = Number(this.emu.instructions_executed()) - before;
+          remaining = Math.max(0, remaining - interpreted);
+          if (status !== 'jit') { await this.drainPending(); return status; }
+          if (remaining === 0) { await this.drainPending(); return 'next'; }
+        }
         const raw = this.emu.jit_enter_block();
-        if (!raw) { this.stats.discarded += 1; status = 'next'; continue; }
+        if (!raw) { this.stats.discarded += 1; status = 'next'; needSlice = true; continue; }
         let meta = this.metaCache.get(raw);
         if (!meta) {
           meta = JSON.parse(raw);
@@ -268,24 +305,27 @@
         try {
           // Hot blocks are already compiled/instantiated. Avoid two awaited promises per
           // block; only a cache miss needs the asynchronous compile/instantiate path.
-          this.artifacts.set(String(meta.entryRip), meta);
+          // `artifacts` is populated by moduleFor/drainPending/importCached (link resolution
+          // only), so re-hashing the entry RIP into a string on every execution is pure
+          // allocation churn on the hot path.
           let mod = this.modules.get(meta.codeHash);
           if (mod) this.stats.cacheHits += 1;
           else mod = await this.moduleFor(meta);
           let instance = this.instances.get(meta.codeHash);
           if (!instance) instance = await this.instanceFor(meta, mod);
-          this.writeBudget(meta.ctx, remaining);
-          if (typeof this.emu.jit_clear_mem_fault === 'function') this.emu.jit_clear_mem_fault();
-          new DataView(this.memory.buffer).setBigUint64((meta.ctx >>> 0) + 24 * 8, 0n, true);
+          this.prepareContext(meta.ctx, remaining);
           const executedBig = instance.exports.run_block(meta.ctx >>> 0);
           const executed = Number(executedBig);
           if (!Number.isSafeInteger(executed) || executed < 0 || executed > remaining) throw new Error('JIT instruction count mismatch');
           const commit = this.emu.jit_commit_block();
+          const commitKey = commit.split(':').slice(0, 2).join(':');
+          this.stats.commitCounts[commitKey] = (this.stats.commitCounts[commitKey] || 0) + 1;
           if (commit === 'next') {
             this.stats.executedBlocks += 1;
             this.stats.executedInstructions += executed;
             remaining = Math.max(0, remaining - executed);
             status = 'next';
+            needSlice = false;
             if (remaining > 0 && (executed === 0 || remaining < meta.insnCount)) {
               // Whole-block budget granularity left a remainder smaller than the artifact.
               const beforeFallback = Number(this.emu.instructions_executed());
@@ -311,6 +351,7 @@
             if (fallback !== 'next') return fallback;
             remaining = Math.max(0, remaining - (Number(this.emu.instructions_executed()) - beforeFallback));
             status = 'next';
+            needSlice = true;
           }
         } catch (error) {
           this.stats.traps += 1;
@@ -325,6 +366,7 @@
           if (fallback !== 'next') return fallback;
           remaining = Math.max(0, remaining - (Number(this.emu.instructions_executed()) - beforeFallback));
           status = 'next';
+          needSlice = true;
         }
       }
       await this.drainPending();

@@ -49,9 +49,12 @@ test('JIT host executes a real Wasm block against the supplied core memory', asy
   const host = new X64JitHost(emu, {}, { memory });
   const status = await host.runSlice(10);
   assert.equal(status, 'next');
-  assert.equal(host.stats.executedBlocks, 1);
-  assert.equal(host.stats.executedInstructions, 1);
-  assert.equal(new DataView(memory.buffer).getBigUint64(0, true), 1n);
+  // The host chains artifacts inside one slice: after a block commits it asks for the next
+  // artifact directly instead of paying a run_slice round trip, so the whole 10-instruction
+  // budget runs natively. Every block here is the same 1-instruction incrementer.
+  assert.equal(host.stats.executedInstructions, 10);
+  assert.equal(host.stats.executedBlocks, 10);
+  assert.equal(new DataView(memory.buffer).getBigUint64(0, true), 10n);
 });
 
 test('JIT trap invalidates the active artifact and counts only fallback instructions', async () => {
@@ -121,7 +124,10 @@ test('OPFS save failure is a cache error, not a guest trap', async () => {
   const emu = fakeEmu();
   const host = new X64JitHost(emu, {}, { memory, cache: { saveJitModule: async () => { throw new Error('quota'); } } });
   assert.equal(await host.runSlice(10), 'next');
-  assert.equal(host.stats.executedBlocks, 1);
+  // One compile (one codeHash) serves the whole chained slice, so a single save failure is
+  // recorded once and the guest never sees a trap.
+  assert.equal(host.stats.executedInstructions, 10);
+  assert.equal(host.stats.compiled, 1);
   assert.equal(host.stats.cacheErrors, 1);
   assert.equal(host.stats.traps, 0);
 });

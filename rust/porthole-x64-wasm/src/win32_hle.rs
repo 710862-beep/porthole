@@ -353,6 +353,10 @@ struct FileMapping {
 pub struct Win32Kernel {
     pub last_error: u32,
     pub exe_image_base: u64,
+    /// Why the last SEH (.pdata) dispatch declined the exception. Only diagnostics: it is
+    /// surfaced verbatim in the unhandled-exception fault so a failing guest reports the
+    /// rejected frame instead of a bare "unhandled".
+    pub seh_diag: String,
     pub exe_resources: Vec<PeResource>,
     atoms_global: AtomTable,
     atoms_local: AtomTable,
@@ -462,6 +466,7 @@ impl Win32Kernel {
         let mut kernel = Self {
             last_error: 0,
             exe_image_base: 0,
+            seh_diag: String::new(),
             exe_resources: Vec::new(),
             atoms_global: AtomTable::new(),
             atoms_local: AtomTable::new(),
@@ -7524,46 +7529,54 @@ impl Win32Kernel {
             let fault_rsp = vmm.read_u64(ctx + 0x98).unwrap_or(0);
             let image_base = self.exe_image_base;
             // Search .pdata for the faulting RIP, then walk the stack for callers.
-            let mut search_rips = vec![fault_rip];
+            // (control PC, stack slot it was read from). Index 0 is the fault site itself;
+            // the rest are return addresses, so `ret_slot + 8` is that frame's RSP after the
+            // call returns. Keeping the slot with the RIP matters: stack slots that are not
+            // return addresses must not shift the establisher-frame arithmetic.
+            let mut frames: Vec<(u64, u64)> = vec![(fault_rip, fault_rsp)];
+            let mut diag = String::new();
             // Walk up to 64 stack frames looking for return addresses in .pdata.
             let mut sp = fault_rsp;
             for _ in 0..64 {
                 let ret = vmm.read_u64(sp).unwrap_or(0);
                 if ret >= image_base && ret < image_base + 0x1000_0000 {
-                    search_rips.push(ret);
+                    frames.push((ret, sp));
                 }
                 sp = sp.wrapping_add(8);
             }
-            let mut frame_sp = fault_rsp;
-            for rip in search_rips {
+            diag.push_str(&format!("fault_rip=0x{fault_rip:x} fault_rsp=0x{fault_rsp:x} frames={}", frames.len()));
+            for (fi, &(rip, ret_slot)) in frames.iter().enumerate() {
                 let rva = (rip - image_base) as u32;
                 let idx = self.pdata.binary_search_by(|e| {
                     if rva < e.0 { std::cmp::Ordering::Greater }
                     else if rva >= e.1 { std::cmp::Ordering::Less }
                     else { std::cmp::Ordering::Equal }
                 });
-                let Ok(i) = idx else { frame_sp = frame_sp.wrapping_add(8); continue };
+                let Ok(i) = idx else { continue };
                 let (_, _, unwind_rva) = self.pdata[i];
                 let ui = image_base + unwind_rva as u64;
                 let flags = vmm.read_u8(ui).unwrap_or(0) >> 3;
-                if flags & 0x3 == 0 { frame_sp = frame_sp.wrapping_add(8); continue; }
+                if flags & 0x3 == 0 { diag.push_str(&format!(" frame[0x{rip:x}]:no-ehandler")); continue; }
                 let count_codes = vmm.read_u8(ui + 2).unwrap_or(0) as u64;
                 let handler_off = 4 + ((count_codes + 1) & !1) * 2;
                 let handler_rva = vmm.read_u32(ui + handler_off).unwrap_or(0);
                 let scope_rva = vmm.read_u32(ui + handler_off + 4).unwrap_or(0);
-                if handler_rva == 0 { frame_sp = frame_sp.wrapping_add(8); continue; }
+                if handler_rva == 0 { diag.push_str(&format!(" frame[0x{rip:x}]:no-handler-rva")); continue; }
                 let scope_va = image_base + scope_rva as u64;
                 let scope_count = vmm.read_u32(scope_va).unwrap_or(0);
                 // Walk scope table entries. Use the caller RIP (return address) for scope
                 // membership: the exception occurred in a callee, but the __try scope
-                // covers the call site within this function.
+                // covers the call site within this function. A return address points one
+                // instruction past the call, so probe `rva - 1` too; ntdll applies the
+                // same -1 adjustment to a return-address control PC before scope matching.
+                let probes: [u32; 2] = if fi == 0 { [rva, rva] } else { [rva.wrapping_sub(1), rva] };
                 for si in 0..scope_count.min(256) {
                     let entry = scope_va + 4 + si as u64 * 16;
                     let begin = vmm.read_u32(entry).unwrap_or(0);
                     let end = vmm.read_u32(entry + 4).unwrap_or(0);
                     let filter_raw = vmm.read_u32(entry + 8).unwrap_or(0);
                     let target_rva = vmm.read_u32(entry + 12).unwrap_or(0);
-                    if rva < begin || rva >= end { continue; }
+                    if !probes.iter().any(|&p| p >= begin && p < end) { continue; }
                     // Evaluate filter.
                     let accept = if filter_raw == 1 {
                         true // EXCEPTION_EXECUTE_HANDLER constant
@@ -7579,9 +7592,13 @@ impl Win32Kernel {
                         // Modify CONTEXT: set RIP to the __except handler, RSP to establisher.
                         let target_va = image_base + target_rva as u64;
                         let _ = vmm.write_u64(ctx + 0xF8, target_va);
-                        // Restore RSP to the function frame (pop the callee return address).
-                        let _ = vmm.write_u64(ctx + 0x98, frame_sp.wrapping_add(8));
+                        // Establisher frame: pop the return address this frame was entered
+                        // through. Frame 0 is the fault site, whose RSP is already correct.
+                        let est = if fi == 0 { fault_rsp } else { ret_slot.wrapping_add(8) };
+                        let _ = vmm.write_u64(ctx + 0x98, est);
                         *seh_phase = 2;
+                        diag.clear();
+                        self.seh_diag = format!("handled rip=0x{rip:x} scope=#{si} target=0x{target_va:x} rsp=0x{est:x}");
                         // Return ContinueExecution by staging a sentinel that will
                         // restore the modified context.
                         self.upcall_stack.push(UpcallState::Callback { resume_rip: crate::UPCALL_RETURN_THUNK, api_symbol: "__seh_execute".into(), result: u64::MAX });
@@ -7589,9 +7606,10 @@ impl Win32Kernel {
                         return Some(HleAction::Upcall { target: crate::UPCALL_RETURN_THUNK, resume_rip: crate::UPCALL_RETURN_THUNK, rax: pointers });
                     }
                 }
-                frame_sp = frame_sp.wrapping_add(8);
+                diag.push_str(&format!(" frame[0x{rip:x}]:scopes={scope_count},no-match"));
             }
             *seh_phase = 2;
+            self.seh_diag = diag;
         }
         // Phase 2: UEF.
         if *unhandled_filter != 0 && !*in_unhandled {
@@ -7666,8 +7684,10 @@ impl Win32Kernel {
                 params_txt.push_str(&format!("{}0x{p:x}", if i == 0 { "" } else { "," }));
             }
             self.upcall_stack.pop(); self.exception_depth = self.exception_depth.saturating_sub(1);
+            let seh = if self.seh_diag.is_empty() { String::new() } else { format!(" seh-walk:{}", self.seh_diag) };
+            self.seh_diag.clear();
             return Some(UpcallStep::Fault(format!(
-                "unhandled guest exception 0x{code:08x} at rip=0x{exc_rip:x} params=[{params_txt}]"
+                "unhandled guest exception 0x{code:08x} at rip=0x{exc_rip:x} params=[{params_txt}]{seh}"
             )));
         }
         match self.upcall_stack.last().cloned() {

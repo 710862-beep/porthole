@@ -1358,6 +1358,10 @@ impl BrowserX64Emulator {
 
     /// Copies GPRs/RFLAGS into the shared v2 context and arms the artifact at current RIP.
     pub fn jit_enter_block(&mut self) -> String {
+        // Mirror the interpreter's JIT-handoff guard. The host may call this directly after a
+        // block commits instead of re-entering run_slice, so every condition that makes
+        // run_slice interpret (tracing, x86 TF single-step) has to refuse native entry here.
+        if self.trace_enabled || self.hle_trace_only || (self.cpu.rflags & 0x100) != 0 { return String::new(); }
         // A guard page must be consumed by the interpreter's instruction fetch so
         // the guest receives STATUS_GUARD_PAGE_VIOLATION; native entry must not
         // silently execute through it.

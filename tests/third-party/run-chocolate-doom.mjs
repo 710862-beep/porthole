@@ -365,8 +365,9 @@ async function main() {
   let pageFaults = 0;
   let terminal = 'slice-budget';
   while (slices < limits.maxSlices && Date.now() <= deadline) {
-    const status = await jit.runSlice(limits.slice);
+      const status = await jit.runSlice(limits.slice);
     slices += 1;
+    if (process.env.PORTHOLE_DOOM_DEBUG_HOST === '1' && slices <= 3) console.log(`[host] slice=${slices} status=${status} insns=${emu.instructions_executed()} artifacts=${emu.jit_artifacts?.()} stats=${JSON.stringify(jit.stats)}`);
     const drained = emu.drain_evicted_pages?.();
     if (drained && drained.length) {
       const view = new DataView(drained.buffer, drained.byteOffset, drained.byteLength);

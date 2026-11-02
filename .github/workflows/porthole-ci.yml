@@ -67,6 +67,11 @@ jobs:
         run: |
           mkdir -p artifacts
           node scripts/fetch-with-fallbacks.mjs 2>&1 | tee artifacts/fetch-fallbacks.log
+      - name: Build the authored PE32 fixtures
+        # The validation lanes below execute tests/synthetic/*.exe, which are compiled from
+        # the in-tree C sources by the pinned zig 0.13.0 toolchain installed above. Without
+        # this step every lane fails with ENOENT instead of exercising the guest.
+        run: npm run build:synthetic
       - name: thread-validation
         if: always()
         run: node scripts/run-synthetic.mjs thread-validation
