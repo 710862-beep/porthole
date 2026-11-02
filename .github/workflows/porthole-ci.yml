@@ -89,7 +89,13 @@ jobs:
         run: node scripts/run-synthetic.mjs installer-test
       - name: Probe acquired PE executables
         if: always()
-        run: node scripts/probe-test-assets.mjs
+        run: |
+          node scripts/probe-test-assets.mjs || rc=$?
+          for f in artifacts/guest-probes.json artifacts/guest-probes-candidate.json artifacts/doom95-candidate.json; do
+            [ -f "$f" ] && { echo "=== $f"; cat "$f"; }
+          done
+          exit "${rc:-0}"
+
       - name: Enforce same-source candidate gameplay promotion gates
         if: always()
         env:
@@ -110,6 +116,9 @@ jobs:
           npm run test:wine 2>&1 | tee artifacts/wine.log
           code=${PIPESTATUS[0]}; if [ "$code" -ne 0 ]; then status=1; fi
           exit "$status"
+      - name: Surface lane evidence as check annotations
+        if: always()
+        run: node scripts/ci-annotate-artifacts.mjs artifacts || true
       - name: Publish sanitized diagnostics
         if: always()
         uses: actions/upload-artifact@v4
