@@ -473,15 +473,18 @@ impl VirtualMemoryManager {
             return false;
         }
         if (free_type & MEM_DECOMMIT) != 0 {
-            if let Some((&reg_base, reg)) = self.regions.range(..=aligned).next_back() {
-                if aligned < reg_base + reg.size {
+            // Copy the region bounds before mutating page epochs; holding a &VmaRegion
+            // borrow across self.bump_write_epoch would alias &mut self.
+            let region = self.regions.range(..=aligned).next_back().map(|(&base, reg)| (base, reg.size));
+            if let Some((reg_base, reg_size)) = region {
+                if aligned < reg_base + reg_size {
                     let decommit_len = if size == 0 {
-                        reg.size - (aligned - reg_base)
+                        reg_size - (aligned - reg_base)
                     } else {
                         Self::align_up(size)
                     };
                     let mut page = aligned;
-                    while page < aligned.saturating_add(decommit_len) && page < reg_base + reg.size {
+                    while page < aligned.saturating_add(decommit_len) && page < reg_base + reg_size {
                         self.page_cache.remove(&page);
                         self.swapped_out_pages.remove(&page);
                         self.bump_write_epoch(page);

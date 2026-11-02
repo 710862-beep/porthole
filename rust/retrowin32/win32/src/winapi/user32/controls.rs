@@ -145,6 +145,11 @@ pub async fn dispatch(machine:&mut Machine,msg:&MSG)->u32 {
         0xc5 if c.kind==Kind::Edit=>c.limit=if wp==0{32767}else{wp.min(65535)as usize},
         0xc2 if c.kind==Kind::Edit=>{if c.style&0x800==0{c.replace(&incoming);notify=Some(0x300)}},
         0x102 if c.kind==Kind::Edit=>{if c.style&0x800==0&&wp>=32&&wp<127{c.replace(&[wp as u8]);notify=Some(0x300)}},
+        // Legacy launchers sometimes dispatch WM_KEYDOWN straight to the focused
+        // default button instead of routing it through IsDialogMessage. Enter/Space
+        // must still produce the real BN_CLICKED WM_COMMAND to the parent dialog.
+        0x100 if c.kind==Kind::Button&&(wp==0x0d||wp==0x20)=>{if !c.pressed{c.pressed=true;notify=Some(0);}}
+        0x101 if c.kind==Kind::Button&&(wp==0x0d||wp==0x20)=>{c.pressed=false;}
         0x100 if c.kind==Kind::Edit=>{
             match wp {8 if c.style&0x800==0=>{if c.start==c.end&&c.start>0{c.start-=1}c.replace(&[]);notify=Some(0x300)},0x2e if c.style&0x800==0=>{if c.start==c.end{c.end=(c.end+1).min(c.text.len())}c.replace(&[]);notify=Some(0x300)},0x25=>{c.end=c.start.min(c.end).saturating_sub(1);c.start=c.end},0x27=>{c.end=(c.start.max(c.end)+1).min(c.text.len());c.start=c.end},0x24=>{c.start=0;c.end=0},0x23=>{c.start=c.text.len();c.end=c.start},_=>{redraw=false}}
         }

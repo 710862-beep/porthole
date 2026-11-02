@@ -4286,8 +4286,11 @@ impl Win32Kernel {
                 0
             }
             "Direct3DCreate9Ex" => {
+                // No D3D9Ex runtime is implemented. Report the documented Direct3D
+                // "not available" HRESULT (not E_NOTIMPL) and a NULL out-pointer so
+                // upstream tests take their explicit availability-skip path.
                 if a1 != 0 { let _ = vmm.write_u64(a1, 0); }
-                0x8000_4001 // E_NOTIMPL
+                0x8876_086A // D3DERR_NOTAVAILABLE
             }
             "OutputDebugStringA" => {
                 // The audit layer decodes the guest pointer before returning. Do not print a
