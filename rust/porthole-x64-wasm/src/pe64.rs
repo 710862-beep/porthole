@@ -504,16 +504,24 @@ where
         let exc_rva = read_le_u32(pe_bytes, exc_dir).unwrap_or(0);
         let exc_sz = read_le_u32(pe_bytes, exc_dir + 4).unwrap_or(0);
         if exc_rva != 0 && exc_sz >= 12 {
-            let count = (exc_sz / 12) as usize;
-            for i in 0..count.min(65536) {
-                let off = exc_rva as usize + i * 12;
-                let begin = read_le_u32(pe_bytes, off).unwrap_or(0);
-                let end = read_le_u32(pe_bytes, off + 4).unwrap_or(0);
-                let unwind = read_le_u32(pe_bytes, off + 8).unwrap_or(0);
-                if begin == 0 && end == 0 { break; }
-                pdata.push((begin, end, unwind));
+            // The exception directory is addressed by RVA. Reading it straight out of the file
+            // image only works when RVA == file offset, which is why .pdata came back empty for
+            // MSVC-linked guests (al-khaser: `pdata=0`, no SEH frame could ever match) — the
+            // first "entry" read from the wrong offset was (0,0,0) and the loop stopped there.
+            // A directory RVA outside every section is malformed, not fatal: the guest then
+            // simply has no SEH table, exactly as before this mapping existed.
+            if let Some(base) = rva_to_offset(&sections, pe_bytes, exc_rva as u64) {
+                let count = (exc_sz / 12) as usize;
+                for i in 0..count.min(65536) {
+                    let off = base + i * 12;
+                    let begin = read_le_u32(pe_bytes, off).unwrap_or(0);
+                    let end = read_le_u32(pe_bytes, off + 4).unwrap_or(0);
+                    let unwind = read_le_u32(pe_bytes, off + 8).unwrap_or(0);
+                    if begin == 0 && end == 0 { break; }
+                    pdata.push((begin, end, unwind));
+                }
+                pdata.sort_by_key(|e| e.0);
             }
-            pdata.sort_by_key(|e| e.0);
         }
     }
 
