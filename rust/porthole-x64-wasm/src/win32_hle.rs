@@ -7544,7 +7544,7 @@ impl Win32Kernel {
                 }
                 sp = sp.wrapping_add(8);
             }
-            diag.push_str(&format!("fault_rip=0x{fault_rip:x} fault_rsp=0x{fault_rsp:x} frames={}", frames.len()));
+            diag.push_str(&format!("fault_rip=0x{fault_rip:x} fault_rsp=0x{fault_rsp:x} frames={} pdata={} image_base=0x{image_base:x}", frames.len(), self.pdata.len()));
             for (fi, &(rip, ret_slot)) in frames.iter().enumerate() {
                 let rva = (rip - image_base) as u32;
                 let idx = self.pdata.binary_search_by(|e| {
@@ -7552,7 +7552,7 @@ impl Win32Kernel {
                     else if rva >= e.1 { std::cmp::Ordering::Less }
                     else { std::cmp::Ordering::Equal }
                 });
-                let Ok(i) = idx else { continue };
+                let Ok(i) = idx else { diag.push_str(&format!(" frame[0x{rip:x}]:no-pdata-entry")); continue };
                 let (_, _, unwind_rva) = self.pdata[i];
                 let ui = image_base + unwind_rva as u64;
                 let flags = vmm.read_u8(ui).unwrap_or(0) >> 3;
