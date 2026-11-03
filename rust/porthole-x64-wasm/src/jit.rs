@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 15;
+pub const JIT_COMPILER_VERSION: u64 = 16;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -91,6 +91,7 @@ enum JitOp {
     MovReg { dst: u8, src: u8, width: u8 },
     Alu { kind: AluKind, dst: u8, src: Option<u8>, imm: i64, width: u8 },
     Shift { kind: u8, dst: u8, count: u8, width: u8 },
+    Bswap { dst: u8, width: u8 },
     /// LOOP/LOOPE/LOOPNE: kind 0/1/2, counter width 4 (ECX) or 8 (RCX).
     Loop { kind: u8, width: u8 },
     /// reg <- [mem] (MOV / MOVZX / MOVSX). extend: 0=none, 1=zero, 2=sign.
@@ -663,7 +664,12 @@ impl HybridWasmJit {
                         OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 |
                         OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64);
                     if ins.op_kind(0) == OpKind::Memory {
-                        let width = ins.memory_size().size() as u8;
+                        // With a register source, take the architectural operand width from
+                        // the GPR itself. This keeps R8-R15 memory-CMP forms explicit instead
+                        // of depending on memory-size metadata for the ModRM direction.
+                        let width = if ins.op_kind(1) == OpKind::Register {
+                            Self::reg_width(ins.op1_register())
+                        } else { ins.memory_size().size() as u8 };
                         match (Self::mem_addr(&ins), ins.op_kind(1)) {
                             (Some(addr), OpKind::Register) if !Self::is_high_byte(ins.op1_register()) => {
                                 if matches!(width, 1 | 2 | 4 | 8) {
@@ -683,7 +689,9 @@ impl HybridWasmJit {
                         }
                     } else {
                         let dst = ins.op0_register();
-                        let d = Self::gpr_index(dst);
+                        // RSP is a normal JIT GPR local (slot 4/local 5); keep the
+                        // common ADD/SUB RSP,imm stack-adjust path explicit.
+                        let d = if dst == Register::RSP { Some(4) } else { Self::gpr_index(dst) };
                         let width = Self::reg_width(dst);
                         match ins.op_kind(1) {
                             OpKind::Register => match (d, Self::gpr_index(ins.op1_register())) {
@@ -701,6 +709,14 @@ impl HybridWasmJit {
                             _ => supported = false,
                         }
                     }
+                }
+                Mnemonic::Bswap => {
+                    let width = Self::reg_width(ins.op0_register());
+                    if ins.op_kind(0) == OpKind::Register && matches!(width, 4 | 8) {
+                        if let Some(dst) = Self::gpr_index(ins.op0_register()) {
+                            ops.push(JitOp::Bswap { dst, width });
+                        } else { supported = false; }
+                    } else { supported = false; }
                 }
                 Mnemonic::Shl | Mnemonic::Shr | Mnemonic::Sar | Mnemonic::Rol | Mnemonic::Ror => {
                     let d = Self::gpr_index(ins.op0_register());
@@ -866,7 +882,7 @@ impl HybridWasmJit {
             JitOp::MovImm { dst, .. } => wr |= 1 << dst,
             JitOp::MovReg { dst, src, .. } => { rd |= 1 << src; wr |= 1 << dst; }
             JitOp::Alu { kind, dst, src, .. } => { rd |= 1 << dst; if let Some(s) = src { rd |= 1 << s; } if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
-            JitOp::Shift { dst, .. } => { rd |= 1 << dst; wr |= 1 << dst; }
+            JitOp::Shift { dst, .. } | JitOp::Bswap { dst, .. } => { rd |= 1 << dst; wr |= 1 << dst; }
             JitOp::Loop { .. } => { rd |= 1 << 1; wr |= 1 << 1; }
             JitOp::Load { dst, addr, .. } => { addr_regs(&addr, &mut rd); wr |= 1 << dst; }
             JitOp::AluLoad { kind, dst, addr, .. } => { addr_regs(&addr, &mut rd); rd |= 1 << dst; if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
@@ -1044,6 +1060,24 @@ impl HybridWasmJit {
         if let Some(s) = src { Self::local_get(b, s + 1); } else { Self::i64_const(b, imm); }
         Self::mask_width(b, width); Self::local_set(b, 19);
         Self::emit_alu_core(b, kind, dst, width, true);
+    }
+
+    fn emit_bswap(b: &mut Vec<u8>, dst: u8, width: u8) {
+        Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+        Self::i64_const(b, 0);
+        for src_byte in 0..width {
+            Self::local_get(b, 18);
+            Self::i64_const(b, 0xFFi64 << (src_byte * 8)); b.push(0x83);
+            let src_shift = src_byte * 8;
+            let dst_shift = (width - 1 - src_byte) * 8;
+            if dst_shift > src_shift {
+                Self::i64_const(b, (dst_shift - src_shift) as i64); b.push(0x86);
+            } else if src_shift > dst_shift {
+                Self::i64_const(b, (src_shift - dst_shift) as i64); b.push(0x88);
+            }
+            b.push(0x84);
+        }
+        Self::local_set(b, 22); Self::write_reg(b, dst, width, 22);
     }
 
     fn emit_shift(b: &mut Vec<u8>, kind: u8, dst: u8, count: u8, width: u8) {
@@ -1395,6 +1429,7 @@ impl HybridWasmJit {
             JitOp::MovReg { dst, src, width } => { Self::local_get(b, src + 1); Self::local_set(b, 22); Self::write_reg(b, dst, width, 22); }
             JitOp::Alu { kind, dst, src, imm, width } => Self::emit_alu(b, kind, dst, src, imm, width),
             JitOp::Shift { kind, dst, count, width } => Self::emit_shift(b, kind, dst, count, width),
+            JitOp::Bswap { dst, width } => Self::emit_bswap(b, dst, width),
             JitOp::Loop { kind, width } => Self::emit_loop(b, kind, width),
             JitOp::Load { dst, addr, width, src_width, extend } => {
                 Self::emit_read(b, &addr, src_width, resolve_func, abort_depth);

@@ -22,8 +22,8 @@ if (!dir) throw new Error('Build the ABI-v3 x64 Wasm core into artifacts/porthol
 const mod = await import(pathToFileURL(path.join(dir, 'porthole_x64_wasm.js')).href);
 const core = await mod.default(fs.readFileSync(path.join(dir, 'porthole_x64_wasm_bg.wasm')));
 const probe = new mod.BrowserX64Emulator(8192);
-if (probe.jit_context_slots?.() !== 64 || probe.jit_compiler_version?.() !== 15) {
-  throw new Error(`Expected ABI-v3 x64 Wasm core with 64 context slots and compiler version 15 at ${dir}.`);
+if (probe.jit_context_slots?.() !== 64 || probe.jit_compiler_version?.() !== 16) {
+  throw new Error(`Expected ABI-v3 x64 Wasm core with 64 context slots and compiler version 16 at ${dir}.`);
 }
 
 function pe(code) {
