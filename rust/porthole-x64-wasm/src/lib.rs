@@ -34,6 +34,68 @@ pub enum RunStatus {
 
 const MAX_CONSOLE_BYTES: usize = 8 * 1024 * 1024;
 
+fn format_instruction_operand(ins: &iced_x86::Instruction, operand: u32) -> String {
+    match ins.op_kind(operand) {
+        OpKind::Register => format!("{:?}", ins.op_register(operand)),
+        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => {
+            format!("0x{:x}", ins.near_branch_target())
+        }
+        OpKind::Memory => format!(
+            "[base={:?} index={:?}*{} disp={:#x}]",
+            ins.memory_base(), ins.memory_index(), ins.memory_index_scale(),
+            ins.memory_displacement64()
+        ),
+        OpKind::Immediate8 => format!("{:#x}", ins.immediate8()),
+        OpKind::Immediate16 => format!("{:#x}", ins.immediate16()),
+        OpKind::Immediate32 => format!("{:#x}", ins.immediate32()),
+        OpKind::Immediate64 => format!("{:#x}", ins.immediate64()),
+        OpKind::Immediate8to16 => format!("{:#x}", ins.immediate8to16()),
+        OpKind::Immediate8to32 => format!("{:#x}", ins.immediate8to32()),
+        OpKind::Immediate8to64 => format!("{:#x}", ins.immediate8to64()),
+        OpKind::Immediate32to64 => format!("{:#x}", ins.immediate32to64()),
+        kind => format!("{kind:?}"),
+    }
+}
+
+fn decode_guest_instruction(vmm: &VirtualMemoryManager, rip: u64) -> String {
+    let mut bytes = [0u8; 16];
+    if vmm.audit_read_bytes(rip, &mut bytes).is_err() {
+        return "bytes=unavailable".to_string();
+    }
+    let Ok(mut decoder) = Decoder::try_new(64, &bytes, DecoderOptions::NONE) else {
+        return "decode=unavailable".to_string();
+    };
+    decoder.set_ip(rip);
+    let ins = decoder.decode();
+    let len = (ins.len() as usize).min(bytes.len());
+    let code = bytes[..len]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if ins.is_invalid() {
+        return format!("bytes={code} decode=invalid");
+    }
+    let operands = (0..ins.op_count())
+        .map(|operand| format_instruction_operand(&ins, operand))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("bytes={code} {:?} {operands}", ins.mnemonic())
+}
+
+fn decode_rip_history(vmm: &VirtualMemoryManager, history: &str, source_rip: u64) -> String {
+    let mut rips = history
+        .split_whitespace()
+        .filter_map(|item| u64::from_str_radix(item.trim_start_matches("0x"), 16).ok())
+        .collect::<Vec<_>>();
+    if !rips.contains(&source_rip) {
+        rips.push(source_rip);
+    }
+    rips.iter()
+        .map(|rip| format!("0x{rip:x} {}", decode_guest_instruction(vmm, *rip)))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 /// Phase 5 driver: owns the Wasm x86-64 core, VMM, HLE kernel and JIT cache, and exposes a
 /// slice-based execution API that a browser (or a Node conformance harness) pumps from JS.
 #[wasm_bindgen]
@@ -905,9 +967,11 @@ impl BrowserX64Emulator {
         let registers = register_names.iter().enumerate()
             .map(|(i, name)| format!("{name}=0x{:x}", self.cpu.gpr[i]))
             .collect::<Vec<_>>().join(" ");
+        let last_rips = self.cpu.render_rip_history();
+        let decoded_rips = decode_rip_history(&self.vmm, &last_rips, source_rip);
         let transfer = format!(
-            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={}",
-            target_rip - image_base, self.cpu.render_rip_history()
+            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} decoded_rips={decoded_rips}",
+            target_rip - image_base
         );
         if self.first_nontext_transfer.is_empty() {
             self.first_nontext_transfer = transfer.clone();
@@ -985,43 +1049,7 @@ impl BrowserX64Emulator {
                 out.push_str(&format!("  {} earlier matching writes omitted\n", first));
             }
             for event in self.vmm.watch_log.iter().skip(first) {
-                let mut bytes = [0u8; 16];
-                let decoded = if self.vmm.audit_read_bytes(event.rip, &mut bytes).is_ok() {
-                    match Decoder::try_new(64, &bytes, DecoderOptions::NONE) {
-                        Ok(mut decoder) => {
-                            decoder.set_ip(event.rip);
-                            let ins = decoder.decode();
-                            let len = (ins.len() as usize).min(bytes.len());
-                            let code = bytes[..len]
-                                .iter()
-                                .map(|byte| format!("{byte:02x}"))
-                                .collect::<String>();
-                            let op0 = if ins.op_count() > 0 {
-                                format!("{:?}/{:?}", ins.op_kind(0), ins.op0_register())
-                            } else {
-                                "None".to_string()
-                            };
-                            let op1 = if ins.op_count() > 1 {
-                                format!("{:?}/{:?}", ins.op_kind(1), ins.op1_register())
-                            } else {
-                                "None".to_string()
-                            };
-                            let target = if ins.op_count() > 0 && matches!(ins.op_kind(0),
-                                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64) {
-                                format!(" target=0x{:x}", ins.near_branch_target())
-                            } else {
-                                String::new()
-                            };
-                            format!(
-                                "bytes={code} mnemonic={:?} op0={op0} op1={op1}{target}",
-                                ins.mnemonic()
-                            )
-                        }
-                        Err(_) => "decode=unavailable".to_string(),
-                    }
-                } else {
-                    "bytes=unavailable".to_string()
-                };
+                let decoded = decode_guest_instruction(&self.vmm, event.rip);
                 out.push_str(&format!(
                     "  store 0x{:016x} at 0x{:x} len={} by RIP 0x{:x} ({}) {decoded}\n",
                     event.value, event.addr, event.len, event.rip,

@@ -381,9 +381,9 @@ async function main() {
     if (typeof emu.set_write_watch_value !== 'function') {
       throw new Error('bad-return write watch requires a core exporting set_write_watch_value');
     }
-    // The prior fault popped 0x140149600 from [RSP-8]=0x21ff8e0. Watch the full
-    // primary stack before PE loading, filtered to that exact non-text address.
-    emu.set_write_watch_value(0x02000000n, 0x02200000n, 0x140149600n, 4096);
+    // The prior RET popped the saved RBP value 0x140149600 from [RSP]=0x21ff8e0.
+    // Watch only the faulting stack slot, before PE loading, to identify its writer.
+    emu.set_write_watch_value(0x21ff8e0n, 0x21ff8e8n, 0x140149600n, 256);
   }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
   const cacheStart = performance.now();
