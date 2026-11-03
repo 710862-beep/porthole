@@ -70,8 +70,11 @@ pub struct CpuState {
     pub tsc_offset: u64,
     pub icache_hits: u64,
     pub icache_misses: u64,
-    /// Last executed RIPs, used to explain guest faults without an interactive debugger.
+    /// Last executed RIPs and their pre-instruction RSP values, used to explain guest faults
+    /// without an interactive debugger. Pairing RSP with RIP isolates stack movement across a
+    /// call/return sequence without recording a full instruction trace.
     pub rip_history: [u64; 16],
+    pub rip_rsp_history: [u64; 16],
     pub rip_history_len: usize,
 }
 
@@ -98,6 +101,7 @@ impl CpuState {
             icache_hits: self.icache_hits,
             icache_misses: self.icache_misses,
             rip_history: self.rip_history,
+            rip_rsp_history: self.rip_rsp_history,
             rip_history_len: self.rip_history_len,
         }
     }
@@ -121,6 +125,7 @@ impl CpuState {
             icache_hits: 0,
             icache_misses: 0,
             rip_history: [0; 16],
+            rip_rsp_history: [0; 16],
             rip_history_len: 0,
         }
     }
@@ -770,7 +775,18 @@ impl CpuState {
     pub fn note_rip(&mut self, rip: u64) {
         let slot = self.rip_history_len % self.rip_history.len();
         self.rip_history[slot] = rip;
+        self.rip_rsp_history[slot] = self.gpr[4];
         self.rip_history_len = self.rip_history_len.wrapping_add(1);
+    }
+
+    pub fn render_rip_history_with_rsp(&self) -> String {
+        let len = self.rip_history_len.min(self.rip_history.len());
+        let mut out = String::new();
+        for i in (0..len).rev().take(8) {
+            let idx = (self.rip_history_len + self.rip_history.len() - 1 - i) % self.rip_history.len();
+            out.push_str(&format!("0x{:x}@rsp=0x{:x} ", self.rip_history[idx], self.rip_rsp_history[idx]));
+        }
+        out.trim_end().to_string()
     }
 
     pub fn render_rip_history(&self) -> String {

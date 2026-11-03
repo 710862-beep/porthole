@@ -802,8 +802,9 @@ impl BrowserX64Emulator {
                         stack.push(format!("[0x{stack_addr:x}]={value}"));
                     }
                     self.faulting_context = format!(
-                        "access=unknown target=0x{addr:x} rip=0x{:x} rflags=0x{:x}\ninstruction_bytes={instruction_hex}\nregisters={registers}\nstack={}\nlast_rips={}\n",
-                        fault_cpu.rip, fault_cpu.rflags, stack.join(" "), fault_cpu.render_rip_history()
+                        "access=unknown target=0x{addr:x} rip=0x{:x} rflags=0x{:x}\ninstruction_bytes={instruction_hex}\nregisters={registers}\nstack={}\nlast_rips={}\nlast_rip_states={}\n",
+                        fault_cpu.rip, fault_cpu.rflags, stack.join(" "), fault_cpu.render_rip_history(),
+                        fault_cpu.render_rip_history_with_rsp()
                     );
                     if let Some(snapshot) = snapshot {
                         if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0xC000_0005, 0, insn_rip, snapshot.gpr[4], &[1, addr]) {
@@ -968,9 +969,10 @@ impl BrowserX64Emulator {
             .map(|(i, name)| format!("{name}=0x{:x}", self.cpu.gpr[i]))
             .collect::<Vec<_>>().join(" ");
         let last_rips = self.cpu.render_rip_history();
+        let last_rip_states = self.cpu.render_rip_history_with_rsp();
         let decoded_rips = decode_rip_history(&self.vmm, &last_rips, source_rip);
         let transfer = format!(
-            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} decoded_rips={decoded_rips}",
+            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} last_rip_states={last_rip_states} decoded_rips={decoded_rips}",
             target_rip - image_base
         );
         if self.first_nontext_transfer.is_empty() {
@@ -1028,8 +1030,9 @@ impl BrowserX64Emulator {
             out.push_str(&format!("  [0x{addr:x}] 0x{val:016x}{marker}\n"));
         }
         out.push_str(&format!(
-            "last RIPs: {}\n",
-            self.cpu.render_rip_history()
+            "last RIPs: {}\nlast RIP/RSP states: {}\n",
+            self.cpu.render_rip_history(),
+            self.cpu.render_rip_history_with_rsp()
         ));
         if !self.first_nontext_transfer.is_empty() {
             out.push_str("first transfer into loaded image outside text:\n");
