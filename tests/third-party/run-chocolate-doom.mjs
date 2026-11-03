@@ -49,6 +49,7 @@ const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 120
 const limits = { slice: Math.max(1, Number(process.env.PORTHOLE_DOOM_SLICE || 2_000_000) || 2_000_000), maxSlices: 100000 };
 const jitEnabled = process.env.PORTHOLE_JIT !== '0';
 const jitValidate = process.env.PORTHOLE_JIT_VALIDATE !== '0';
+const watchBadReturn = process.env.PORTHOLE_DOOM_WATCH_BAD_RETURN === '1';
 const maxInstructions = Math.max(0, Number(process.env.PORTHOLE_DOOM_MAX_INSTRUCTIONS || 0) || 0);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
@@ -336,7 +337,13 @@ async function main() {
   const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory, cache: jitCache, exeSha256: report.binarySha256, diagnostics: process.env.PORTHOLE_JIT_TELEMETRY === '1' });
   if (typeof emu.set_jit_validate_mode === 'function') emu.set_jit_validate_mode(Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)));
   else if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
-  report.jit = { enabled: jitEnabled, validate: jitValidate, maxInstructions: maxInstructions || null };
+  report.jit = {
+    enabled: jitEnabled,
+    validate: jitValidate,
+    validateMode: Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)),
+    watchedReturnValue: watchBadReturn ? '0x140149600' : null,
+    maxInstructions: maxInstructions || null,
+  };
   for (const dir of [
     'C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE',
     'C:\\Users\\PORTHOLE\\Temp', 'C:\\Users\\PORTHOLE\\AppData', 'C:\\Users\\PORTHOLE\\AppData\\Roaming',
@@ -369,6 +376,14 @@ async function main() {
       // Keep the early file-mapping calls even if later CRT traffic fills the ring.
       emu.set_trace_filter?.(['CreateFileMapping', 'MapViewOfFile', 'ReadFile', 'fread', 'SetFilePointer']);
     }
+  }
+  if (watchBadReturn) {
+    if (typeof emu.set_write_watch_value !== 'function') {
+      throw new Error('bad-return write watch requires a core exporting set_write_watch_value');
+    }
+    // The prior fault popped 0x140149600 from [RSP-8]=0x21ff8e0. Watch the full
+    // primary stack before PE loading, filtered to that exact non-text address.
+    emu.set_write_watch_value(0x02000000n, 0x02200000n, 0x140149600n, 4096);
   }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
   const cacheStart = performance.now();

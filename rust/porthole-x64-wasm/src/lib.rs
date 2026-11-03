@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use iced_x86::{Decoder, DecoderOptions, OpKind};
 use wasm_bindgen::prelude::*;
 
 pub mod cpu;
@@ -977,6 +978,57 @@ impl BrowserX64Emulator {
             out.push_str(&self.last_nontext_transfer);
             out.push('\n');
         }
+        if !self.vmm.watch_log.is_empty() {
+            out.push_str("watched writes of the suspected return target:\n");
+            let first = self.vmm.watch_log.len().saturating_sub(64);
+            if first != 0 {
+                out.push_str(&format!("  {} earlier matching writes omitted\n", first));
+            }
+            for event in self.vmm.watch_log.iter().skip(first) {
+                let mut bytes = [0u8; 16];
+                let decoded = if self.vmm.audit_read_bytes(event.rip, &mut bytes).is_ok() {
+                    match Decoder::try_new(64, &bytes, DecoderOptions::NONE) {
+                        Ok(mut decoder) => {
+                            decoder.set_ip(event.rip);
+                            let ins = decoder.decode();
+                            let len = (ins.len() as usize).min(bytes.len());
+                            let code = bytes[..len]
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>();
+                            let op0 = if ins.op_count() > 0 {
+                                format!("{:?}/{:?}", ins.op_kind(0), ins.op0_register())
+                            } else {
+                                "None".to_string()
+                            };
+                            let op1 = if ins.op_count() > 1 {
+                                format!("{:?}/{:?}", ins.op_kind(1), ins.op1_register())
+                            } else {
+                                "None".to_string()
+                            };
+                            let target = if ins.op_count() > 0 && matches!(ins.op_kind(0),
+                                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64) {
+                                format!(" target=0x{:x}", ins.near_branch_target())
+                            } else {
+                                String::new()
+                            };
+                            format!(
+                                "bytes={code} mnemonic={:?} op0={op0} op1={op1}{target}",
+                                ins.mnemonic()
+                            )
+                        }
+                        Err(_) => "decode=unavailable".to_string(),
+                    }
+                } else {
+                    "bytes=unavailable".to_string()
+                };
+                out.push_str(&format!(
+                    "  store 0x{:016x} at 0x{:x} len={} by RIP 0x{:x} ({}) {decoded}\n",
+                    event.value, event.addr, event.len, event.rip,
+                    if event.host { "host" } else { "guest" }
+                ));
+            }
+        }
         if !self.faulting_context.is_empty() {
             out.push_str("faulting instruction context (captured before exception dispatch):\n");
             out.push_str(&self.faulting_context);
@@ -1136,6 +1188,11 @@ impl BrowserX64Emulator {
 
     pub fn set_write_watch(&mut self, lo: u64, hi: u64, capacity: u32) {
         self.vmm.set_write_watch(lo, hi, capacity as usize);
+    }
+
+    /// Watches writes that contain a specific little-endian qword value; used for return-address triage.
+    pub fn set_write_watch_value(&mut self, lo: u64, hi: u64, value: u64, capacity: u32) {
+        self.vmm.set_write_watch_value(lo, hi, value, capacity as usize);
     }
 
     /// Adds an extra watched window (globals, heap head, ...) to the data breakpoint set.
@@ -1547,6 +1604,7 @@ impl BrowserX64Emulator {
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
             let mut ok = true;
             for _ in 0..executed {
+                self.vmm.current_rip = shadow.rip;
                 match shadow.step_one(&mut self.vmm) {
                     Ok(cpu::ExecOutcome::Next) | Ok(cpu::ExecOutcome::Branch(_)) => {}
                     _ => { ok = false; break; }
