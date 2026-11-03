@@ -856,6 +856,21 @@ impl CpuState {
         out.trim_end_matches(" | ").to_string()
     }
 
+    pub fn render_control_targets(&self) -> String {
+        let count = self.control_history_len.min(CONTROL_HISTORY_CAP);
+        let first = self.control_history_len.wrapping_sub(count);
+        let mut targets = Vec::new();
+        for offset in 0..count {
+            let target = self.control_history[
+                first.wrapping_add(offset) % CONTROL_HISTORY_CAP
+            ].target;
+            if target != 0 && !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        targets.iter().map(|target| format!("0x{target:x}")).collect::<Vec<_>>().join(" ")
+    }
+
     pub fn step_one(&mut self, vmm: &mut VirtualMemoryManager) -> Result<ExecOutcome, MemoryTrap> {
         let insn_rip = self.rip;
         self.note_rip(insn_rip);

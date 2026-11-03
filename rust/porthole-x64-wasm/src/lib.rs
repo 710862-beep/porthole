@@ -33,6 +33,29 @@ pub enum RunStatus {
 }
 
 const MAX_CONSOLE_BYTES: usize = 8 * 1024 * 1024;
+const JIT_SHADOW_HISTORY_CAP: usize = 8;
+
+#[derive(Clone, Copy, Default)]
+struct JitShadowBoundary {
+    artifact_rip: u64,
+    artifact_insns: u32,
+    input_rip: u64,
+    input_rsp: u64,
+    executed: u64,
+    status: u64,
+    exit_rip: u64,
+    shadow_rip: u64,
+    shadow_rsp: u64,
+    links: [u64; 2],
+    link_count: u8,
+    dynamic_count: bool,
+    ends_with_ret: bool,
+    step_ok: bool,
+    xmm_ok: bool,
+    gpr_ok: bool,
+    flags_ok: bool,
+    rip_ok: bool,
+}
 
 fn format_instruction_operand(ins: &iced_x86::Instruction, operand: u32) -> String {
     match ins.op_kind(operand) {
@@ -138,6 +161,8 @@ pub struct BrowserX64Emulator {
     jit_shadow: Option<cpu::CpuState>,
     jit_validate: bool,
     jit_validate_always: bool,
+    jit_shadow_history: [JitShadowBoundary; JIT_SHADOW_HISTORY_CAP],
+    jit_shadow_history_len: usize,
     jit_last_failure: String,
     jit_unsupported: std::collections::HashMap<String, u64>,
     jit_unsupported_exits: u64,
@@ -186,6 +211,8 @@ impl BrowserX64Emulator {
             jit_shadow: None,
             jit_validate: true,
             jit_validate_always: false,
+            jit_shadow_history: [JitShadowBoundary::default(); JIT_SHADOW_HISTORY_CAP],
+            jit_shadow_history_len: 0,
             jit_last_failure: String::new(),
             jit_unsupported: std::collections::HashMap::new(),
             jit_unsupported_exits: 0,
@@ -947,6 +974,74 @@ impl BrowserX64Emulator {
         }
     }
 
+    fn record_jit_shadow_boundary(
+        &mut self,
+        art: &jit::CompiledJitArtifact,
+        input_rip: u64,
+        input_rsp: u64,
+        executed: u64,
+        status: u64,
+        exit_rip: u64,
+        shadow_rip: u64,
+        shadow_rsp: u64,
+        step_ok: bool,
+        xmm_ok: bool,
+        gpr_ok: bool,
+        flags_ok: bool,
+        rip_ok: bool,
+    ) {
+        let slot = self.jit_shadow_history_len % JIT_SHADOW_HISTORY_CAP;
+        let mut links = [0; 2];
+        let link_count = art.links.len().min(links.len());
+        for (index, link) in art.links.iter().take(link_count).enumerate() {
+            links[index] = link.target_rip;
+        }
+        self.jit_shadow_history[slot] = JitShadowBoundary {
+            artifact_rip: art.entry_rip,
+            artifact_insns: art.insn_count,
+            input_rip,
+            input_rsp,
+            executed,
+            status,
+            exit_rip,
+            shadow_rip,
+            shadow_rsp,
+            links,
+            link_count: link_count as u8,
+            dynamic_count: art.dynamic_count,
+            ends_with_ret: art.ends_with_ret,
+            step_ok,
+            xmm_ok,
+            gpr_ok,
+            flags_ok,
+            rip_ok,
+        };
+        self.jit_shadow_history_len = self.jit_shadow_history_len.wrapping_add(1);
+    }
+
+    fn render_jit_shadow_history(&self) -> String {
+        let count = self.jit_shadow_history_len.min(JIT_SHADOW_HISTORY_CAP);
+        let first = self.jit_shadow_history_len.wrapping_sub(count);
+        let mut out = String::new();
+        for offset in 0..count {
+            let event = self.jit_shadow_history[
+                first.wrapping_add(offset) % JIT_SHADOW_HISTORY_CAP
+            ];
+            let links = event.links.iter().take(event.link_count as usize)
+                .map(|rip| format!("0x{rip:x}"))
+                .collect::<Vec<_>>().join(",");
+            out.push_str(&format!(
+                "block=0x{:x}/{} dyn={} ret={} input=0x{:x}@rsp=0x{:x} executed={} status={} exit=0x{:x} shadow=0x{:x}@rsp=0x{:x} links=[{}] checks=step:{},xmm:{},gpr:{},flags:{},rip:{} | ",
+                event.artifact_rip, event.artifact_insns,
+                event.dynamic_count, event.ends_with_ret,
+                event.input_rip, event.input_rsp, event.executed, event.status,
+                event.exit_rip, event.shadow_rip, event.shadow_rsp, links,
+                event.step_ok, event.xmm_ok, event.gpr_ok, event.flags_ok, event.rip_ok
+            ));
+        }
+        out.trim_end_matches(" | ").to_string()
+    }
+
     /// Record a transfer into the image but outside its executable text range. PE images are
     /// currently mapped RWX as a whole, so this catches bad indirect targets before the guest
     /// executes zero-filled .bss or other data as if it were code.
@@ -971,9 +1066,12 @@ impl BrowserX64Emulator {
         let last_rips = self.cpu.render_rip_history();
         let last_rip_states = self.cpu.render_rip_history_with_rsp();
         let control_flow = self.cpu.render_control_history();
+        let control_targets = self.cpu.render_control_targets();
         let decoded_rips = decode_rip_history(&self.vmm, &last_rips, source_rip);
+        let decoded_control_targets = decode_rip_history(&self.vmm, &control_targets, source_rip);
+        let jit_shadow_boundaries = self.render_jit_shadow_history();
         let transfer = format!(
-            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} last_rip_states={last_rip_states} control_flow={control_flow} decoded_rips={decoded_rips}",
+            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} last_rip_states={last_rip_states} control_flow={control_flow} decoded_rips={decoded_rips} decoded_control_targets={decoded_control_targets} jit_shadow_boundaries={jit_shadow_boundaries}",
             target_rip - image_base
         );
         if self.first_nontext_transfer.is_empty() {
@@ -1038,6 +1136,10 @@ impl BrowserX64Emulator {
         let control_flow = self.cpu.render_control_history();
         if !control_flow.is_empty() {
             out.push_str(&format!("recent CALL/RET stack transitions: {control_flow}\n"));
+        }
+        let shadow_boundaries = self.render_jit_shadow_history();
+        if !shadow_boundaries.is_empty() {
+            out.push_str(&format!("recent JIT shadow boundaries: {shadow_boundaries}\n"));
         }
         if !self.first_nontext_transfer.is_empty() {
             out.push_str("first transfer into loaded image outside text:\n");
@@ -1638,6 +1740,8 @@ impl BrowserX64Emulator {
                 self.vmm.read_page(p).ok().map(|d| (p, d.to_vec()))
             }).collect();
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
+            let input_rip = shadow.rip;
+            let input_rsp = shadow.gpr[4];
             let mut ok = true;
             for _ in 0..executed {
                 self.vmm.current_rip = shadow.rip;
@@ -1652,7 +1756,14 @@ impl BrowserX64Emulator {
                 let hi = u64::from_le_bytes(shadow.ymm[i][8..16].try_into().unwrap());
                 if self.jit_ctx[32 + i * 2] != lo || self.jit_ctx[33 + i * 2] != hi { xmm_ok = false; }
             }
-            if !ok || !xmm_ok || shadow.gpr[..] != self.jit_ctx[..16] || self.jit_ctx[19] != shadow.rflags || shadow.rip != exit_rip {
+            let gpr_ok = shadow.gpr[..] == self.jit_ctx[..16];
+            let flags_ok = self.jit_ctx[19] == shadow.rflags;
+            let rip_ok = shadow.rip == exit_rip;
+            self.record_jit_shadow_boundary(
+                &art, input_rip, input_rsp, executed, status, exit_rip,
+                shadow.rip, shadow.gpr[4], ok, xmm_ok, gpr_ok, flags_ok, rip_ok,
+            );
+            if !ok || !xmm_ok || !gpr_ok || !flags_ok || !rip_ok {
                 let actual: Vec<String> = self.jit_ctx[..16].iter().map(|v| format!("\"{}\"", v)).collect();
                 let expected: Vec<String> = shadow.gpr.iter().map(|v| format!("\"{}\"", v)).collect();
                 let mut code = [0u8; 16]; let _ = self.vmm.host_read_bytes(art.entry_rip, &mut code);
