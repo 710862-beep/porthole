@@ -165,7 +165,25 @@ jobs:
         run: |
           mkdir -p artifacts
           set -o pipefail
+          set +e
           PORTHOLE_JIT_TELEMETRY=1 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
+          jit_rc=${PIPESTATUS[0]}
+          # If the hybrid run terminates in a guest fault, replay the same pinned inputs in the
+          # interpreter-only mode. This A/B isolates JIT control-flow/data corruption from core
+          # interpreter/HLE issues; it is diagnostic and does not override the Tier B JIT result.
+          if [ "$jit_rc" -ne 0 ] && grep -q 'terminal=fault:' artifacts/chocolate-doom-tier-b-report.txt; then
+            cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-jit-report.json
+            cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-jit-report.txt
+            PORTHOLE_JIT=0 PORTHOLE_DOOM_TIMEOUT_S=900 PORTHOLE_DOOM_RESIDENT=65536 \
+              node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-interpreter-run.log
+            interpreter_rc=${PIPESTATUS[0]}
+            cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-interpreter-report.json || true
+            cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-interpreter-report.txt || true
+            echo "interpreter-only diagnostic exit=$interpreter_rc"
+            cp artifacts/chocolate-doom-jit-report.json artifacts/chocolate-doom-tier-b-report.json
+            cp artifacts/chocolate-doom-jit-report.txt artifacts/chocolate-doom-tier-b-report.txt
+          fi
+          exit "$jit_rc"
       - name: Publish the Tier B guest report through the Checks API
         if: always()
         env:
@@ -185,6 +203,11 @@ jobs:
             artifacts/chocolate-doom-tier-b-report.json
             artifacts/chocolate-doom-tier-b-report.txt
             artifacts/chocolate-doom-run.log
+            artifacts/chocolate-doom-jit-report.json
+            artifacts/chocolate-doom-jit-report.txt
+            artifacts/chocolate-doom-interpreter-report.json
+            artifacts/chocolate-doom-interpreter-report.txt
+            artifacts/chocolate-doom-interpreter-run.log
             artifacts/tier-b-pin.json
             artifacts/chocolate-doom-frame-first.ppm
             artifacts/chocolate-doom-frame-mid.ppm

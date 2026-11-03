@@ -44,6 +44,8 @@ pub struct BrowserX64Emulator {
     loaded: Option<LoadedPe64Info>,
     status: RunStatus,
     fault_message: String,
+    /// Last guest/JIT control transfer into the loaded image outside its PE text range.
+    last_nontext_transfer: String,
     /// Architectural state captured before the guest's first-chance AV handler runs.
     /// The regular fault snapshot is taken after unhandled-exception dispatch and can
     /// otherwise lose the instruction/register context that caused the fault.
@@ -95,6 +97,7 @@ impl BrowserX64Emulator {
             loaded: None,
             status: RunStatus::Ready,
             fault_message: String::new(),
+            last_nontext_transfer: String::new(),
             faulting_context: String::new(),
             pending_upcall: false,
             modal_pending: None,
@@ -620,8 +623,15 @@ impl BrowserX64Emulator {
             // --- ordinary guest instruction ----------------------------------------------------
             let exception_snapshot = if self.kernel.has_exception_handlers() { Some(self.cpu.exception_snapshot()) } else { None };
             let outcome = self.cpu.step_one(&mut self.vmm);
+            let branch_target = match &outcome {
+                Ok(ExecOutcome::Branch(target)) => Some(*target),
+                _ => None,
+            };
             match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {
+                    if let Some(target) = branch_target {
+                        self.note_nontext_image_transfer(insn_rip, target, "interpreter");
+                    }
                     executed += 1;
                     if !self.hle_trace_only {
                         self.trace_instruction(insn_rip, rsp_before);
@@ -871,6 +881,33 @@ impl BrowserX64Emulator {
         }
     }
 
+    /// Record a transfer into the image but outside its executable text range. PE images are
+    /// currently mapped RWX as a whole, so this catches bad indirect targets before the guest
+    /// executes zero-filled .bss or other data as if it were code.
+    fn note_nontext_image_transfer(&mut self, source_rip: u64, target_rip: u64, origin: &str) {
+        let Some(info) = self.loaded.as_ref() else { return; };
+        let (image_base, image_size, text_base, text_size) =
+            (info.image_base, info.size_of_image, info.text_base, info.text_size);
+        let image_end = image_base.saturating_add(image_size);
+        let text_end = text_base.saturating_add(text_size);
+        if target_rip < image_base || target_rip >= image_end
+            || (target_rip >= text_base && target_rip < text_end) {
+            return;
+        }
+        let mut instruction = [0u8; 16];
+        let instruction_hex = if self.vmm.audit_read_bytes(source_rip, &mut instruction).is_ok() {
+            instruction.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        } else { "<unavailable>".to_string() };
+        let register_names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+        let registers = register_names.iter().enumerate()
+            .map(|(i, name)| format!("{name}=0x{:x}", self.cpu.gpr[i]))
+            .collect::<Vec<_>>().join(" ");
+        self.last_nontext_transfer = format!(
+            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={}",
+            target_rip - image_base, self.cpu.render_rip_history()
+        );
+    }
+
     /// Full register + stack + page report for the current (or last) fault. Deliberately verbose:
     /// it is the only state that survives a `run_slice` returning `fault:`.
     pub fn fault_snapshot(&mut self) -> String {
@@ -923,6 +960,11 @@ impl BrowserX64Emulator {
             "last RIPs: {}\n",
             self.cpu.render_rip_history()
         ));
+        if !self.last_nontext_transfer.is_empty() {
+            out.push_str("last transfer into loaded image outside text:\n");
+            out.push_str(&self.last_nontext_transfer);
+            out.push('\n');
+        }
         if !self.faulting_context.is_empty() {
             out.push_str("faulting instruction context (captured before exception dispatch):\n");
             out.push_str(&self.faulting_context);
@@ -1521,6 +1563,7 @@ impl BrowserX64Emulator {
             self.cpu = shadow;
             self.cpu.instructions_executed = base_insns.wrapping_add(executed);
             self.kernel.instructions = self.cpu.instructions_executed;
+            self.note_nontext_image_transfer(art.entry_rip, exit_rip, "jit-validated");
             self.jit.mark_proven(art.entry_rip);
             return "next".into();
         }
@@ -1536,6 +1579,7 @@ impl BrowserX64Emulator {
         }
         self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(executed);
         self.kernel.instructions = self.cpu.instructions_executed;
+        self.note_nontext_image_transfer(art.entry_rip, exit_rip, "jit");
         self.jit.mark_proven(art.entry_rip);
         "next".into()
     }
