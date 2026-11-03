@@ -1,6 +1,6 @@
 # Porthole desktop UI
 
-The `ui/` project is a React 19 + Vite desktop shell styled after CachyOS/KDE. It includes a launcher, taskbar, workspaces, resizable windows, settings, a curated metadata-only App Store, a browser-based x86-64 emulator surface, System Monitor, and an in-OS Developer Console. It does not ship a mock browser or simulated production guest runtime.
+The `ui/` project is a React 19 + Vite browser desktop with a dark Linux-desktop visual language. It includes a launcher, taskbar, workspaces, resizable windows, settings, a curated metadata-only App Store, a browser-based x86-64 emulator surface, System Monitor, and an in-OS Developer Console. It is Porthole, not a CachyOS distribution or installation image, and it does not ship a mock browser or simulated production guest runtime.
 
 ## Run and verify
 

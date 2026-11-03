@@ -53,7 +53,7 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: LucideIcon; blurb: s
 const VERSION = "0.5.0";
 
 function wallpaperPreview(id: WallpaperId): CSSProperties {
-  if (id === "cachy-aurora") {
+  if (id === "aurora") {
     return {
       backgroundImage:
         "radial-gradient(ellipse 52% 72% at 50% 104%, rgba(255,112,151,.94), transparent 72%), radial-gradient(ellipse 60% 90% at 88% 40%, rgba(127,37,157,.84), transparent 72%), linear-gradient(132deg,#552d98 0%,#7b31aa 44%,#3b1057 100%)",
@@ -247,7 +247,7 @@ export function SettingsApp() {
           <>
             <Section
               title="Wallpaper"
-              description="CachyOS-inspired magenta geometry, a violet nebula, or a minimal grid; all variants are local."
+              description="Choose the local aurora, nebula or minimal-grid wallpaper."
             >
               <div className="grid grid-cols-3 gap-2.5">
                 {WALLPAPERS.map((option) => {
@@ -616,7 +616,7 @@ export function SettingsApp() {
                       <code className="font-mono">ui/runtime/contracts.ts</code> shapes.
                     </p>
                   </div>
-                  <Badge tone="accent">CachyOS-flavoured</Badge>
+                  <Badge tone="accent">Porthole desktop</Badge>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <a

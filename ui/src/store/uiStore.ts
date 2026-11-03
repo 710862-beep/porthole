@@ -5,7 +5,7 @@ import { persist } from "zustand/middleware";
 /* Design-time preferences                                                    */
 /* -------------------------------------------------------------------------- */
 
-export type WallpaperId = "cachy-aurora" | "nebula" | "minimal";
+export type WallpaperId = "aurora" | "nebula" | "minimal";
 
 export interface WallpaperOption {
   id: WallpaperId;
@@ -15,9 +15,9 @@ export interface WallpaperOption {
 
 export const WALLPAPERS: WallpaperOption[] = [
   {
-    id: "cachy-aurora",
-    label: "CachyOS Review",
-    blurb: "Magenta geometric planes, a faceted teal mark and oversized editorial lettering.",
+    id: "aurora",
+    label: "Aurora",
+    blurb: "Layered magenta and violet light over dark geometric planes.",
   },
   { id: "nebula", label: "Nebula", blurb: "Procedural cyan/violet nebulae, no image download." },
   { id: "minimal", label: "Minimal Grid", blurb: "Quiet blueprint grid for long sessions." },
@@ -126,6 +126,11 @@ interface UiStore {
   resetShell: () => void;
 }
 
+type PersistedUiPreferences = Pick<
+  UiStore,
+  "setupComplete" | "wallpaper" | "accent" | "clock24h" | "showSeconds" | "reduceMotion"
+>;
+
 let toastSequence = 1;
 
 export const useUiStore = create<UiStore>()(
@@ -136,7 +141,7 @@ export const useUiStore = create<UiStore>()(
       overviewOpen: false,
       launcherOpen: false,
       locked: false,
-      wallpaper: "cachy-aurora",
+      wallpaper: "aurora",
       accent: "cyan",
       clock24h: true,
       showSeconds: false,
@@ -211,8 +216,22 @@ export const useUiStore = create<UiStore>()(
     }),
     {
       name: "porthole.ui.preferences.v2",
-      version: 1,
-      partialize: (state) => ({
+      version: 2,
+      migrate: (persistedState) => {
+        const { wallpaper: storedWallpaper, ...state } = persistedState as Omit<
+          Partial<PersistedUiPreferences>,
+          "wallpaper"
+        > & { wallpaper?: unknown };
+        const wallpaper =
+          storedWallpaper === "nebula" || storedWallpaper === "minimal"
+            ? storedWallpaper
+            : "aurora";
+        return {
+          ...state,
+          wallpaper,
+        } as PersistedUiPreferences;
+      },
+      partialize: (state): PersistedUiPreferences => ({
         setupComplete: state.setupComplete,
         wallpaper: state.wallpaper,
         accent: state.accent,

@@ -91,8 +91,8 @@ function TrayRow({ icon: Icon, label, value, valueClassName }: TrayRowProps) {
 }
 
 /**
- * Bottom panel: launcher, pinned + running apps, overview toggle, tray flyouts
- * and the clock. Height 48px, frosted glass, running indicators per app.
+ * Bottom panel: icon-only launcher, left-aligned pinned + running apps, tray
+ * flyouts and clock. Height 48px with running indicators per app.
  */
 export function Taskbar() {
   const { openApp } = useWindowManager();
@@ -205,15 +205,10 @@ export function Taskbar() {
         onClick={handleLauncher}
       >
         <PortholeMark size={22} className={styles.logoMark} />
-        <span className="hidden text-[12px] font-semibold tracking-[-0.01em] text-ink lg:block">
-          Porthole
-        </span>
       </button>
 
-      <span className={styles.panelDivider} aria-hidden />
-
       <div
-        className="flex min-w-0 flex-1 items-center justify-center gap-0.5 overflow-hidden"
+        className={styles.taskbarApps}
         role="toolbar"
         aria-label="Applications"
       >

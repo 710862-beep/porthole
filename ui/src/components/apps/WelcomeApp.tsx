@@ -52,7 +52,7 @@ export function WelcomeApp() {
               </Badge>
             </div>
             <p className="mt-1 max-w-[62ch] text-[11.5px] leading-relaxed text-ink-muted">
-              A CachyOS-flavoured desktop environment running entirely in your browser, built as
+              A Linux-desktop-inspired environment running entirely in your browser, built as
               the shell for the Porthole x86-64 runtime. This window is the honest tour.
             </p>
             <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -192,7 +192,7 @@ export function WelcomeApp() {
         <span className="font-mono text-[9px] text-ink-ghost">
           ui/components/apps · consumed through contracts only
         </span>
-        <span className="font-mono text-[9px] text-ink-ghost">CachyOS-inspired · dark</span>
+        <span className="font-mono text-[9px] text-ink-ghost">Porthole · browser desktop</span>
       </footer>
     </div>
   );

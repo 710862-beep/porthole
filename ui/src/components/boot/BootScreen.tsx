@@ -113,7 +113,7 @@ export function BootScreen({ variant, stage, storageLabel, mode }: BootScreenPro
             {mode} runtime
           </Badge>
           <span className="h-2.5 w-px bg-white/10" aria-hidden />
-          <span>CachyOS-inspired shell</span>
+          <span>Porthole web desktop</span>
         </div>
       </div>
     </div>

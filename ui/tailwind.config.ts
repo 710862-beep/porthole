@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Porthole design tokens — "CachyOS" dark surface system.
+ * Porthole design tokens — dark desktop surface system.
  *
  * The palette is Catppuccin-Mocha-shaped (the wallpaper, panels and text ramp of
  * modern KDE Plasma). Accents are resolved through CSS variables so Settings can

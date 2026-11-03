@@ -1,6 +1,6 @@
 # Porthole UI — design system and desktop shell
 
-A browser desktop environment with the surface language of CachyOS / KDE Plasma: Catppuccin-Mocha darkness, frosted glass, cyan→violet accents, Inter for UI and JetBrains Mono for anything machine-shaped. The default desktop wallpaper now follows the user's CachyOS installation-review reference: magenta/violet geometry, a faceted teal mark, oversized lettering, a read-only browser/runtime status card and a compact bottom panel.
+Porthole is a browser desktop with a dark Linux-desktop visual language: Catppuccin-Mocha surfaces, restrained glass, cyan→violet accents, Inter for UI and JetBrains Mono for machine-shaped details. Its local Aurora wallpaper is unlettered—no OS name, logo or fabricated installation-review copy is overlaid. The desktop also includes a read-only browser/runtime status card and a full-width 48 px panel with left-aligned app icons and a right-side tray.
 
 The React shell keeps emulation behind [`runtime/types.ts`](runtime/types.ts). `RuntimeRouter` uses the ABI-v3 Wasm adapter and reports `unavailable` if its CI artifact cannot initialize; production never substitutes a simulated guest. Guest pixels come only from core-reported frames, and the adapter reuses the repository JIT host and NVMe VFS. This is a browser desktop, not a native Windows process host. See [`../docs/ui-runtime-architecture.md`](../docs/ui-runtime-architecture.md) for ownership, flows and security boundaries.
 
@@ -119,10 +119,10 @@ ui/
 
 | Surface | Behaviour |
 | --- | --- |
-| **Boot** | CachyOS-inspired progress screen with active Wasm/unavailable runtime status |
+| **Boot** | Porthole progress screen with active Wasm/unavailable runtime status |
 | **First run** | storage modal: External NVMe (`showDirectoryPicker` + write probe), OPFS, volatile memory; failures are reported through a custom Yes/No dialog |
-| **Desktop** | magenta/violet geometric wallpaper, faceted teal mark, oversized CachyOS review lettering, real browser/runtime status card and 48 px bottom panel |
-| **Panel** | Porthole launcher · centered pinned apps with running dots (click = focus/minimize/restore) · overview button · tray flyouts, clock and session menu |
+| **Desktop** | unlettered magenta/violet wallpaper, real browser/runtime status card and 48 px bottom panel with left-aligned app icons |
+| **Panel** | icon-only Porthole launcher · left-aligned pinned apps with running indicators (click = focus/minimize/restore) · overview · tray flyouts, clock and session menu |
 | **Launcher** | Kickoff layout, categories with counts, live search, workspace/session actions, keyboard navigation |
 | **Overview** | hot corner or Super, window cards, workspace rail with mini-map and add-workspace, window/app search |
 | **App Store** | 24 curated entries, public Chocolatey OData metadata refresh/cache, evidence details and browser-local library bookmarks; no package downloads |

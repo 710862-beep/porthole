@@ -140,7 +140,7 @@ export function SetupModal({
                 <Badge tone={mode === "wasm" ? "success" : "warning"} dot>
                   {mode} runtime
                 </Badge>
-                <span>CachyOS-inspired · dark</span>
+                <span>Porthole desktop · dark</span>
               </div>
             </div>
           </div>

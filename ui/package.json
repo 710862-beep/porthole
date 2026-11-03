@@ -3,7 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "type": "module",
-  "description": "Porthole \u2014 a CachyOS-flavoured browser desktop environment for the Porthole x86-64 runtime.",
+  "description": "Porthole \u2014 a Linux-desktop-inspired browser shell for the Porthole x86-64 runtime.",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "npm run check:no-any && npm run check:boundaries && npm run copy:wasm && tsc --noEmit && vite build",
