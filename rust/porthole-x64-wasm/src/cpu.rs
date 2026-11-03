@@ -49,6 +49,19 @@ pub struct CachedBasicBlock {
     pub jit_checked: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct ControlFlowEvent {
+    pub rip: u64,
+    pub is_call: bool,
+    pub rsp_before: u64,
+    pub stack_slot: u64,
+    pub stack_value: u64,
+    pub rsp_after: u64,
+    pub target: u64,
+}
+
+const CONTROL_HISTORY_CAP: usize = 8;
+
 #[derive(Clone)]
 pub struct CpuState {
     pub gpr: [u64; 16], // RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15
@@ -76,6 +89,9 @@ pub struct CpuState {
     pub rip_history: [u64; 16],
     pub rip_rsp_history: [u64; 16],
     pub rip_history_len: usize,
+    /// Last guest CALL/RET transitions with their exact stack slot and value.
+    pub control_history: [ControlFlowEvent; CONTROL_HISTORY_CAP],
+    pub control_history_len: usize,
 }
 
 impl CpuState {
@@ -103,6 +119,8 @@ impl CpuState {
             rip_history: self.rip_history,
             rip_rsp_history: self.rip_rsp_history,
             rip_history_len: self.rip_history_len,
+            control_history: self.control_history,
+            control_history_len: self.control_history_len,
         }
     }
 
@@ -127,6 +145,8 @@ impl CpuState {
             rip_history: [0; 16],
             rip_rsp_history: [0; 16],
             rip_history_len: 0,
+            control_history: [ControlFlowEvent::default(); CONTROL_HISTORY_CAP],
+            control_history_len: 0,
         }
     }
 
@@ -801,6 +821,41 @@ impl CpuState {
         out.trim_end().to_string()
     }
 
+    fn note_control_flow(
+        &mut self,
+        rip: u64,
+        is_call: bool,
+        rsp_before: u64,
+        stack_slot: u64,
+        stack_value: u64,
+        rsp_after: u64,
+        target: u64,
+    ) {
+        let slot = self.control_history_len % CONTROL_HISTORY_CAP;
+        self.control_history[slot] = ControlFlowEvent {
+            rip, is_call, rsp_before, stack_slot, stack_value, rsp_after, target,
+        };
+        self.control_history_len = self.control_history_len.wrapping_add(1);
+    }
+
+    pub fn render_control_history(&self) -> String {
+        let count = self.control_history_len.min(CONTROL_HISTORY_CAP);
+        let first = self.control_history_len.wrapping_sub(count);
+        let mut out = String::new();
+        for offset in 0..count {
+            let event = self.control_history[
+                first.wrapping_add(offset) % CONTROL_HISTORY_CAP
+            ];
+            let kind = if event.is_call { "CALL" } else { "RET" };
+            out.push_str(&format!(
+                "{kind} rip=0x{:x} rsp=0x{:x}->0x{:x} slot[0x{:x}]=0x{:x} target=0x{:x} | ",
+                event.rip, event.rsp_before, event.rsp_after, event.stack_slot,
+                event.stack_value, event.target
+            ));
+        }
+        out.trim_end_matches(" | ").to_string()
+    }
+
     pub fn step_one(&mut self, vmm: &mut VirtualMemoryManager) -> Result<ExecOutcome, MemoryTrap> {
         let insn_rip = self.rip;
         self.note_rip(insn_rip);
@@ -1353,13 +1408,21 @@ impl CpuState {
             0xC2 => {
                 let pop_bytes = u16::from_le_bytes(code[cursor..cursor + 2].try_into().unwrap()) as u64;
                 cursor += 2;
-                let ret_rip = vmm.read_u64(self.gpr[4])?;
-                self.gpr[4] = self.gpr[4].wrapping_add(8 + pop_bytes);
+                let rsp_before = self.gpr[4];
+                let ret_rip = vmm.read_u64(rsp_before)?;
+                self.gpr[4] = rsp_before.wrapping_add(8 + pop_bytes);
+                self.note_control_flow(
+                    insn_rip, false, rsp_before, rsp_before, ret_rip, self.gpr[4], ret_rip,
+                );
                 ExecOutcome::Branch(ret_rip)
             }
             0xC3 => {
-                let ret_rip = vmm.read_u64(self.gpr[4])?;
-                self.gpr[4] = self.gpr[4].wrapping_add(8);
+                let rsp_before = self.gpr[4];
+                let ret_rip = vmm.read_u64(rsp_before)?;
+                self.gpr[4] = rsp_before.wrapping_add(8);
+                self.note_control_flow(
+                    insn_rip, false, rsp_before, rsp_before, ret_rip, self.gpr[4], ret_rip,
+                );
                 ExecOutcome::Branch(ret_rip)
             }
 
@@ -1397,9 +1460,13 @@ impl CpuState {
                 cursor += 4;
                 let next_rip = insn_rip + cursor as u64;
                 let target = next_rip.wrapping_add(rel as u64);
-                let new_rsp = self.gpr[4].wrapping_sub(8);
+                let rsp_before = self.gpr[4];
+                let new_rsp = rsp_before.wrapping_sub(8);
                 vmm.write_u64(new_rsp, next_rip)?;
                 self.gpr[4] = new_rsp;
+                self.note_control_flow(
+                    insn_rip, true, rsp_before, new_rsp, next_rip, new_rsp, target,
+                );
                 ExecOutcome::Branch(target)
             }
 
@@ -1640,9 +1707,13 @@ impl CpuState {
                     2 if !byte_op => {
                         // CALL r/m64
                         let target = self.read_rm(vmm, addr, next_rip, 8, pfx.has_rex)?;
-                        let new_rsp = self.gpr[4].wrapping_sub(8);
+                        let rsp_before = self.gpr[4];
+                        let new_rsp = rsp_before.wrapping_sub(8);
                         vmm.write_u64(new_rsp, next_rip)?;
                         self.gpr[4] = new_rsp;
+                        self.note_control_flow(
+                            insn_rip, true, rsp_before, new_rsp, next_rip, new_rsp, target,
+                        );
                         ExecOutcome::Branch(target)
                     }
                     4 if !byte_op => {

@@ -970,9 +970,10 @@ impl BrowserX64Emulator {
             .collect::<Vec<_>>().join(" ");
         let last_rips = self.cpu.render_rip_history();
         let last_rip_states = self.cpu.render_rip_history_with_rsp();
+        let control_flow = self.cpu.render_control_history();
         let decoded_rips = decode_rip_history(&self.vmm, &last_rips, source_rip);
         let transfer = format!(
-            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} last_rip_states={last_rip_states} decoded_rips={decoded_rips}",
+            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} last_rip_states={last_rip_states} control_flow={control_flow} decoded_rips={decoded_rips}",
             target_rip - image_base
         );
         if self.first_nontext_transfer.is_empty() {
@@ -1034,6 +1035,10 @@ impl BrowserX64Emulator {
             self.cpu.render_rip_history(),
             self.cpu.render_rip_history_with_rsp()
         ));
+        let control_flow = self.cpu.render_control_history();
+        if !control_flow.is_empty() {
+            out.push_str(&format!("recent CALL/RET stack transitions: {control_flow}\n"));
+        }
         if !self.first_nontext_transfer.is_empty() {
             out.push_str("first transfer into loaded image outside text:\n");
             out.push_str(&self.first_nontext_transfer);
