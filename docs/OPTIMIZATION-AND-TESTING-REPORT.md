@@ -568,11 +568,15 @@ module-level instance (`malloc is not a function`) (`da4df2c`).
 
 ### Expanded JIT coverage (evidence-selected)
 
-The unsupported histogram after the correctness fixes was dominated by
-RIP-relative/SIB memory loads, `cmp reg,[mem]`, `movzx/movsx`, `lea`, `pop`, and
-partial-register ALU — not SSE. The hand-written decoder was replaced with
-`iced-x86` (correct ModRM/SIB/RIP-relative/segment parsing, instruction lengths
-for AOT). The lowering now covers:
+The historical “unsupported” histogram records hot-block compile-boundary
+observations from `maybe_jit_compile`: the block compiler's interpreter boundary
+or a failed compile attempt. It is not a dynamic interpreter-fallback count and
+does not prove that an opcode is unsupported by the CPU interpreter or generally
+unsupported by the JIT. Its entries (RIP-relative/SIB loads, `cmp reg,[mem]`,
+`movzx/movsx`, `lea`, `pop`, partial-register ALU) were candidates for inspection,
+not evidence of unsupported ISA coverage. The hand-written decoder was replaced
+with `iced-x86` (correct ModRM/SIB/RIP-relative/segment parsing, instruction
+lengths for AOT). The lowering now covers:
 
 - integer ALU reg/imm and reg←[mem] (read-only), byte/16/32/64-bit widths with
   correct partial-register merge and 32-bit zero-extension;
@@ -581,11 +585,11 @@ for AOT). The lowering now covers:
 
 Memory reads import a core helper (`jit_read_mem`). A fault sets a context flag;
 the module flushes Wasm locals and resumes the interpreter at the exact RIP
-without applying the faulting instruction's effects. **Stores, CALL, indirect
-jumps and SIMD still terminate the block before their side effect** and are
-executed precisely by the interpreter. The remaining unsupported histogram is
-now byte stores (`mov [mem], r8`), SSE2 `movdqa/movdqu`, rotate/shift-by-CL, and
-CALL — the next coverage targets, named by telemetry rather than guessed.
+without applying the faulting instruction's effects. At this historical stage,
+stores, CALL, indirect jumps and SIMD still terminated blocks before their side
+effects. Repeated compile-boundary entries around byte stores, SSE2 `movdqa/movdqu`,
+rotate/shift-by-CL, and CALL were follow-up inspection targets only; they did not
+establish dynamic fallback frequency or unsupported interpreter coverage.
 
 ### AOT `.text` scan + SHA-256 keyed cache
 
@@ -712,4 +716,10 @@ Exact execution statistics:
 {"compiled":26543,"executedBlocks":47626970,"executedInstructions":441590005,"traps":0,"cacheHits":47625811,"cacheMisses":1159,"saved":26543,"loaded":0,"fallbackInstructions":24447639,"discarded":0,"compileErrors":0,"cacheErrors":0,"commitPageFaults":0,"tailCalls":true}
 ```
 
-The JIT executed 441,590,005 instructions; the interpreter executed 24,447,639 (about 5.2% of total). JIT traps and validation mismatches were both zero. Core diagnostics recorded 212,506 unsupported-exit observations; their complete raw-opcode histogram, plus `JIT_DIAGNOSTICS_SUMMARY_JSON` and `CORE_TELEMETRY_JSON`, is preserved in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463). Rust core tests, Wasm build, Tier A 7-Zip, and the real-Wine reference gate passed on this commit; the Doom Tier B gate failed as stated. The old traced run had zero executed JIT blocks, and the first untraced direct-CALL run exposed `fault:jit-link-depth`; both were corrected before recording the current result, but the guest access violation remains unresolved.
+The JIT executed 441,590,005 instructions; the interpreter executed 24,447,639 (about 5.2% of total). JIT traps and validation mismatches were both zero. Core diagnostics recorded 212,506 hot-block compile-boundary observations (the historical `unsupported-exit` label is misleading: these are not dynamic fallback counts or proof of unsupported ISA); the raw-opcode histogram, `JIT_DIAGNOSTICS_SUMMARY_JSON`, and `CORE_TELEMETRY_JSON` are preserved in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463). Rust core tests, Wasm build, Tier A 7-Zip, and the real-Wine reference gate passed on this commit; the Doom Tier B gate failed as stated. The old traced run had zero executed JIT blocks, and the first untraced direct-CALL run exposed `fault:jit-link-depth`; both were corrected before recording the current result, but the guest access violation remains unresolved.
+
+### Latest Doom run (CI run `41622337559`, commit `586f7d7`)
+
+**FAIL — 0 gametics, 0 realtics.** The pinned unmodified Chocolate Doom 3.1.1 guest presented 289 frames (140 distinct checksums) then faulted at RIP `0x140149663` with `0xc0000005`, parameters `[0x1,0x3f3cd000]`. The primary run processed 304,000,035 guest instructions in 126,906 ms (**2.40 MIPS**), with zero page faults, **1 JIT fallback/trap**, and **11,054,043 interpreter-fallback instructions**. Its top hot-block compile-boundary entry was `48f7f9c3` ×720 (64-bit `IDIV RCX`; the fourth histogram byte is the next `c3`), followed by `4883c428` ×707 (`ADD RSP,0x28`). The full report is [Tier B check 125874849967](https://github.com/710862-beep/porthole/runs/125874849967).
+
+The validate-every-commit/write-watch diagnostic also ended with 0 gametics at the same fault: **1 fallback/trap**, **11,776,028 interpreter-fallback instructions**, 277,840 ms (**1.09 MIPS**). Its JIT shadow record for the faulting `RET` matched the interpreter state (all step/XMM/GPR/flags/RIP checks true). The CALL/callee/RET state comparison, stack-slot writer, histogram semantics and caveats are documented in [`x64-emulator-status.md`](x64-emulator-status.md) and [diagnostic check 125874855896](https://github.com/710862-beep/porthole/runs/125874855896).

@@ -16,8 +16,8 @@ export interface WallpaperOption {
 export const WALLPAPERS: WallpaperOption[] = [
   {
     id: "cachy-aurora",
-    label: "Cachy Aurora",
-    blurb: "Generated aurora plate — the default Porthole backdrop.",
+    label: "CachyOS Review",
+    blurb: "Magenta geometric planes, a faceted teal mark and oversized editorial lettering.",
   },
   { id: "nebula", label: "Nebula", blurb: "Procedural cyan/violet nebulae, no image download." },
   { id: "minimal", label: "Minimal Grid", blurb: "Quiet blueprint grid for long sessions." },

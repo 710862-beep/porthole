@@ -603,9 +603,10 @@ unsupported opcodes. After fixes, Doom validation fallbacks fell below 100.
 - Decoder: `iced-x86` replaces the hand-written ModRM parser; lowers integer ALU
   (reg/imm/mem-src), partial registers, MOV loads, MOVZX/MOVSX/MOVSXD, LEA, POP,
   SETcc, immediate shifts, native self-loops. Memory reads import a core helper;
-  faults flush locals and resume the interpreter precisely. Stores/CALL/indirect
-  jumps/SIMD still exit before side effects (next coverage targets named by the
-  unsupported histogram: byte stores, SSE2 movdqa/movdqu, shift-by-CL, CALL).
+  faults flush locals and resume the interpreter precisely. At this historical
+  point, stores/CALL/indirect jumps/SIMD exited before side effects. The raw
+  “unsupported” histogram was a hot-block compile-boundary histogram, not a count
+  of dynamic interpreter fallbacks or proof of unsupported CPU ISA coverage.
 - AOT: `pe64.rs` linear-sweeps `.text` for instruction boundaries/branch targets
   and compiles with the runtime JIT decoder; cached RIPs are skipped. Artifacts
   persist to `cache/<sha256_of_exe>.jitcache` (OPFS / Node fs).
@@ -643,6 +644,24 @@ Exact execution counters from Tier B check `125079041463`:
 {"compiled":26543,"executedBlocks":47626970,"executedInstructions":441590005,"traps":0,"cacheHits":47625811,"cacheMisses":1159,"saved":26543,"loaded":0,"fallbackInstructions":24447639,"discarded":0,"compileErrors":0,"cacheErrors":0,"commitPageFaults":0,"tailCalls":true}
 ```
 
-`fallbackInstructions=24,447,639` (about 5.2% of the 466,037,644 guest instructions); JIT traps and validation mismatches were both 0. Core diagnostics reported 212,506 unsupported-exit observations (raw-opcode histogram is in the linked check report). Startup lag was 3,638.303 ms, including 3,614.190 ms of AOT compilation; 25,274 AOT blocks were scanned/compiled. The full startup, diagnostics, and core telemetry JSON is published in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463).
+`fallbackInstructions=24,447,639` (about 5.2% of the 466,037,644 guest instructions); JIT traps and validation mismatches were both 0. Core diagnostics reported 212,506 hot-block compile-boundary observations (not dynamic fallback counts or proof of unsupported CPU ISA; the linked check uses an older `unsupported-exit` label). Startup lag was 3,638.303 ms, including 3,614.190 ms of AOT compilation; 25,274 AOT blocks were scanned/compiled. The full startup, diagnostics, and core telemetry JSON is published in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463).
 
 Rust core tests and the Wasm build passed on this commit; Tier A 7-Zip and the real-Wine reference gates also passed. The Tier B failure remains the blocker. An earlier traced run executed zero JIT blocks, which exposed and motivated the default-trace fix; an intermediate unbounded-link run hit `fault:jit-link-depth`, motivating the leaf-only direct-CALL links above. Neither intermediate run is substituted for the current result.
+
+## Latest Chocolate Doom rerun — failure, no gametics (CI run `41622337559`, commit `586f7d7`)
+
+The pinned, unmodified Chocolate Doom 3.1.1 `chocolate-doom.exe` plus Freedoom 0.13.0 produced 289 guest-presented frames (140 distinct checksums) but **`timedemo_gametics=0`, `realtics=0`**. It ended at an unhandled access violation: `0xc0000005`, RIP `0x140149663`, parameters `[0x1,0x3f3cd000]`, after 304,000,035 guest instructions and zero page faults. The primary JIT run took 126,906 ms (**2.40 MIPS**). The runner counted **1 JIT fallback/trap** and **11,054,043 interpreter-fallback instructions**. The hot-block compile-boundary histogram's top entry was raw key `48f7f9c3` ×720, decoding as 64-bit `IDIV RCX` (`48 f7 f9`; the fourth histogram byte is the following `c3`). Next entries were `4883c428` ×707 (`ADD RSP,0x28`) and `f6c5800f` ×488 (`TEST CH,0x0f`). Full report: [Tier B check 125874849967](https://github.com/710862-beep/porthole/runs/125874849967).
+
+A second, validate-every-commit + write-watch diagnostic also failed with zero gametics and the same fault after 304,000,035 instructions: 277,840 ms (**1.09 MIPS**), **1 fallback/trap**, and **11,776,028 interpreter-fallback instructions**. This warm-cache run recorded no compile-boundary histogram entries; that is not evidence of zero runtime fallback or complete instruction coverage. Its report is [check 125874855896](https://github.com/710862-beep/porthole/runs/125874855896).
+
+### CALL, callee, RET, and shadow-boundary comparison
+
+The control-flow ring records a direct `CALL` at `0x14004806e` to `0x140017280`, with RSP changing `0x21ff8e0 → 0x21ff8d8` and return address `0x140048073` written at `[0x21ff8d8]`. The callee is `MOVSXD RDX,EDX; MOVSXD RCX,ECX; IMUL RCX,RDX; MOV RAX,RCX; SAR RAX,0x10; RET`. A matching recorded `RET` at `0x140017291` consumes `0x140048073` and restores RSP to `0x21ff8e0`.
+
+The later faulting transfer is a distinct recorded `RET` at the same instruction with input RSP `0x21ff8e0`; it consumes `0x140149600` from `[0x21ff8e0]` and advances RSP to `0x21ff8e8`. `0x140149600` is in the image's zero-filled `.bss`, not executable `.text`. The write watch traces this value at that stack slot to a guest `PUSH RBP` at `0x14003a550` (174 earlier matching writes were omitted), consistent with a saved-frame value rather than a return address.
+
+The validate-every-commit JIT shadow record for the faulting RET is `block=0x140017291/1`, `ret=true`, input `0x140017291@rsp=0x21ff8e0`, exit `0x140149600`, shadow `0x140149600@rsp=0x21ff8e8`; `step`, XMM, GPR, flags, and RIP checks all pass. Thus the JIT and interpreter agree on the state produced by that RET; this does **not** explain how the saved-RBP slot became the top of stack or establish a root cause. No cause is claimed from the ring or shadow record alone.
+
+### Histogram semantics
+
+The old `jit_unsupported_json` name was misleading. `record_unsupported` is called only by `maybe_jit_compile` when a hot block ends at an interpreter boundary or a compile attempt fails; counts are compile-boundary observations, not dynamic interpreter-fallback counts and not proof that the CPU interpreter lacks the instruction. This change renames the metric/export to `jit_compile_boundaries_json` and reports `compileBoundaryObservations` / `compileBoundaryByOpcode`. A 64-bit IDIV is deliberately not lowered; it remains an interpreter boundary until a safe lowering is justified. The exact fallback instruction counts above come from JIT execution statistics, not this histogram.

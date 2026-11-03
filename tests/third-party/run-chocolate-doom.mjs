@@ -200,10 +200,11 @@ function writeReport(report) {
   const diagnosticsSummary = {
     validation: diagnostics.validation ?? 0,
     traps: diagnostics.traps ?? 0,
-    unsupportedExits: diagnostics.unsupported?.exits ?? 0,
+    runtimeUnsupportedFallbacks: diagnostics.unsupported ?? 0,
     fallbackByReason: diagnostics.byReason || {},
     fallbackByOpcode: diagnostics.byOpcode || {},
-    unsupportedByOpcode: diagnostics.unsupported?.byOpcode || {},
+    compileBoundaryObservations: diagnostics.compileBoundaries?.observations ?? 0,
+    compileBoundaryByOpcode: diagnostics.compileBoundaries?.byOpcode || {},
   };
   const lines = [
     `GATE 1 Tier B / GATE 2 (Chocolate Doom): ${report.status}`,
@@ -228,6 +229,7 @@ function writeReport(report) {
     `STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup || {})}`,
     `JIT_EXECUTION_STATS_JSON=${JSON.stringify(jit.stats || {})}`,
     `JIT_DIAGNOSTICS_SUMMARY_JSON=${JSON.stringify(diagnosticsSummary)}`,
+    'JIT_COMPILE_BOUNDARY_NOTE=compile-boundary histogram counts hot-block compile attempts, not dynamic runtime fallbacks or unsupported CPU ISA coverage',
     `CORE_TELEMETRY_JSON=${run.telemetry || '{}'}`,
     `named_blockers(unimplemented)=${run.unimplemented || '(none reported)'}`,
     `hle=${run.hle || ''}`,

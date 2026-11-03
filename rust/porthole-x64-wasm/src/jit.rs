@@ -607,8 +607,9 @@ impl HybridWasmJit {
                     let width = if ins.op_kind(0) == OpKind::Memory { ins.memory_size().size() as u8 } else { Self::reg_width(ins.op0_register()) };
                     let signed = m == Mnemonic::Idiv;
                     // 64-bit DIV/IDIV has tricky quotient-overflow and #DE precision. Keep
-                    // it on the interpreter until that behavior is explicitly lowered; the
-                    // normal interpret_rip diagnostics record this fallback by opcode.
+                    // it on the interpreter until that behavior is explicitly lowered. A hot
+                    // compile-boundary histogram may record this site; that is not a dynamic
+                    // fallback count or evidence that the interpreter lacks the instruction.
                     if !matches!(width, 2 | 4) {
                         supported = false;
                     } else {

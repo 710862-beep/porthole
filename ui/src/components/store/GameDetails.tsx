@@ -1,15 +1,16 @@
 import { useState, type ReactNode } from "react";
 import {
-  CheckCircle2,
+  BookmarkCheck,
+  BookmarkPlus,
   Copy,
-  Download,
+  ExternalLink,
   Info,
   Play,
   ScrollText,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import type { InstallProgress, StoreGame } from "@runtime/types";
+import type { StoreGame } from "@runtime/types";
 import { AppIcon } from "@/components/ui/AppIcon";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -18,15 +19,13 @@ import { shortHash } from "@/lib/format";
 import { toast } from "@/store/uiStore";
 import { cn } from "@/lib/cn";
 import { coverStyle } from "./cover";
-import { InstallProgress as InstallProgressView } from "./InstallProgress";
 
 interface GameDetailsProps {
   game: StoreGame;
-  progress: InstallProgress | undefined;
   logsOpen: boolean;
-  onInstall: () => void;
+  onAdd: () => void;
   onLaunch: () => void;
-  onUninstall: () => void;
+  onRemove: () => void;
   onToggleLogs: () => void;
 }
 
@@ -39,23 +38,19 @@ function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** Right-hand detail pane: evidence-first metadata, install/launch/uninstall. */
+/** Right-hand detail pane: feed metadata, evidence and local-library actions. */
 export function GameDetails({
   game,
-  progress,
   logsOpen,
-  onInstall,
+  onAdd,
   onLaunch,
-  onUninstall,
+  onRemove,
   onToggleLogs,
 }: GameDetailsProps) {
   const [copied, setCopied] = useState(false);
   const cover = coverStyle(game.appId);
   const Icon = cover.icon;
-  const installed = game.status === "installed";
-  const installing = Boolean(
-    progress && progress.phase !== "complete" && progress.phase !== "failed",
-  );
+  const inLibrary = game.status === "in-library";
 
   const handleCopyHash = async (): Promise<void> => {
     if (!game.sha256) return;
@@ -94,13 +89,13 @@ export function GameDetails({
             <Badge tone={game.kind === "game" ? "accent" : game.kind === "system" ? "violet" : "neutral"}>
               {game.kind}
             </Badge>
-            {installed ? (
+            {inLibrary ? (
               <Badge tone="success" dot>
-                installed
+                in library
               </Badge>
             ) : (
               <Badge tone="neutral" dot>
-                not installed
+                not in library
               </Badge>
             )}
           </div>
@@ -113,19 +108,18 @@ export function GameDetails({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <p className="text-[11.5px] leading-relaxed text-ink-muted">{game.summary}</p>
 
-        {progress && (
-          <div className="mt-3.5">
-            <InstallProgressView progress={progress} />
-          </div>
-        )}
-
         <div className="mt-4 rounded-[9px] border border-white/[0.07] bg-black/20 px-3 py-1">
-          <MetaRow label="Version">{game.version}</MetaRow>
+          <MetaRow label="Version">{game.chocolatey?.version || game.version}</MetaRow>
           <MetaRow label="Genre">{game.genre}</MetaRow>
-          <MetaRow label="Entry point">
+          {game.chocolateyPackageId && (
+            <MetaRow label="Chocolatey ID">
+              {game.chocolatey?.packageId ?? `${game.chocolateyPackageId} · metadata pending`}
+            </MetaRow>
+          )}
+          <MetaRow label="Expected guest path">
             <span className="font-mono text-[10px]">{game.exePath || "shell surface"}</span>
           </MetaRow>
-          <MetaRow label="Location">Porthole library</MetaRow>
+          <MetaRow label="Location">Browser-local catalog</MetaRow>
           {game.sha256 && (
             <MetaRow label="SHA-256">
               <span className="inline-flex items-center gap-1.5 font-mono text-[10px]">
@@ -148,6 +142,37 @@ export function GameDetails({
           )}
         </div>
 
+        {game.chocolatey && (
+          <section className="mt-3 rounded-[9px] border border-violet/15 bg-violet/[0.045] p-3" aria-label="Chocolatey public package metadata">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-violet">Chocolatey metadata</p>
+              <span className="text-[9px] text-ink-ghost">metadata only</span>
+            </div>
+            {(game.chocolatey.summary || game.chocolatey.description) && (
+              <p className="mt-2 line-clamp-4 text-[10px] leading-relaxed text-ink-muted">
+                {game.chocolatey.summary || game.chocolatey.description}
+              </p>
+            )}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[9px] text-ink-faint">
+              <span className="rounded-[4px] bg-white/[0.06] px-1.5 py-0.5">v{game.chocolatey.version}</span>
+              <span className="rounded-[4px] bg-white/[0.06] px-1.5 py-0.5">
+                {game.chocolatey.downloadCount === null ? "downloads n/a" : `${game.chocolatey.downloadCount.toLocaleString()} downloads`}
+              </span>
+              {game.chocolatey.tags.slice(0, 6).map((tag) => (
+                <span key={tag} className="rounded-[4px] bg-white/[0.04] px-1.5 py-0.5">{tag}</span>
+              ))}
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2 text-[9px] text-ink-ghost">
+              <span>Refreshed {new Date(game.chocolatey.fetchedAt).toLocaleString()}</span>
+              {game.chocolatey.projectUrl.startsWith("https://") && (
+                <a href={game.chocolatey.projectUrl} target="_blank" rel="noreferrer noopener" className="inline-flex flex-none items-center gap-1 text-violet hover:text-ink">
+                  Project <ExternalLink size={9} aria-hidden />
+                </a>
+              )}
+            </div>
+          </section>
+        )}
+
         <div className="mt-3 rounded-[9px] border border-accent/15 bg-accent/[0.05] p-3">
           <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
             <ShieldCheck size={12} aria-hidden />
@@ -165,50 +190,29 @@ export function GameDetails({
       </div>
 
       <footer className="flex-none border-t border-white/[0.07] bg-black/20 p-3">
-        {installed ? (
+        {inLibrary ? (
           <div className="flex flex-col gap-2">
             <Button variant="primary" size="md" fullWidth icon={Play} onClick={onLaunch}>
-              Launch
+              Open Emulator
             </Button>
             <div className="flex gap-2">
-              <Button
-                variant="danger"
-                size="sm"
-                icon={Trash2}
-                onClick={onUninstall}
-                className="flex-1"
-              >
-                Uninstall
+              <Button variant="danger" size="sm" icon={Trash2} onClick={onRemove} className="flex-1">
+                Remove from library
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon={ScrollText}
-                onClick={onToggleLogs}
-                aria-pressed={logsOpen}
-                className="flex-1"
-              >
+              <Button variant="ghost" size="sm" icon={ScrollText} onClick={onToggleLogs} aria-pressed={logsOpen} className="flex-1">
                 Console
               </Button>
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <Button
-              variant="primary"
-              size="md"
-              fullWidth
-              icon={installing ? undefined : Download}
-              loading={installing}
-              disabled={installing}
-              onClick={onInstall}
-            >
-              {installing ? `Installing ${Math.round(progress?.percent ?? 0)}%` : "Install"}
+            <Button variant="primary" size="md" fullWidth icon={BookmarkPlus} onClick={onAdd}>
+              Add to library
             </Button>
             <div className="flex items-center justify-between gap-2">
               <span className="flex items-center gap-1.5 text-[9.5px] text-ink-ghost">
-                <CheckCircle2 size={10} aria-hidden />
-                Registers a library entry · no download
+                <BookmarkCheck size={10} aria-hidden />
+                Catalog membership only · no package download
               </span>
               <Button variant="ghost" size="xs" icon={ScrollText} onClick={onToggleLogs}>
                 Console

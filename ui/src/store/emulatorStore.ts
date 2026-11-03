@@ -45,7 +45,7 @@ export function guestStateOf(telemetry: RuntimeTelemetry | null): EmulatorState 
 
 export const useEmulatorStore = create<EmulatorStore>()((set, get) => ({
   status: "cold",
-  mode: "mock",
+  mode: "unavailable",
   error: null,
   storage: null,
   telemetry: null,

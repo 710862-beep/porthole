@@ -4,7 +4,7 @@
  * PROVENANCE: contracts.ts mirrors the wasm-bindgen surface of
  * rust/porthole-x64-wasm/src/lib.rs and is owned by the runtime, not the shell.
  * This file extends those contracts with the *presentation* data the desktop needs
- * (telemetry snapshots, log records, storage probes, install jobs) without leaking
+ * (telemetry snapshots, log records, storage probes, library records) without leaking
  * emulation internals or DOM types into the core boundary.
  *
  * Rule: nothing under src/ may import from rust/ or js/; everything crosses here.
@@ -27,8 +27,8 @@ export * from "./contracts";
 /* Runtime                                                                    */
 /* ------------------------------------------------------------------------- */
 
-/** "mock" ships in the desktop today. "wasm" = wired to BrowserX64Emulator. */
-export type RuntimeMode = "mock" | "wasm";
+/** The production runtime is ABI-v3 Wasm or unavailable; no mock mode exists. */
+export type RuntimeMode = "wasm" | "unavailable";
 
 export interface RuntimeTelemetry {
   state: EmulatorState;
@@ -63,7 +63,7 @@ export interface RuntimeLogEntry {
  * additions are observation-only channels (telemetry/logs) plus initialization.
  *
  * Frame authority (contracts.ts): only `getFramebuffer()` after a present may be
- * drawn as "the frame". The mock runtime is always labelled as synthetic in UI.
+ * drawn as "the frame". Production routing never synthesizes guest frames.
  */
 export interface ExtendedEmulatorRuntime extends EmulatorRuntime {
   readonly mode: RuntimeMode;
@@ -106,6 +106,7 @@ export interface StorageState {
 export interface PortholeStorageService extends StorageSelector {
   detectProbes(): Promise<StorageProbe[]>;
   requestNvme(): Promise<NvmeSelection>;
+  getDirectoryHandle(): FileSystemDirectoryHandle | null;
   describeSelected(): StorageState;
   setSelected(backend: StorageBackendId, detail?: string): StorageState;
   clearSelection(): void;
@@ -115,38 +116,48 @@ export interface PortholeStorageService extends StorageSelector {
 /* Game store                                                                 */
 /* ------------------------------------------------------------------------- */
 
-export type InstallPhase =
-  | "queued"
-  | "preparing"
-  | "transferring"
-  | "verifying"
-  | "writing"
-  | "complete"
-  | "failed";
-
-export interface InstallProgress {
-  appId: string;
-  phase: InstallPhase;
-  percent: number;
-  detail: string;
+/** Library record: contract metadata + the extra facts the storefront renders. */
+export interface ChocolateyPackageMetadata {
+  packageId: string;
+  version: string;
+  title: string;
+  summary: string;
+  description: string;
+  projectUrl: string;
+  tags: string[];
+  publishedAt: string;
+  downloadCount: number | null;
+  fetchedAt: number;
+  source: "Chocolatey Community Repository";
 }
 
-/** Library record: contract metadata + the extra facts the storefront renders. */
 export interface StoreGame extends GameMetadata {
   summary: string;
   version: string;
   sizeMb: number;
   genre: string;
+  chocolateyPackageId?: string;
+  chocolatey?: ChocolateyPackageMetadata;
   /** Local, reviewable provenance note. Never a marketing claim. */
   provenance: string;
+}
+
+export interface ChocolateyRefreshResult {
+  updated: number;
+  missing: number;
+  fetchedAt: number;
+  fromCache: boolean;
+  error: string | null;
+  source: "Chocolatey Community Repository";
 }
 
 export interface GameStoreService {
   listGames(): StoreGame[];
   getGame(appId: string): StoreGame | null;
-  installGame(appId: string, onProgress?: (progress: InstallProgress) => void): Promise<void>;
-  uninstallGame(appId: string): Promise<void>;
-  isInstalled(appId: string): boolean;
+  addToLibrary(appId: string): Promise<void>;
+  removeFromLibrary(appId: string): Promise<void>;
+  isInLibrary(appId: string): boolean;
+  refreshChocolateyMetadata(): Promise<ChocolateyRefreshResult>;
   onChange(callback: () => void): () => void;
   clear(): void;
 }

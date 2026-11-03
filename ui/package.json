@@ -6,8 +6,9 @@
   "description": "Porthole \u2014 a CachyOS-flavoured browser desktop environment for the Porthole x86-64 runtime.",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "npm run check:no-any && npm run check:boundaries && tsc --noEmit && vite build",
+    "build": "npm run check:no-any && npm run check:boundaries && npm run copy:wasm && tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "copy:wasm": "node scripts/copy-wasm-artifacts.mjs",
     "typecheck": "tsc --noEmit",
     "check:no-any": "node scripts/check-no-any.mjs",
     "check:boundaries": "node scripts/check-ui-boundaries.mjs",

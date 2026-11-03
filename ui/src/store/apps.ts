@@ -1,16 +1,22 @@
 import {
   Activity,
+  Code2,
   Cpu,
   LayoutGrid,
   Settings2,
   Store,
-  Terminal,
   type LucideIcon,
 } from "lucide-react";
 import type { LauncherCategory } from "@runtime/types";
 
 /** Every surface the desktop shell can host. */
-export type AppId = "welcome" | "store" | "terminal" | "emulator" | "system" | "settings";
+export type AppId =
+  | "welcome"
+  | "store"
+  | "emulator"
+  | "system"
+  | "settings"
+  | "devtools";
 
 export interface AppSize {
   width: number;
@@ -36,12 +42,12 @@ export interface AppDefinition {
 export const APPS: Record<AppId, AppDefinition> = {
   store: {
     id: "store",
-    title: "Game Store",
+    title: "App Store",
     category: "games",
     icon: Store,
     tint: "#00e5ff",
-    description: "Pinned PEs, receipts included. Install library entries and launch workloads.",
-    keywords: ["store", "games", "library", "install", "shop"],
+    description: "Catalog entries with Chocolatey metadata and browser-local library bookmarks; packages are never downloaded.",
+    keywords: ["store", "games", "library", "catalog", "shop"],
     pinned: true,
     singleton: true,
     defaultSize: { width: 1140, height: 740 },
@@ -53,25 +59,12 @@ export const APPS: Record<AppId, AppDefinition> = {
     category: "emulators",
     icon: Cpu,
     tint: "#b388ff",
-    description: "Guest scanout, telemetry and the runtime log — mock runtime today.",
+    description: "ABI-v3 Wasm guest execution, AOT/JIT telemetry; guest launch is unavailable without the CI artifact.",
     keywords: ["emulator", "runtime", "wasm", "guest", "vmm"],
     pinned: true,
     singleton: true,
     defaultSize: { width: 960, height: 640 },
     minSize: { width: 560, height: 400 },
-  },
-  terminal: {
-    id: "terminal",
-    title: "Terminal",
-    category: "utilities",
-    icon: Terminal,
-    tint: "#94e2d5",
-    description: "A local shell over the library's evidence. Not a guest console.",
-    keywords: ["terminal", "shell", "console", "logs", "commands"],
-    pinned: true,
-    singleton: false,
-    defaultSize: { width: 780, height: 470 },
-    minSize: { width: 460, height: 280 },
   },
   system: {
     id: "system",
@@ -111,6 +104,19 @@ export const APPS: Record<AppId, AppDefinition> = {
     singleton: true,
     defaultSize: { width: 760, height: 560 },
     minSize: { width: 560, height: 420 },
+  },
+  devtools: {
+    id: "devtools",
+    title: "Developer Console",
+    category: "utilities",
+    icon: Code2,
+    tint: "#a6e3a1",
+    description: "Inspect shell events, runtime telemetry and documented SHIM call reports.",
+    keywords: ["developer", "console", "events", "shim", "runtime", "debug"],
+    pinned: false,
+    singleton: true,
+    defaultSize: { width: 900, height: 620 },
+    minSize: { width: 640, height: 440 },
   },
 };
 

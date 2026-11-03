@@ -1,9 +1,9 @@
 import type { WindowInstance } from "@/store/windowStore";
 import { GameStoreApp } from "@/components/store/GameStoreApp";
 import { EmulatorApp } from "@/components/apps/EmulatorApp";
+import { DeveloperConsoleApp } from "@/components/apps/DeveloperConsoleApp";
 import { SettingsApp } from "@/components/apps/SettingsApp";
 import { SystemMonitorApp } from "@/components/apps/SystemMonitorApp";
-import { TerminalApp } from "@/components/apps/TerminalApp";
 import { WelcomeApp } from "@/components/apps/WelcomeApp";
 import { WindowChromeContext } from "./WindowChromeContext";
 
@@ -25,10 +25,10 @@ export function WindowContent({ instance, visible }: WindowContentProps) {
     >
       {instance.appId === "store" && <GameStoreApp />}
       {instance.appId === "emulator" && <EmulatorApp />}
-      {instance.appId === "terminal" && <TerminalApp />}
       {instance.appId === "system" && <SystemMonitorApp />}
       {instance.appId === "settings" && <SettingsApp />}
       {instance.appId === "welcome" && <WelcomeApp />}
+      {instance.appId === "devtools" && <DeveloperConsoleApp />}
     </WindowChromeContext.Provider>
   );
 }

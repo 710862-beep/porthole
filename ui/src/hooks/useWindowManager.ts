@@ -96,10 +96,10 @@ export function useWindowManager() {
 
   const launchGame = useCallback(
     (game: StoreGame): void => {
-      if (game.status !== "installed") {
+      if (game.status !== "in-library") {
         toast({
-          title: `${game.title} is not installed`,
-          message: "Install the library entry first, then launch it.",
+          title: `${game.title} is not in your library`,
+          message: "Add the catalog entry to your local library first. This does not install the game.",
           tone: "warning",
         });
         return;
@@ -107,19 +107,13 @@ export function useWindowManager() {
 
       switch (game.appId) {
         case "chocolate-doom":
-          openApp("emulator", { kind: "game", appId: game.appId });
-          break;
         case "7zip":
-          openApp("terminal", {
-            kind: "terminal",
-            lines: [
-              `# ${game.title} — Gate 1 Tier A evidence`,
-              "$ porthole evidence show 7zip",
-              "PE32 x86 console executable · imports resolved by kernel32 shim",
-              "create + extract round-trip: PASS (byte-identical)",
-              "sha256 b0cfdeaf429f5cc53f85123dd8f5a5feb92c19d31aa34df257edf9a26be05f95",
-            ],
+          toast({
+            title: "Local guest files required",
+            message: `Open the emulator and import ${game.exePath} from your own files. Store membership does not install a binary.`,
+            tone: "info",
           });
+          openApp("emulator");
           break;
         case "porthole-engine":
           openApp("system", { kind: "system-report" });

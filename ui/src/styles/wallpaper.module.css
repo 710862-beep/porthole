@@ -20,6 +20,88 @@
   transition: opacity 600ms var(--ease-kde);
 }
 
+.cachyReview {
+  background:
+    radial-gradient(ellipse 52% 72% at 50% 104%, rgba(255, 112, 151, 0.94), transparent 72%),
+    radial-gradient(ellipse 60% 90% at 88% 40%, rgba(127, 37, 157, 0.84), transparent 72%),
+    linear-gradient(132deg, #552d98 0%, #7b31aa 44%, #3b1057 100%);
+  filter: saturate(1.05) contrast(1.02);
+}
+
+.cachyReview::before,
+.cachyReview::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+}
+
+.cachyReview::before {
+  background:
+    linear-gradient(153deg, transparent 0 54%, rgba(57, 17, 91, 0.46) 54.2% 68%, transparent 68.2%),
+    linear-gradient(28deg, transparent 0 73%, rgba(125, 40, 159, 0.36) 73.2% 82%, transparent 82.2%),
+    linear-gradient(148deg, transparent 0 80%, rgba(39, 11, 61, 0.4) 80.2% 100%);
+}
+
+.cachyReview::after {
+  background: linear-gradient(180deg, rgba(31, 10, 52, 0.12), transparent 34%, rgba(40, 10, 57, 0.08));
+}
+
+.reviewArt {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.reviewLogo {
+  position: absolute;
+  top: 3%;
+  left: 41%;
+  width: clamp(220px, 37vw, 500px);
+  height: auto;
+  overflow: visible;
+  filter: drop-shadow(0 16px 28px rgba(31, 10, 56, 0.32));
+  opacity: 0.96;
+}
+
+.reviewTitle {
+  position: absolute;
+  left: clamp(18px, 2vw, 32px);
+  bottom: clamp(58px, 8.5vh, 88px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  max-width: min(58vw, 740px);
+  font-family: Impact, "Arial Narrow", "Segoe UI", sans-serif;
+  font-size: clamp(2.25rem, 6.4vw, 5.55rem);
+  font-weight: 900;
+  letter-spacing: 0.012em;
+  line-height: 0.86;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.reviewName,
+.reviewLine {
+  margin: 0;
+}
+
+.reviewName {
+  color: #57ee95;
+  -webkit-text-stroke: 1px rgba(29, 89, 83, 0.72);
+  text-shadow: 2px 2px 0 #6a278d, 4px 5px 0 rgba(21, 23, 72, 0.44);
+}
+
+.reviewLine {
+  color: #fbf9ff;
+  -webkit-text-stroke: 0.55px rgba(117, 46, 154, 0.62);
+  text-shadow: 2px 2px 0 rgba(71, 22, 94, 0.62), 4px 5px 0 rgba(30, 10, 45, 0.22);
+}
+
 /* Procedural fallbacks used by Settings → Wallpaper, so no extra downloads. */
 .nebula {
   background:
@@ -115,6 +197,21 @@
   }
   50% {
     transform: translate3d(-5vw, 4vw, 0) scale(1);
+  }
+}
+
+@media (max-width: 700px) {
+  .reviewLogo {
+    top: 9%;
+    left: 43%;
+    width: 54vw;
+  }
+
+  .reviewTitle {
+    left: 16px;
+    bottom: 58px;
+    max-width: calc(100vw - 32px);
+    font-size: clamp(2rem, 10.8vw, 4rem);
   }
 }
 

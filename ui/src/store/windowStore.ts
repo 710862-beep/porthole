@@ -16,11 +16,9 @@ export interface Bounds {
 }
 
 export interface WindowPayload {
-  kind: "game" | "system-report" | "terminal" | "settings" | "welcome";
+  kind: "game" | "system-report" | "settings" | "welcome";
   /** Store game id for `kind: "game"`. */
   appId?: string;
-  /** Initial terminal transcript lines. */
-  lines?: string[];
   /** Settings section deep-link. */
   section?: string;
 }

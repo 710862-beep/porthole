@@ -11,6 +11,7 @@ import { createRuntimeBundle, type RuntimeBundle } from "@runtime/index";
 import type { ExtendedEmulatorRuntime, GameStoreService, PortholeStorageService } from "@runtime/types";
 import { useEmulatorStore } from "@/store/emulatorStore";
 import { useLibraryStore } from "@/store/libraryStore";
+import { recordDevEvent } from "@/store/devConsoleStore";
 
 interface RuntimeContextValue extends RuntimeBundle {
   runtime: ExtendedEmulatorRuntime;
@@ -36,11 +37,18 @@ export function RuntimeProvider({ children }: { children: ReactNode }): ReactEle
     emulator.setMode(bundle.runtime.mode);
     emulator.replaceLogs(bundle.runtime.getLogs());
 
+    let lastState = useEmulatorStore.getState().telemetry?.state ?? null;
     const offTelemetry = bundle.runtime.onTelemetry((telemetry) => {
       useEmulatorStore.getState().setTelemetry(telemetry);
+      if (telemetry.state !== lastState) {
+        lastState = telemetry.state;
+        recordDevEvent("runtime", "info", "state", `guest state → ${telemetry.state}`);
+      }
     });
     const offLog = bundle.runtime.onLog((entry) => {
       useEmulatorStore.getState().pushLog(entry);
+      const channel = entry.source === "shim" ? "shim" : "runtime";
+      recordDevEvent(channel, entry.level, entry.source, entry.message);
     });
     useLibraryStore.getState().hydrate(bundle.store);
 

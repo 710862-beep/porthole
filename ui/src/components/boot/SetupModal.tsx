@@ -114,8 +114,11 @@ export function SetupModal({
                 </li>
                 <li className="flex gap-2">
                   <CheckCircle2 size={12} className="mt-0.5 flex-none text-success" aria-hidden />
-                  The runtime is the labelled <strong className="font-semibold text-ink">mock</strong>{" "}
-                  today; telemetry says so everywhere.
+                  Guest execution uses ABI-v3 WebAssembly; if its artifact is missing, the desktop remains in unavailable mode.
+                </li>
+                <li className="flex gap-2">
+                  <CheckCircle2 size={12} className="mt-0.5 flex-none text-success" aria-hidden />
+                  This browser app cannot start native Windows processes on the host.
                 </li>
                 <li className="flex gap-2">
                   <CheckCircle2 size={12} className="mt-0.5 flex-none text-success" aria-hidden />
@@ -134,7 +137,7 @@ export function SetupModal({
               </div>
 
               <div className="mt-5 flex items-center gap-2 text-[9px] text-ink-ghost">
-                <Badge tone={mode === "mock" ? "warning" : "success"} dot>
+                <Badge tone={mode === "wasm" ? "success" : "warning"} dot>
                   {mode} runtime
                 </Badge>
                 <span>CachyOS-inspired · dark</span>

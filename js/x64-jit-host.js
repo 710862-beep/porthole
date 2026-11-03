@@ -75,9 +75,13 @@
     }
 
     diagnosticReport() {
-      let unsupported = null;
-      try { if (typeof this.emu.jit_unsupported_json === 'function') unsupported = JSON.parse(this.emu.jit_unsupported_json() || 'null'); } catch { /* optional core export */ }
-      return { ...this.diagnostics, byOpcode: { ...this.diagnostics.byOpcode }, byReason: { ...this.diagnostics.byReason }, unsupported };
+      let compileBoundaries = null;
+      try {
+        if (typeof this.emu.jit_compile_boundaries_json === 'function') {
+          compileBoundaries = JSON.parse(this.emu.jit_compile_boundaries_json() || 'null');
+        }
+      } catch { /* optional core export */ }
+      return { ...this.diagnostics, byOpcode: { ...this.diagnostics.byOpcode }, byReason: { ...this.diagnostics.byReason }, compileBoundaries };
     }
 
     async initCache() {

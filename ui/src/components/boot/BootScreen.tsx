@@ -109,7 +109,7 @@ export function BootScreen({ variant, stage, storageLabel, mode }: BootScreenPro
         <div className="absolute bottom-6 left-0 right-0 flex items-center justify-center gap-3 text-[9px] text-ink-ghost">
           <span>Porthole 0.5.0</span>
           <span className="h-2.5 w-px bg-white/10" aria-hidden />
-          <Badge tone={mode === "mock" ? "warning" : "success"} dot>
+          <Badge tone={mode === "wasm" ? "success" : "warning"} dot>
             {mode} runtime
           </Badge>
           <span className="h-2.5 w-px bg-white/10" aria-hidden />

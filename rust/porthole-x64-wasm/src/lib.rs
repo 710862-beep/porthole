@@ -164,8 +164,9 @@ pub struct BrowserX64Emulator {
     jit_shadow_history: [JitShadowBoundary; JIT_SHADOW_HISTORY_CAP],
     jit_shadow_history_len: usize,
     jit_last_failure: String,
-    jit_unsupported: std::collections::HashMap<String, u64>,
-    jit_unsupported_exits: u64,
+    /// Histogram of hot-block compile boundaries; not dynamic interpreter exits or ISA support.
+    jit_compile_boundaries: std::collections::HashMap<String, u64>,
+    jit_compile_boundary_observations: u64,
     jit_mem_fault: u32,
     jit_tlb: Vec<u64>,
     jit_undo: Vec<u64>,
@@ -214,8 +215,8 @@ impl BrowserX64Emulator {
             jit_shadow_history: [JitShadowBoundary::default(); JIT_SHADOW_HISTORY_CAP],
             jit_shadow_history_len: 0,
             jit_last_failure: String::new(),
-            jit_unsupported: std::collections::HashMap::new(),
-            jit_unsupported_exits: 0,
+            jit_compile_boundaries: std::collections::HashMap::new(),
+            jit_compile_boundary_observations: 0,
             jit_mem_fault: 0,
             jit_tlb: {
                 let mut v = vec![0u64; jit::JIT_TLB_ENTRIES * 4];
@@ -1275,8 +1276,8 @@ impl BrowserX64Emulator {
         let mut window = vec![0u8; len];
         if self.vmm.host_read_bytes(insn_rip, &mut window).is_ok() {
             match self.jit.try_compile_block(insn_rip, epoch, &window) {
-                Some(art) => { if art.interpret_rip != 0 { self.record_unsupported(art.interpret_rip); } }
-                None => self.record_unsupported(insn_rip),
+                Some(art) => { if art.interpret_rip != 0 { self.record_compile_boundary(art.interpret_rip); } }
+                None => self.record_compile_boundary(insn_rip),
             }
         }
     }
@@ -1607,19 +1608,22 @@ impl BrowserX64Emulator {
         self.jit_validate_always = mode == 2;
     }
     pub fn jit_failure_json(&self) -> String { self.jit_last_failure.clone() }
-    pub fn jit_unsupported_json(&self) -> String {
-        let mut entries: Vec<_> = self.jit_unsupported.iter().collect();
+    /// Histogram of hot-block compiler boundaries encountered by `maybe_jit_compile`.
+    /// These counts are compile observations, not dynamic interpreter fallbacks and do not
+    /// prove an opcode is unsupported by the CPU interpreter or by the JIT in general.
+    pub fn jit_compile_boundaries_json(&self) -> String {
+        let mut entries: Vec<_> = self.jit_compile_boundaries.iter().collect();
         entries.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
         let items: Vec<String> = entries.iter().take(256).map(|(k, v)| format!("\"{}\":{}", k, v)).collect();
-        format!("{{\"exits\":{},\"byOpcode\":{{{}}}}}", self.jit_unsupported_exits, items.join(","))
+        format!("{{\"observations\":{},\"byOpcode\":{{{}}}}}", self.jit_compile_boundary_observations, items.join(","))
     }
-    fn record_unsupported(&mut self, rip: u64) {
+    fn record_compile_boundary(&mut self, rip: u64) {
         let mut bytes = [0u8; 4];
         let key = if self.vmm.host_read_bytes(rip, &mut bytes).is_ok() {
             format!("{:02x}{:02x}{:02x}{:02x}", bytes[0], bytes[1], bytes[2], bytes[3])
         } else { format!("unmapped:{:x}", rip) };
-        *self.jit_unsupported.entry(key).or_insert(0) += 1;
-        self.jit_unsupported_exits += 1;
+        *self.jit_compile_boundaries.entry(key).or_insert(0) += 1;
+        self.jit_compile_boundary_observations += 1;
     }
     /// Host WebAssembly tail-call feature probe. Rust +tail-call only permits the opcode;
     /// the runtime validator must also accept it before we link cross-module edges.

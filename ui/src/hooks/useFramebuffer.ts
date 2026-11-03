@@ -7,7 +7,7 @@ import { useRuntime } from "./useRuntime";
  *
  * Frame authority (contracts.ts): pixels come from `runtime.getFramebuffer()` only —
  * nothing is composed host-side. Repaints are coalesced to one per animation frame
- * and the canvas keeps the guest's native resolution (240×135 in mock mode), letting
+ * and the canvas keeps the guest's native resolution (240×135 for current scanout), letting
  * CSS scale it with `image-rendering: pixelated` like a real low-res scanout.
  *
  * Pass `enabled: false` when the window is hidden/minimised: the hook detaches its

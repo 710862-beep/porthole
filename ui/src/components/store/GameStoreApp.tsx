@@ -1,17 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BriefcaseBusiness,
+  Code2,
   Cpu,
-  Download,
-  Package,
+  FileQuestion,
+  Film,
+  Gamepad2,
+  Globe2,
+  MessagesSquare,
+  Palette,
+  RefreshCw,
   Search,
   ShieldCheck,
   Store,
-  Terminal,
+  ScrollText,
   Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { InstallPhase, RuntimeLogEntry, RuntimeLogLevel, StoreGame } from "@runtime/types";
+import type {
+  ChocolateyRefreshResult,
+  RuntimeLogEntry,
+  RuntimeLogLevel,
+  StoreCategoryId,
+  StoreGame,
+} from "@runtime/types";
 import { useRuntime } from "@/hooks/useRuntime";
 import { useWindowManager } from "@/hooks/useWindowManager";
 import { useLibraryStore } from "@/store/libraryStore";
@@ -28,13 +41,25 @@ import { GameGrid } from "./GameGrid";
 import { GameDetails } from "./GameDetails";
 import { cn } from "@/lib/cn";
 
-type LibraryFilter = "all" | "games" | "utilities" | "system";
+type LibraryFilter = "all" | StoreCategoryId;
+
+const CATEGORY_LABELS: Record<StoreCategoryId, { label: string; icon: LucideIcon }> = {
+  games: { label: "Games", icon: Gamepad2 },
+  utilities: { label: "Utilities", icon: Wrench },
+  system: { label: "System", icon: Cpu },
+  development: { label: "Development", icon: Code2 },
+  browsers: { label: "Browsers", icon: Globe2 },
+  media: { label: "Media", icon: Film },
+  creativity: { label: "Creativity", icon: Palette },
+  productivity: { label: "Productivity", icon: BriefcaseBusiness },
+  communications: { label: "Communications", icon: MessagesSquare },
+};
 
 const FILTERS: Array<{ id: LibraryFilter; label: string; icon: LucideIcon }> = [
   { id: "all", label: "All", icon: Store },
-  { id: "games", label: "Games", icon: Package },
-  { id: "utilities", label: "Utilities", icon: Wrench },
-  { id: "system", label: "System", icon: Cpu },
+  ...(
+    ["games", "utilities", "system", "development", "browsers", "media", "creativity", "productivity", "communications"] as const
+  ).map((id) => ({ id, ...CATEGORY_LABELS[id] })),
 ];
 
 function errorMessage(error: unknown): string {
@@ -42,14 +67,13 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Game Store window: library grid, detail pane, and the shared runtime console.
- * Installs are library registrations only — the UI says so on every surface.
+ * App Store window: curated catalog, Chocolatey metadata detail and runtime console.
+ * Library membership is a browser-local bookmark, never an installation.
  */
 export function GameStoreApp() {
   const { store: gameStore } = useRuntime();
-  const { launchGame, openApp } = useWindowManager();
+  const { openApp } = useWindowManager();
   const games = useLibraryStore((state) => state.games);
-  const progress = useLibraryStore((state) => state.progress);
   const runtimeLogs = useEmulatorStore((state) => state.logs);
   const logsOpen = useEmulatorStore((state) => state.logsOpen);
 
@@ -57,10 +81,12 @@ export function GameStoreApp() {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string>("chocolate-doom");
   const [localLogs, setLocalLogs] = useState<RuntimeLogEntry[]>([]);
+  const [metadataBusy, setMetadataBusy] = useState(false);
+  const [metadataResult, setMetadataResult] = useState<ChocolateyRefreshResult | null>(null);
 
   const logSequence = useRef(-1);
-  const lastPhase = useRef<Record<string, InstallPhase>>({});
   const seeded = useRef(false);
+  const metadataStarted = useRef(false);
 
   const appendLog = useCallback((level: RuntimeLogLevel, message: string): void => {
     const entry: RuntimeLogEntry = {
@@ -73,12 +99,47 @@ export function GameStoreApp() {
     setLocalLogs((previous) => [...previous, entry].slice(-80));
   }, []);
 
+  const refreshMetadata = useCallback(async (): Promise<void> => {
+    if (metadataBusy) return;
+    setMetadataBusy(true);
+    appendLog("info", "Refreshing package metadata from Chocolatey's public OData feed (metadata only)");
+    try {
+      const result = await gameStore.refreshChocolateyMetadata();
+      setMetadataResult(result);
+      const cacheLabel = result.fromCache ? (result.error ? " · cached fallback" : " · cache hit") : " · live feed";
+      if (result.error) {
+        appendLog("warn", `Chocolatey metadata: ${result.updated} updated, ${result.missing} missing${cacheLabel} · ${result.error}`);
+      } else {
+        appendLog("info", `Chocolatey metadata: ${result.updated} records refreshed${cacheLabel}`);
+      }
+    } catch (error) {
+      const message = errorMessage(error);
+      setMetadataResult({
+        updated: 0,
+        missing: games.filter((game) => Boolean(game.chocolateyPackageId)).length,
+        fetchedAt: 0,
+        fromCache: false,
+        error: message,
+        source: "Chocolatey Community Repository",
+      });
+      appendLog("error", `Chocolatey metadata refresh failed · ${message}`);
+    } finally {
+      setMetadataBusy(false);
+    }
+  }, [appendLog, gameStore, games.length, metadataBusy]);
+
   useEffect(() => {
     if (seeded.current) return;
     seeded.current = true;
-    appendLog("info", "Game Store ready · library is local to this browser profile");
-    appendLog("info", "install = library registration only; no bytes are fetched by the shell");
+    appendLog("info", "App Store ready · catalog bookmarks are local to this browser profile");
+    appendLog("info", "Chocolatey queries are metadata-only; no package bytes are fetched or executed");
   }, [appendLog]);
+
+  useEffect(() => {
+    if (metadataStarted.current) return;
+    metadataStarted.current = true;
+    void refreshMetadata();
+  }, [refreshMetadata]);
 
   useEffect(() => {
     if (games.length > 0 && !games.some((game) => game.appId === selectedId)) {
@@ -92,7 +153,15 @@ export function GameStoreApp() {
       const matchesFilter = filter === "all" || game.category === filter;
       const matchesQuery =
         !needle ||
-        [game.title, game.summary, game.genre, game.version]
+        [
+          game.title,
+          game.summary,
+          game.genre,
+          game.version,
+          game.chocolatey?.title ?? "",
+          game.chocolatey?.summary ?? "",
+          game.chocolatey?.tags.join(" ") ?? "",
+        ]
           .join(" ")
           .toLowerCase()
           .includes(needle);
@@ -110,83 +179,58 @@ export function GameStoreApp() {
     [localLogs, runtimeLogs],
   );
 
-  const installedCount = games.filter((game) => game.status === "installed").length;
+  const inLibraryCount = games.filter((game) => game.status === "in-library").length;
 
-  const handleInstall = useCallback(
+  const handleAddToLibrary = useCallback(
     async (game: StoreGame): Promise<void> => {
-      appendLog("info", `install ${game.appId} → ${game.exePath || "library entry"}`);
       try {
-        await gameStore.installGame(game.appId, (update) => {
-          useLibraryStore.getState().setProgress(update);
-          const previous = lastPhase.current[game.appId];
-          if (previous !== update.phase) {
-            lastPhase.current[game.appId] = update.phase;
-            appendLog(
-              update.phase === "complete" ? "info" : "debug",
-              `${update.phase} · ${Math.round(update.percent)}% — ${update.detail}`,
-            );
-            if (update.phase === "complete") {
-              toast({
-                title: `${game.title} installed`,
-                message: "Library entry registered. No bytes were downloaded.",
-                tone: "success",
-              });
-            }
-          }
+        await gameStore.addToLibrary(game.appId);
+        appendLog("info", `added ${game.appId} to this browser's library · no package bytes fetched`);
+        toast({
+          title: "Added to library",
+          message: `${game.title} is a catalog bookmark. It is not a downloaded or installed binary.`,
+          tone: "success",
         });
       } catch (error) {
         const message = errorMessage(error);
-        appendLog("error", `install failed: ${message}`);
+        appendLog("error", `library update failed: ${message}`);
         await reportError({
-          title: "Install failed",
-          body: `The library entry for ${game.title} could not be registered.`,
+          title: "Could not update library",
+          body: `The catalog record for ${game.title} could not be saved.`,
           details: message,
         });
-      } finally {
-        delete lastPhase.current[game.appId];
-        window.setTimeout(() => {
-          useLibraryStore.getState().clearProgress(game.appId);
-        }, 900);
       }
     },
     [appendLog, gameStore],
   );
 
-  const handleUninstall = useCallback(
+  const handleRemoveFromLibrary = useCallback(
     async (game: StoreGame): Promise<void> => {
       const confirmed = await confirmAction({
-        title: `Uninstall ${game.title}?`,
-        body: "The library entry is removed from this browser profile. Game bytes are not managed by this shell.",
-        confirmLabel: "Uninstall",
+        title: `Remove ${game.title} from the library?`,
+        body: "This only removes the browser-local catalog bookmark. It does not uninstall or delete guest files.",
+        confirmLabel: "Remove entry",
         cancelLabel: "Keep",
         danger: true,
       });
       if (!confirmed) return;
-      try {
-        await gameStore.uninstallGame(game.appId);
-        appendLog("warn", `uninstalled ${game.appId} — library entry removed`);
-        toast({
-          title: `${game.title} uninstalled`,
-          tone: "info",
-          message: "The entry can be added again at any time.",
-        });
-      } catch (error) {
-        await reportError({
-          title: "Uninstall failed",
-          body: `Could not remove ${game.title}.`,
-          details: errorMessage(error),
-        });
-      }
+      await gameStore.removeFromLibrary(game.appId);
+      appendLog("info", `removed ${game.appId} from the browser library`);
+      toast({
+        title: "Library entry removed",
+        tone: "info",
+        message: "No guest files or Chocolatey packages were changed.",
+      });
     },
     [appendLog, gameStore],
   );
 
-  const handleLaunch = useCallback(
+  const handleOpenEmulator = useCallback(
     (game: StoreGame): void => {
-      appendLog("info", `launch ${game.appId} → ${game.exePath || "shell surface"}`);
-      launchGame(game);
+      appendLog("info", `open guest runtime for ${game.appId}; local files are required`);
+      openApp("emulator");
     },
-    [appendLog, launchGame],
+    [appendLog, openApp],
   );
 
   const handleClearLogs = useCallback((): void => {
@@ -205,17 +249,40 @@ export function GameStoreApp() {
         <AppIcon icon={Store} tint="#00e5ff" size={30} iconSize={15} />
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="text-[13.5px] font-semibold tracking-[-0.01em] text-ink">Game Store</h1>
+            <h1 className="text-[13.5px] font-semibold tracking-[-0.01em] text-ink">App Store</h1>
             <Badge tone="accent" dot>
-              {installedCount}/{games.length || "—"} installed
+              {inLibraryCount}/{games.length || "—"} in library
+            </Badge>
+            <Badge
+              tone={metadataResult?.error ? "warning" : metadataResult ? "success" : "neutral"}
+              title={metadataResult?.error ?? "Chocolatey package metadata status"}
+            >
+              {metadataBusy
+                ? "fetching metadata…"
+                : metadataResult?.error && metadataResult.updated === 0
+                  ? "metadata unavailable"
+                  : metadataResult
+                    ? `${metadataResult.updated} ${metadataResult.fromCache ? "cached" : "live"} records`
+                    : "Chocolatey metadata"}
             </Badge>
           </div>
           <p className="truncate text-[10px] text-ink-faint">
-            Pinned workloads. Every card carries the CI evidence that backs it.
+            {games.length} categorized apps · Chocolatey metadata only, no package downloads.
           </p>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={RefreshCw}
+            loading={metadataBusy}
+            aria-label="Refresh Chocolatey metadata"
+            title={metadataResult?.error ?? "Fetch package IDs, versions and descriptions only; no .nupkg or installer downloads"}
+            onClick={() => { void refreshMetadata(); }}
+          >
+            Metadata
+          </Button>
           <div className="relative">
             <Search
               size={12}
@@ -252,7 +319,7 @@ export function GameStoreApp() {
           <Button
             size="sm"
             variant="ghost"
-            icon={Terminal}
+            icon={ScrollText}
             aria-pressed={logsOpen}
             onClick={toggleLogs}
             title="Toggle the runtime console"
@@ -263,7 +330,7 @@ export function GameStoreApp() {
         </div>
       </header>
 
-      <div className="flex flex-none items-center gap-1.5 border-b border-white/[0.05] px-3 py-1.5">
+      <div className="flex flex-none items-center gap-1.5 overflow-x-auto border-b border-white/[0.05] px-3 py-1.5">
         {FILTERS.map((item) => {
           const Icon = item.icon;
           const active = filter === item.id;
@@ -292,7 +359,7 @@ export function GameStoreApp() {
         })}
         <span className="ml-auto flex items-center gap-1.5 pr-1 text-[9.5px] text-ink-ghost">
           <ShieldCheck size={10} aria-hidden className="text-accent/70" />
-          mock runtime · storefront entries are local
+          Chocolatey OData fields only · no .nupkg / .exe
         </span>
       </div>
 
@@ -309,7 +376,7 @@ export function GameStoreApp() {
             </div>
           ) : filtered.length === 0 ? (
             <EmptyState
-              icon={Download}
+              icon={FileQuestion}
               title="Nothing in this shelf"
               body={`No library entries match ${query ? `“${query}”` : "this filter"}.`}
               action={
@@ -331,29 +398,23 @@ export function GameStoreApp() {
               games={filtered}
               selectedId={selected?.appId ?? null}
               onSelect={setSelectedId}
-              progress={progress}
             />
           )}
 
           <p className="mt-4 flex items-center gap-1.5 text-[9.5px] leading-relaxed text-ink-ghost">
             <ShieldCheck size={10} aria-hidden />
-            Evidence strings mirror docs/FINAL-STATUS-REPORT.md. Installing here never
-            downloads game bytes.
+            Metadata is sourced from Chocolatey's public feed; library membership never
+            downloads or executes packages.
           </p>
         </section>
 
         {selected ? (
           <GameDetails
             game={selected}
-            progress={progress[selected.appId]}
             logsOpen={logsOpen}
-            onInstall={() => {
-              void handleInstall(selected);
-            }}
-            onLaunch={() => handleLaunch(selected)}
-            onUninstall={() => {
-              void handleUninstall(selected);
-            }}
+            onAdd={() => { void handleAddToLibrary(selected); }}
+            onLaunch={() => handleOpenEmulator(selected)}
+            onRemove={() => { void handleRemoveFromLibrary(selected); }}
             onToggleLogs={toggleLogs}
           />
         ) : (

@@ -122,11 +122,11 @@ function StatCard({ icon: Icon, label, value, hint, tone = "accent" }: StatCardP
   );
 }
 
-/** Live telemetry, storage probes and host capabilities. Explicitly labels mock data. */
+/** Live runtime telemetry, browser storage probes and browser-host capabilities. */
 export function SystemMonitorApp() {
   const chrome = useWindowChrome();
   const { storage, runtime } = useRuntime();
-  const { telemetry, guestState, mode, status, logs, logsOpen, clearLogs, toggleLogs, terminate } =
+  const { telemetry, guestState, mode, status, logs, logsOpen, clearLogs, toggleLogs, terminate, initialize } =
     useEmulator();
   const { openApp } = useWindowManager();
 
@@ -160,7 +160,7 @@ export function SystemMonitorApp() {
     return () => window.clearTimeout(timer);
   }, [chrome.payload]);
 
-  const residentRatio = telemetry
+  const residentRatio = mode === "wasm" && telemetry
     ? (telemetry.residentPages / Math.max(1, telemetry.maxResidentPages)) * 100
     : 0;
 
@@ -197,7 +197,7 @@ export function SystemMonitorApp() {
           </p>
         </div>
         <div className="ml-2 flex items-center gap-1.5">
-          <Badge tone={mode === "mock" ? "warning" : "success"} dot>
+          <Badge tone={mode === "wasm" ? "success" : "warning"} dot>
             {mode} runtime
           </Badge>
           <Badge tone={guestState === "running" ? "success" : "neutral"} dot>
@@ -221,14 +221,13 @@ export function SystemMonitorApp() {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {mode === "mock" && (
+        {mode !== "wasm" && (
           <div className="mb-3 flex items-start gap-2.5 rounded-[10px] border border-warning/25 bg-warning/[0.07] px-3.5 py-2.5">
             <AlertTriangle size={14} className="mt-0.5 flex-none text-warning" aria-hidden />
             <p className="text-[10.5px] leading-relaxed text-warning/90">
-              <strong className="font-semibold">Mock runtime.</strong> Frames, instructions and
-              present counts below are synthetic. Swap the runtime adapter in{" "}
-              <code className="font-mono">ui/runtime</code> for the Wasm core and the same UI shows
-              guest evidence — nothing in this screen is a compatibility claim.
+              <strong className="font-semibold">ABI-v3 runtime unavailable.</strong> This browser desktop
+              does not start host Windows processes. Guest launch and scanout remain disabled until the
+              Wasm artifact initializes; no simulated process or frame data is substituted.
             </p>
           </div>
         )}
@@ -244,21 +243,21 @@ export function SystemMonitorApp() {
           <StatCard
             icon={Cpu}
             label="Instructions"
-            value={telemetry ? formatNumber(telemetry.instructionsExecuted) : "—"}
-            hint="synthetic pace in mock mode"
+            value={mode === "wasm" && telemetry ? formatNumber(telemetry.instructionsExecuted) : "—"}
+            hint={mode === "wasm" ? "reported by the guest runtime" : "unavailable"}
             tone="violet"
           />
           <StatCard
             icon={Gauge}
             label="Presented frames"
-            value={telemetry ? formatNumber(telemetry.presentedFrames) : "—"}
-            hint={telemetry?.fps ? `${telemetry.fps} fps host present` : "not presenting"}
+            value={mode === "wasm" && telemetry ? formatNumber(telemetry.presentedFrames) : "—"}
+            hint={mode === "wasm" && telemetry?.fps ? `${telemetry.fps} fps host present` : "not presenting"}
           />
           <StatCard
             icon={MemoryStick}
             label="Resident pages"
-            value={telemetry ? `${telemetry.residentPages} / ${telemetry.maxResidentPages}` : "—"}
-            hint={`${Math.round(residentRatio)}% of the sparse window`}
+            value={mode === "wasm" && telemetry ? `${telemetry.residentPages} / ${telemetry.maxResidentPages}` : "—"}
+            hint={mode === "wasm" ? `${Math.round(residentRatio)}% of the sparse window` : "unavailable"}
             tone={residentRatio > 85 ? "warning" : "success"}
           />
         </div>
@@ -395,8 +394,14 @@ export function SystemMonitorApp() {
             variant="secondary"
             icon={RefreshCw}
             onClick={() => {
-              void runtime.initialize(selectedStorage.backend);
-              toast({ title: "Runtime re-initialised", tone: "info", message: "Mock remount only." });
+              void initialize(selectedStorage.backend).then(() => {
+                const available = runtime.mode === "wasm";
+                toast({
+                  title: available ? "Runtime ready" : "Runtime unavailable",
+                  tone: available ? "success" : "warning",
+                  message: available ? "ABI-v3 Wasm runtime initialized." : "Guest execution remains disabled until the Wasm artifact initializes.",
+                });
+              });
             }}
           >
             Re-initialise
