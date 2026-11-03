@@ -780,7 +780,7 @@ impl CpuState {
     }
 
     pub fn render_rip_history_with_rsp(&self) -> String {
-        let count = self.rip_history_len.min(self.rip_history.len()).min(8);
+        let count = self.rip_history_len.min(self.rip_history.len());
         let first = self.rip_history_len.wrapping_sub(count);
         let mut out = String::new();
         for offset in 0..count {
@@ -791,7 +791,7 @@ impl CpuState {
     }
 
     pub fn render_rip_history(&self) -> String {
-        let count = self.rip_history_len.min(self.rip_history.len()).min(8);
+        let count = self.rip_history_len.min(self.rip_history.len());
         let first = self.rip_history_len.wrapping_sub(count);
         let mut out = String::new();
         for offset in 0..count {
