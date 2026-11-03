@@ -177,6 +177,7 @@ function writeReport(report) {
     `frame_mid=${run.midFrame ? `${run.midFrame.checksum} @presented=${run.midFrame.presentedAtCapture} ${run.midFrame.file}` : 'none'}`,
     `frame_final=${run.finalFrame ? `${run.finalFrame.checksum} @presented=${run.finalFrame.presentedAtCapture} ${run.finalFrame.file}` : 'none'}`,
     `reason=${report.reason || 'none'}`,
+    `fault_code=${run.faultCode || '(none)'}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
     `jit_enabled=${jit.enabled ?? 'unknown'} jit_validate=${jit.validate ?? 'unknown'}`,
@@ -423,6 +424,12 @@ async function main() {
   if (process.env.PORTHOLE_JIT_TELEMETRY === '1') console.log(`JIT_DIAGNOSTICS_JSON=${JSON.stringify(report.jit.diagnostics)}`);
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
+  // Preserve the guest instruction bytes at a terminal fault in the check summary so
+  // unsupported-exit/access-violation triage does not depend on downloading CI artifacts.
+  const faultRipMatch = /at\s+(?:rip=)?0x([0-9a-f]+)/i.exec(terminal);
+  const faultRip = faultRipMatch ? BigInt(`0x${faultRipMatch[1]}`) : null;
+  const faultCode = faultRip !== null && typeof emu.peek_qwords === 'function'
+    ? emu.peek_qwords(faultRip, 2) : '';
   if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {
     const m = /MapViewOfFile[^\n]*rax=0x([0-9a-f]+)/.exec(trace);
     if (m) {
@@ -451,6 +458,8 @@ async function main() {
     wallMs,
     mips: wallMs > 0 ? Number((instructions / (wallMs / 1000) / 1e6).toFixed(2)) : null,
     rip: `0x${emu.rip().toString(16)}`,
+    faultRip: faultRip === null ? null : `0x${faultRip.toString(16)}`,
+    faultCode,
     lastError: emu.last_error(),
     console: emu.take_console(),
     unimplemented: emu.unimplemented_symbols?.() || '',
