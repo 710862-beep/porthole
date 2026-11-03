@@ -1385,6 +1385,27 @@ impl CpuState {
                 ExecOutcome::Branch(target)
             }
 
+            // LOOPNE (E0), LOOPE (E1), LOOP (E2), with rel8 targets.
+            // The address-size override selects ECX instead of RCX in 64-bit mode.
+            0xE0..=0xE2 => {
+                let rel = code[cursor] as i8 as i64;
+                cursor += 1;
+                let next_rip = insn_rip.wrapping_add(cursor as u64);
+                if pfx.asz_67 {
+                    self.gpr[1] = (self.gpr[1] as u32).wrapping_sub(1) as u64;
+                } else {
+                    self.gpr[1] = self.gpr[1].wrapping_sub(1);
+                }
+                let count_nonzero = if pfx.asz_67 { self.gpr[1] as u32 != 0 } else { self.gpr[1] != 0 };
+                let zf = (self.rflags & ZF) != 0;
+                let take = count_nonzero && match op {
+                    0xE0 => !zf, // LOOPNE
+                    0xE1 => zf,   // LOOPE
+                    _ => true,    // LOOP
+                };
+                if take { ExecOutcome::Branch(next_rip.wrapping_add(rel as u64)) } else { ExecOutcome::Next }
+            }
+
             // JMP rel32 (E9) / JMP rel8 (EB)
             0xE9 => {
                 let rel = i32::from_le_bytes(code[cursor..cursor + 4].try_into().unwrap()) as i64;

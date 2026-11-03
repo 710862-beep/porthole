@@ -25,8 +25,8 @@ const core = await mod.default(fs.readFileSync(wasmPath));
 const probe = new mod.BrowserX64Emulator(8192);
 const contextSlots = probe.jit_context_slots?.();
 const compilerVersion = probe.jit_compiler_version?.();
-if (contextSlots !== 64 || compilerVersion !== 14) {
-  console.error(`Refusing to run x64 JIT tests with a stale core: expected ABI v3 / 64 context slots / compiler 14, got ${contextSlots ?? 'no ABI export'} slots / compiler ${compilerVersion ?? 'no compiler-version export'} (${wasmDir}).`);
+if (contextSlots !== 64 || compilerVersion !== 15) {
+  console.error(`Refusing to run x64 JIT tests with a stale core: expected ABI v3 / 64 context slots / compiler 15, got ${contextSlots ?? 'no ABI export'} slots / compiler ${compilerVersion ?? 'no compiler-version export'} (${wasmDir}).`);
   process.exit(1);
 }
 void core;

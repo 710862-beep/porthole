@@ -8,14 +8,15 @@
 //! stack operations, direct/indirect CALL/RET exits, and covered SSE2 operations are lowered
 //! to Wasm. AOT direct CALLs may link a leaf callee and leaf return continuation so a matching
 //! RET resumes the caller inside Wasm without expanding the transitive link graph. Other calls
-//! return to the host dispatcher at the precise guest RIP. Unsupported instructions and memory
-//! traps return to the host; native writes are rolled back before interpreter replay.
+//! and indirect JMPs return to the host dispatcher at the precise guest RIP. LOOP-family
+//! branches and covered rotate operations are lowered directly. Unsupported instructions and
+//! memory traps return to the host; native writes are rolled back before interpreter replay.
 
 use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 14;
+pub const JIT_COMPILER_VERSION: u64 = 15;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -90,6 +91,8 @@ enum JitOp {
     MovReg { dst: u8, src: u8, width: u8 },
     Alu { kind: AluKind, dst: u8, src: Option<u8>, imm: i64, width: u8 },
     Shift { kind: u8, dst: u8, count: u8, width: u8 },
+    /// LOOP/LOOPE/LOOPNE: kind 0/1/2, counter width 4 (ECX) or 8 (RCX).
+    Loop { kind: u8, width: u8 },
     /// reg <- [mem] (MOV / MOVZX / MOVSX). extend: 0=none, 1=zero, 2=sign.
     Load { dst: u8, addr: MemAddr, width: u8, src_width: u8, extend: u8 },
     /// reg <- reg OP [mem] (read-only ALU).
@@ -128,6 +131,7 @@ enum JitOp {
 enum BlockExit {
     Fallthrough,
     Jump,
+    IndirectJump,
     Branch { cc: u8 },
     Ret,
     Call { indirect: bool },
@@ -410,6 +414,21 @@ impl HybridWasmJit {
         Some(MemAddr { base, index, scale: ins.memory_index_scale() as u8, disp, rip, seg })
     }
 
+    /// LOOP uses RCX by default and ECX with an address-size override in 64-bit mode.
+    /// The decoded length bounds this prefix scan, so opcode and displacement bytes are ignored.
+    fn has_address_size_override(bytes: &[u8], offset: usize, len: usize) -> bool {
+        let end = offset.saturating_add(len).min(bytes.len());
+        for &byte in &bytes[offset..end] {
+            match byte {
+                0x67 => return true,
+                0x66 | 0xF0 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65
+                | 0x40..=0x4F => {}
+                _ => break,
+            }
+        }
+        false
+    }
+
     fn imm_value(ins: &Instruction, op: u32) -> i64 {
         match ins.op_kind(op) {
             OpKind::Immediate8 => ins.immediate8() as i8 as i64,
@@ -586,6 +605,9 @@ impl HybridWasmJit {
                 Mnemonic::Div | Mnemonic::Idiv => {
                     let width = if ins.op_kind(0) == OpKind::Memory { ins.memory_size().size() as u8 } else { Self::reg_width(ins.op0_register()) };
                     let signed = m == Mnemonic::Idiv;
+                    // 64-bit DIV/IDIV has tricky quotient-overflow and #DE precision. Keep
+                    // it on the interpreter until that behavior is explicitly lowered; the
+                    // normal interpret_rip diagnostics record this fallback by opcode.
                     if !matches!(width, 2 | 4) {
                         supported = false;
                     } else {
@@ -680,17 +702,22 @@ impl HybridWasmJit {
                         }
                     }
                 }
-                Mnemonic::Shl | Mnemonic::Shr | Mnemonic::Sar => {
+                Mnemonic::Shl | Mnemonic::Shr | Mnemonic::Sar | Mnemonic::Rol | Mnemonic::Ror => {
                     let d = Self::gpr_index(ins.op0_register());
                     let width = Self::reg_width(ins.op0_register());
-                    let kind = match m { Mnemonic::Shl => 4, Mnemonic::Shr => 5, _ => 7 };
+                    let kind = match m {
+                        Mnemonic::Shl => 4, Mnemonic::Shr => 5, Mnemonic::Rol => 6,
+                        Mnemonic::Ror => 8, _ => 7,
+                    };
                     let count = match ins.op_kind(1) {
                         OpKind::Immediate8 => ins.immediate8() & if width == 8 { 63 } else { 31 },
                         _ => 255,
                     };
-                    if ins.op_kind(0) == OpKind::Memory { supported = false; }
+                    if ins.op_kind(0) == OpKind::Memory || Self::is_high_byte(ins.op0_register()) { supported = false; }
                     else if let Some(d) = d {
-                        if count == 0 || count == 255 { supported = false; }
+                        // CL-count forms remain interpreted (255 is the internal sentinel).
+                        // Immediate count zero is a real no-op and is safe to lower.
+                        if count == 255 { supported = false; }
                         else { ops.push(JitOp::Shift { kind, dst: d, count, width }); }
                     } else { supported = false; }
                 }
@@ -741,10 +768,37 @@ impl HybridWasmJit {
                         _ => supported = false,
                     }
                 }
+                Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne => {
+                    let kind = match m { Mnemonic::Loop => 0, Mnemonic::Loope => 1, _ => 2 };
+                    let width = if Self::has_address_size_override(bytes, offset, ins.len()) { 4 } else { 8 };
+                    ops.push(JitOp::Loop { kind, width });
+                    insns += 1; byte_len = offset + ins.len();
+                    exit = BlockExit::Branch { cc: 0x10 | kind };
+                    target = ins.near_branch_target();
+                    break;
+                }
                 Mnemonic::Jmp => {
                     if matches!(ins.op_kind(0), OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64) {
                         insns += 1; byte_len = offset + ins.len(); exit = BlockExit::Jump; target = ins.near_branch_target(); break;
-                    } else { supported = false; }
+                    } else {
+                        match ins.op_kind(0) {
+                            OpKind::Register if Self::reg_width(ins.op0_register()) == 8 => {
+                                if let Some(src) = Self::gpr_index(ins.op0_register()) {
+                                    ops.push(JitOp::IndirectTarget { src: Some(src), addr: None });
+                                    insns += 1; byte_len = offset + ins.len();
+                                    exit = BlockExit::IndirectJump; target = 0; break;
+                                } else { supported = false; }
+                            }
+                            OpKind::Memory if ins.memory_size().size() == 8 => {
+                                if let Some(addr) = Self::mem_addr(&ins) {
+                                    ops.push(JitOp::IndirectTarget { src: None, addr: Some(addr) });
+                                    insns += 1; byte_len = offset + ins.len();
+                                    exit = BlockExit::IndirectJump; target = 0; break;
+                                } else { supported = false; }
+                            }
+                            _ => supported = false,
+                        }
+                    }
                 }
                 Mnemonic::Jo | Mnemonic::Jno | Mnemonic::Jb | Mnemonic::Jae | Mnemonic::Je | Mnemonic::Jne | Mnemonic::Jbe | Mnemonic::Ja |
                 Mnemonic::Js | Mnemonic::Jns | Mnemonic::Jp | Mnemonic::Jnp | Mnemonic::Jl | Mnemonic::Jge | Mnemonic::Jle | Mnemonic::Jg => {
@@ -813,6 +867,7 @@ impl HybridWasmJit {
             JitOp::MovReg { dst, src, .. } => { rd |= 1 << src; wr |= 1 << dst; }
             JitOp::Alu { kind, dst, src, .. } => { rd |= 1 << dst; if let Some(s) = src { rd |= 1 << s; } if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
             JitOp::Shift { dst, .. } => { rd |= 1 << dst; wr |= 1 << dst; }
+            JitOp::Loop { .. } => { rd |= 1 << 1; wr |= 1 << 1; }
             JitOp::Load { dst, addr, .. } => { addr_regs(&addr, &mut rd); wr |= 1 << dst; }
             JitOp::AluLoad { kind, dst, addr, .. } => { addr_regs(&addr, &mut rd); rd |= 1 << dst; if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
             JitOp::AluMem { src, addr, .. } => { addr_regs(&addr, &mut rd); if let Some(s) = src { rd |= 1 << s; } }
@@ -992,6 +1047,10 @@ impl HybridWasmJit {
     }
 
     fn emit_shift(b: &mut Vec<u8>, kind: u8, dst: u8, count: u8, width: u8) {
+        if kind == 6 || kind == 8 {
+            Self::emit_rotate(b, kind, dst, count, width);
+            return;
+        }
         let bits = width * 8;
         Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
         Self::i64_const(b, count as i64); Self::local_set(b, 19);
@@ -1038,7 +1097,59 @@ impl HybridWasmJit {
         Self::emit_szp(b, width);
     }
 
+    fn emit_rotate(b: &mut Vec<u8>, kind: u8, dst: u8, count: u8, width: u8) {
+        if count == 0 { return; }
+        let bits = width * 8;
+        let rotate = count % bits;
+        Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+        if rotate == 0 {
+            Self::local_get(b, 18);
+        } else if kind == 6 { // ROL
+            Self::local_get(b, 18); Self::i64_const(b, rotate as i64); b.push(0x86);
+            Self::local_get(b, 18); Self::i64_const(b, (bits - rotate) as i64); b.push(0x88);
+            b.push(0x84);
+        } else { // ROR
+            Self::local_get(b, 18); Self::i64_const(b, rotate as i64); b.push(0x88);
+            Self::local_get(b, 18); Self::i64_const(b, (bits - rotate) as i64); b.push(0x86);
+            b.push(0x84);
+        }
+        Self::mask_width(b, width); Self::local_set(b, 20); Self::write_reg(b, dst, width, 20);
+
+        // Match the reference interpreter: ROL/ROR update CF, update OF only for a
+        // one-bit count, and preserve all other flags (including OF for larger counts).
+        let clear = if count == 1 { !0x801i64 } else { !1i64 };
+        Self::local_get(b, 17); Self::i64_const(b, clear); b.push(0x83); Self::local_set(b, 17);
+        let carry_mask = if kind == 6 { 1 } else { 1i64 << (bits - 1) };
+        Self::local_get(b, 20); Self::i64_const(b, carry_mask); b.push(0x83);
+        Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 1);
+        if count == 1 {
+            let sign_mask = 1i64 << (bits - 1);
+            let overflow_other_mask = if kind == 6 { 1 } else { sign_mask >> 1 };
+            Self::local_get(b, 20); Self::i64_const(b, sign_mask); b.push(0x83);
+            Self::i64_const(b, 0); b.push(0x52);
+            Self::local_get(b, 20); Self::i64_const(b, overflow_other_mask); b.push(0x83);
+            Self::i64_const(b, 0); b.push(0x52); b.push(0x73);
+            Self::or_flag(b, 0x800);
+        }
+    }
+
+    fn emit_loop(b: &mut Vec<u8>, kind: u8, width: u8) {
+        // ECX writes zero-extend into RCX; RCX decrements modulo 64 bits.
+        Self::local_get(b, 2); Self::mask_width(b, width);
+        Self::i64_const(b, 1); b.push(0x7D); Self::mask_width(b, width); Self::local_set(b, 2);
+        Self::local_get(b, 2); Self::i64_const(b, 0); b.push(0x52);
+        if kind != 0 {
+            Self::emit_cc(b, if kind == 1 { 4 } else { 5 });
+            b.push(0x71);
+        }
+        Self::local_set(b, 26);
+    }
+
     fn emit_cc(b: &mut Vec<u8>, cc: u8) {
+        if cc >= 0x10 {
+            Self::local_get(b, 26);
+            return;
+        }
         let bit = |b: &mut Vec<u8>, mask: i64| { Self::local_get(b, 17); Self::i64_const(b, mask); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); };
         match cc & 15 {
             0 => bit(b, 0x800), 1 => { bit(b, 0x800); b.push(0x45); }
@@ -1284,6 +1395,7 @@ impl HybridWasmJit {
             JitOp::MovReg { dst, src, width } => { Self::local_get(b, src + 1); Self::local_set(b, 22); Self::write_reg(b, dst, width, 22); }
             JitOp::Alu { kind, dst, src, imm, width } => Self::emit_alu(b, kind, dst, src, imm, width),
             JitOp::Shift { kind, dst, count, width } => Self::emit_shift(b, kind, dst, count, width),
+            JitOp::Loop { kind, width } => Self::emit_loop(b, kind, width),
             JitOp::Load { dst, addr, width, src_width, extend } => {
                 Self::emit_read(b, &addr, src_width, resolve_func, abort_depth);
                 if extend == 2 { Self::emit_extend(b, 22, src_width, width, true); }
@@ -1505,6 +1617,7 @@ impl HybridWasmJit {
                 Self::local_get(&mut b, 5); Self::i64_const(&mut b, 8 + block.ret_imm as i64); b.push(0x7C); Self::local_set(&mut b, 5);
                 dynamic_exit = true;
             }
+            BlockExit::IndirectJump => { dynamic_exit = true; }
             _ => {}
         }
         Self::local_get(&mut b, 24); Self::i64_const(&mut b, block_insns); b.push(0x7C); Self::local_set(&mut b, 24);
@@ -1516,7 +1629,7 @@ impl HybridWasmJit {
         }
         if self_loop { b.push(0x0B); }
         let exit_rip = match block.exit {
-            BlockExit::Ret | BlockExit::Call { .. } => 0,
+            BlockExit::Ret | BlockExit::Call { .. } | BlockExit::IndirectJump => 0,
             BlockExit::Branch { .. } if self_loop => entry_rip.wrapping_add(block.byte_len as u64),
             _ => block.target,
         };
