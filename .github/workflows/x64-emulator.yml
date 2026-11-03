@@ -180,6 +180,17 @@ jobs:
             cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-interpreter-report.json || true
             cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-interpreter-report.txt || true
             echo "interpreter-only diagnostic exit=$interpreter_rc"
+            # Re-run hybrid JIT with interpreter shadow-validation on every block commit. On
+            # first-use validation, native stores are rolled back and the interpreter's writes
+            # become authoritative; repeating that for every commit distinguishes a later JIT
+            # state/store corruption from interpreter/HLE behavior without changing the binary.
+            PORTHOLE_JIT=1 PORTHOLE_JIT_TELEMETRY=1 PORTHOLE_JIT_VALIDATE_MODE=2 \
+              PORTHOLE_DOOM_TIMEOUT_S=1800 PORTHOLE_DOOM_RESIDENT=65536 \
+              node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-jit-validate-run.log
+            validate_rc=${PIPESTATUS[0]}
+            cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-jit-validate-report.json || true
+            cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-jit-validate-report.txt || true
+            echo "JIT validate-every-commit diagnostic exit=$validate_rc"
             cp artifacts/chocolate-doom-jit-report.json artifacts/chocolate-doom-tier-b-report.json
             cp artifacts/chocolate-doom-jit-report.txt artifacts/chocolate-doom-tier-b-report.txt
           fi
@@ -202,6 +213,14 @@ jobs:
           if [ -f artifacts/chocolate-doom-interpreter-report.txt ]; then
             python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-interpreter-report.txt porthole-x64-tier-b-interpreter-diagnostic
           fi
+      - name: Publish JIT validate-every-commit Doom diagnostic through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/chocolate-doom-jit-validate-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-jit-validate-report.txt porthole-x64-tier-b-jit-validate-diagnostic
+          fi
       - name: Upload Tier B evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -216,6 +235,9 @@ jobs:
             artifacts/chocolate-doom-interpreter-report.json
             artifacts/chocolate-doom-interpreter-report.txt
             artifacts/chocolate-doom-interpreter-run.log
+            artifacts/chocolate-doom-jit-validate-report.json
+            artifacts/chocolate-doom-jit-validate-report.txt
+            artifacts/chocolate-doom-jit-validate-run.log
             artifacts/tier-b-pin.json
             artifacts/chocolate-doom-frame-first.ppm
             artifacts/chocolate-doom-frame-mid.ppm
