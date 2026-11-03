@@ -13,7 +13,7 @@ pub mod win32_fmt;
 pub mod win32_hle;
 
 use cpu::{CpuState, ExecOutcome};
-use jit::HybridWasmJit;
+use jit::{HybridWasmJit, JIT_COMPILER_VERSION};
 use pe64::{load_pe64_image, init_teb, LoadedPe64Info, MAIN_STACK_BOTTOM, MAIN_STACK_TOP,
            IMPORT_THUNK_BASE, MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
 use vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, PAGE_READWRITE};
@@ -1345,6 +1345,8 @@ impl BrowserX64Emulator {
     /// cores that lack flag-materialization slots instead of silently miscomputing RFLAGS.
     #[wasm_bindgen]
     pub fn jit_context_slots(&self) -> u32 { self.jit_ctx.len() as u32 }
+    /// JIT lowering generation. Hosts use this to reject an ABI-compatible but stale core.
+    pub fn jit_compiler_version(&self) -> u32 { JIT_COMPILER_VERSION as u32 }
     pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }
     pub fn jit_pending_meta(&self, index: u32) -> String { self.jit.pending_meta(index as usize).unwrap_or_default() }
     pub fn jit_pending_wasm(&self, index: u32) -> Vec<u8> { self.jit.pending_wasm(index as usize).unwrap_or_default() }

@@ -73,6 +73,11 @@ jobs:
             rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
           ls -lh artifacts/porthole-x64-wasm
           sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run all x64 JIT Node tests against this freshly built ABI-v3 core
+        run: npm run test:x64-jit
       - uses: actions/upload-artifact@v4
         with:
           name: porthole-x64-wasm
