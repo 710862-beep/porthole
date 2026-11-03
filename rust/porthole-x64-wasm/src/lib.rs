@@ -44,7 +44,8 @@ pub struct BrowserX64Emulator {
     loaded: Option<LoadedPe64Info>,
     status: RunStatus,
     fault_message: String,
-    /// Last guest/JIT control transfer into the loaded image outside its PE text range.
+    /// First and most recent guest/JIT control transfers into the image outside its PE text range.
+    first_nontext_transfer: String,
     last_nontext_transfer: String,
     /// Architectural state captured before the guest's first-chance AV handler runs.
     /// The regular fault snapshot is taken after unhandled-exception dispatch and can
@@ -97,6 +98,7 @@ impl BrowserX64Emulator {
             loaded: None,
             status: RunStatus::Ready,
             fault_message: String::new(),
+            first_nontext_transfer: String::new(),
             last_nontext_transfer: String::new(),
             faulting_context: String::new(),
             pending_upcall: false,
@@ -902,10 +904,14 @@ impl BrowserX64Emulator {
         let registers = register_names.iter().enumerate()
             .map(|(i, name)| format!("{name}=0x{:x}", self.cpu.gpr[i]))
             .collect::<Vec<_>>().join(" ");
-        self.last_nontext_transfer = format!(
+        let transfer = format!(
             "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={}",
             target_rip - image_base, self.cpu.render_rip_history()
         );
+        if self.first_nontext_transfer.is_empty() {
+            self.first_nontext_transfer = transfer.clone();
+        }
+        self.last_nontext_transfer = transfer;
     }
 
     /// Full register + stack + page report for the current (or last) fault. Deliberately verbose:
@@ -960,7 +966,13 @@ impl BrowserX64Emulator {
             "last RIPs: {}\n",
             self.cpu.render_rip_history()
         ));
-        if !self.last_nontext_transfer.is_empty() {
+        if !self.first_nontext_transfer.is_empty() {
+            out.push_str("first transfer into loaded image outside text:\n");
+            out.push_str(&self.first_nontext_transfer);
+            out.push('\n');
+        }
+        if !self.last_nontext_transfer.is_empty()
+            && self.last_nontext_transfer != self.first_nontext_transfer {
             out.push_str("last transfer into loaded image outside text:\n");
             out.push_str(&self.last_nontext_transfer);
             out.push('\n');
