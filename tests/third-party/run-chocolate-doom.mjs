@@ -126,6 +126,46 @@ function dumpImports(bytes) {
   return out.join('\n');
 }
 
+/** Locate a guest virtual address in the pinned PE image and report its original file bytes. */
+function inspectPeAddress(bytes, va, byteCount = 16) {
+  try {
+    const pe = bytes.readUInt32LE(0x3c);
+    const sectionCount = bytes.readUInt16LE(pe + 6);
+    const optionalSize = bytes.readUInt16LE(pe + 20);
+    const optional = pe + 24;
+    const imageBase = bytes.readBigUInt64LE(optional + 24);
+    const rva = va - imageBase;
+    if (rva < 0n || rva > 0xffffffffn) return { error: 'outside-image', va: `0x${va.toString(16)}` };
+    const sectionTable = optional + optionalSize;
+    for (let i = 0; i < sectionCount; i++) {
+      const off = sectionTable + i * 40;
+      const name = bytes.toString('ascii', off, off + 8).replace(/\0.*$/, '');
+      const virtualSize = bytes.readUInt32LE(off + 8);
+      const sectionRva = bytes.readUInt32LE(off + 12);
+      const rawSize = bytes.readUInt32LE(off + 16);
+      const rawPtr = bytes.readUInt32LE(off + 20);
+      const characteristics = bytes.readUInt32LE(off + 36);
+      const span = Math.max(virtualSize, rawSize);
+      const delta = rva - BigInt(sectionRva);
+      if (delta < 0n || delta >= BigInt(span)) continue;
+      const hasFileBytes = delta < BigInt(rawSize);
+      const fileOffset = hasFileBytes ? rawPtr + Number(delta) : null;
+      const count = hasFileBytes ? Math.min(byteCount, rawSize - Number(delta)) : 0;
+      return {
+        va: `0x${va.toString(16)}`, imageBase: `0x${imageBase.toString(16)}`,
+        rva: `0x${rva.toString(16)}`, section: name, sectionRva: `0x${sectionRva.toString(16)}`,
+        virtualSize: `0x${virtualSize.toString(16)}`, rawSize: `0x${rawSize.toString(16)}`,
+        characteristics: `0x${characteristics.toString(16)}`,
+        fileOffset: fileOffset === null ? null : `0x${fileOffset.toString(16)}`,
+        originalFileBytes: count ? bytes.subarray(fileOffset, fileOffset + count).toString('hex') : '(zero-fill/no raw bytes)',
+      };
+    }
+    return { va: `0x${va.toString(16)}`, rva: `0x${rva.toString(16)}`, section: '(no containing section)' };
+  } catch (error) {
+    return { va: `0x${va.toString(16)}`, error: `PE address inspection failed: ${error.message}` };
+  }
+}
+
 function missingWasm() {
   const glue = path.join(abs(wasmDir), 'porthole_x64_wasm.js');
   const wasm = path.join(abs(wasmDir), 'porthole_x64_wasm_bg.wasm');
@@ -180,6 +220,7 @@ function writeReport(report) {
     `fault_code=${run.faultCode || '(none)'}`,
     `fault_mapping=${run.faultMapping || '(none)'}`,
     `fault_code_window=${run.faultCodeWindow || '(none)'}`,
+    `fault_pe_image=${JSON.stringify(run.faultPe || {})}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
     `jit_enabled=${jit.enabled ?? 'unknown'} jit_validate=${jit.validate ?? 'unknown'}`,
@@ -436,6 +477,7 @@ async function main() {
     ? emu.describe_address(faultRip) : '';
   const faultCodeWindow = faultRip !== null && typeof emu.peek_qwords === 'function'
     ? emu.peek_qwords(faultRip > 0x70n ? faultRip - 0x70n : faultRip, 18) : '';
+  const faultPe = faultRip === null ? null : inspectPeAddress(exeBytes, faultRip, 16);
   if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {
     const m = /MapViewOfFile[^\n]*rax=0x([0-9a-f]+)/.exec(trace);
     if (m) {
@@ -468,6 +510,7 @@ async function main() {
     faultCode,
     faultMapping,
     faultCodeWindow,
+    faultPe,
     lastError: emu.last_error(),
     console: emu.take_console(),
     unimplemented: emu.unimplemented_symbols?.() || '',

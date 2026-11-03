@@ -44,6 +44,10 @@ pub struct BrowserX64Emulator {
     loaded: Option<LoadedPe64Info>,
     status: RunStatus,
     fault_message: String,
+    /// Architectural state captured before the guest's first-chance AV handler runs.
+    /// The regular fault snapshot is taken after unhandled-exception dispatch and can
+    /// otherwise lose the instruction/register context that caused the fault.
+    faulting_context: String,
     pending_upcall: bool,
     modal_pending: Option<(u64, String, String, [u64; 10], Vec<String>)>,
     frames_presented_seen: u64,
@@ -91,6 +95,7 @@ impl BrowserX64Emulator {
             loaded: None,
             status: RunStatus::Ready,
             fault_message: String::new(),
+            faulting_context: String::new(),
             pending_upcall: false,
             modal_pending: None,
             frames_presented_seen: 0,
@@ -699,6 +704,32 @@ impl BrowserX64Emulator {
                     let snapshot = exception_snapshot.or_else(|| {
                         if self.kernel.has_seh_pdata() { Some(self.cpu.exception_snapshot()) } else { None }
                     });
+                    // Preserve the precise pre-instruction state before first-chance SEH can
+                    // replace the CPU state. MemoryTrap currently does not distinguish read,
+                    // write, and instruction-fetch violations, so record that access kind as
+                    // unknown rather than inferring it from the exception parameters below.
+                    let fault_cpu = snapshot.as_ref().unwrap_or(&self.cpu);
+                    let mut instruction = [0u8; 16];
+                    let instruction_hex = if self.vmm.audit_read_bytes(fault_cpu.rip, &mut instruction).is_ok() {
+                        instruction.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    } else { "<unavailable>".to_string() };
+                    let register_names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+                    let registers = register_names.iter().enumerate()
+                        .map(|(i, name)| format!("{name}=0x{:x}", fault_cpu.gpr[i]))
+                        .collect::<Vec<_>>().join(" ");
+                    let mut stack = Vec::new();
+                    for i in 0..8u64 {
+                        let stack_addr = fault_cpu.gpr[4].wrapping_add(i * 8);
+                        let mut bytes = [0u8; 8];
+                        let value = if self.vmm.audit_read_bytes(stack_addr, &mut bytes).is_ok() {
+                            format!("0x{:016x}", u64::from_le_bytes(bytes))
+                        } else { "<unavailable>".to_string() };
+                        stack.push(format!("[0x{stack_addr:x}]={value}"));
+                    }
+                    self.faulting_context = format!(
+                        "access=unknown target=0x{addr:x} rip=0x{:x} rflags=0x{:x}\ninstruction_bytes={instruction_hex}\nregisters={registers}\nstack={}\nlast_rips={}\n",
+                        fault_cpu.rip, fault_cpu.rflags, stack.join(" "), fault_cpu.render_rip_history()
+                    );
                     if let Some(snapshot) = snapshot {
                         if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0xC000_0005, 0, insn_rip, snapshot.gpr[4], &[1, addr]) {
                             self.cpu = snapshot;
@@ -892,6 +923,10 @@ impl BrowserX64Emulator {
             "last RIPs: {}\n",
             self.cpu.render_rip_history()
         ));
+        if !self.faulting_context.is_empty() {
+            out.push_str("faulting instruction context (captured before exception dispatch):\n");
+            out.push_str(&self.faulting_context);
+        }
         out
     }
 
