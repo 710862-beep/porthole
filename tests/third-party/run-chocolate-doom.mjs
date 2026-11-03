@@ -21,6 +21,7 @@
  *   PORTHOLE_DOOM_ARGS      guest argv tail, default "-iwad C:\Game\DOOM2.WAD -timedemo demo1 -nosound"
  *   PORTHOLE_DOOM_RESIDENT  VMM resident-page budget, default 65536 pages (256 MiB)
  *   PORTHOLE_DOOM_TIMEOUT_S wall-clock budget, default 1200 (measured full run: ~450 s)
+ *   PORTHOLE_DOOM_REPORT_PREFIX / PORTHOLE_DOOM_ARTIFACT_PREFIX isolate diagnostic outputs
  *
  * --title-probe mode (Gate 2 Wine reference): run WITHOUT -timedemo until the guest has
  * presented PORTHOLE_TITLE_PRESENTS frames (default 30 — the static Freedoom TITLEPIC is up),
@@ -50,6 +51,8 @@ const limits = { slice: Math.max(1, Number(process.env.PORTHOLE_DOOM_SLICE || 2_
 const jitEnabled = process.env.PORTHOLE_JIT !== '0';
 const jitValidate = process.env.PORTHOLE_JIT_VALIDATE !== '0';
 const watchBadReturn = process.env.PORTHOLE_DOOM_WATCH_BAD_RETURN === '1';
+const reportPrefix = process.env.PORTHOLE_DOOM_REPORT_PREFIX || 'chocolate-doom-tier-b';
+const artifactPrefix = process.env.PORTHOLE_DOOM_ARTIFACT_PREFIX || 'chocolate-doom';
 const maxInstructions = Math.max(0, Number(process.env.PORTHOLE_DOOM_MAX_INSTRUCTIONS || 0) || 0);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
@@ -190,8 +193,8 @@ async function loadBinding() {
 }
 
 function writeReport(report) {
-  const out = abs('artifacts/chocolate-doom-tier-b-report.json');
-  const textOut = abs('artifacts/chocolate-doom-tier-b-report.txt');
+  const out = abs(`artifacts/${reportPrefix}-report.json`);
+  const textOut = abs(`artifacts/${reportPrefix}-report.txt`);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
   const run = report.run || {};
@@ -344,6 +347,8 @@ async function main() {
     validate: jitValidate,
     validateMode: Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)),
     watchedReturnValue: watchBadReturn ? '0x140149600' : null,
+    reportPrefix,
+    artifactPrefix,
     maxInstructions: maxInstructions || null,
   };
   for (const dir of [
@@ -423,7 +428,7 @@ async function main() {
     const h = Number(emu.guest_frame_height?.() || 0);
     if (!rgba || !rgba.length || !w || !h) return null;
     const bytes = new Uint8Array(rgba);
-    const file = `artifacts/chocolate-doom-frame-${label}.ppm`;
+    const file = `artifacts/${artifactPrefix}-frame-${label}.ppm`;
     writePPM(abs(file), w, h, bytes);
     return { checksum: fnv1a64Frame(w, h, bytes), w, h, file, presentedAtCapture: Number(emu.presented_frames?.() || 0) };
   };

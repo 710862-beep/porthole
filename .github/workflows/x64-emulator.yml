@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: porthole-x64-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep a full Wine/Wasm conformance run alive when diagnostic commits are pushed;
+  # GitHub will queue the newest same-branch run instead of cancelling active evidence.
+  cancel-in-progress: false
 
 jobs:
   rust-unit-tests:
@@ -168,10 +170,10 @@ jobs:
           set +e
           PORTHOLE_JIT_TELEMETRY=1 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
           jit_rc=${PIPESTATUS[0]}
-          # The unmodified interpreter-only replay already completed this pinned timedemo once
-          # (2664 gametics); avoid repeating its expensive run. On a hybrid guest fault, replay
-          # with shadow validation on every JIT commit and watch writes of the exact bad return
-          # target seen on the guest stack. This diagnostic does not override the Tier B result.
+          # The prior interpreter-only PASS predates this ABI-v3 core. On a hybrid guest fault,
+          # preserve the primary report, replay with validate-every-commit + a bad-return write
+          # watch, then run the same unmodified PE with JIT disabled as a control. Diagnostics
+          # never override the primary Tier B result.
           if [ "$jit_rc" -ne 0 ] && grep -q 'terminal=fault:' artifacts/chocolate-doom-tier-b-report.txt; then
             cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-jit-report.json
             cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-jit-report.txt
@@ -184,6 +186,13 @@ jobs:
             echo "JIT validate-every-commit + bad-return write-watch diagnostic exit=$validate_rc"
             cp artifacts/chocolate-doom-jit-report.json artifacts/chocolate-doom-tier-b-report.json
             cp artifacts/chocolate-doom-jit-report.txt artifacts/chocolate-doom-tier-b-report.txt
+
+            PORTHOLE_JIT=0 PORTHOLE_JIT_TELEMETRY=1 PORTHOLE_DOOM_TIMEOUT_S=1800 \
+              PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_REPORT_PREFIX=chocolate-doom-interpreter-control \
+              PORTHOLE_DOOM_ARTIFACT_PREFIX=chocolate-doom-interpreter-control \
+              node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-interpreter-control-run.log
+            interpreter_rc=${PIPESTATUS[0]}
+            echo "Current-core interpreter-only control exit=$interpreter_rc (does not change Tier B result)"
           fi
           exit "$jit_rc"
       - name: Publish the Tier B guest report through the Checks API
@@ -204,6 +213,14 @@ jobs:
           if [ -f artifacts/chocolate-doom-jit-validate-report.txt ]; then
             python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-jit-validate-report.txt porthole-x64-tier-b-jit-write-watch-diagnostic
           fi
+      - name: Publish current-core interpreter-only Doom control through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/chocolate-doom-interpreter-control-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-interpreter-control-report.txt porthole-x64-tier-b-interpreter-control
+          fi
       - name: Upload Tier B evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -218,6 +235,12 @@ jobs:
             artifacts/chocolate-doom-jit-validate-report.json
             artifacts/chocolate-doom-jit-validate-report.txt
             artifacts/chocolate-doom-jit-validate-run.log
+            artifacts/chocolate-doom-interpreter-control-report.json
+            artifacts/chocolate-doom-interpreter-control-report.txt
+            artifacts/chocolate-doom-interpreter-control-run.log
+            artifacts/chocolate-doom-interpreter-control-frame-first.ppm
+            artifacts/chocolate-doom-interpreter-control-frame-mid.ppm
+            artifacts/chocolate-doom-interpreter-control-frame-final.ppm
             artifacts/tier-b-pin.json
             artifacts/chocolate-doom-frame-first.ppm
             artifacts/chocolate-doom-frame-mid.ppm
