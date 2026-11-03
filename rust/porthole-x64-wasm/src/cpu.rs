@@ -780,20 +780,22 @@ impl CpuState {
     }
 
     pub fn render_rip_history_with_rsp(&self) -> String {
-        let len = self.rip_history_len.min(self.rip_history.len());
+        let count = self.rip_history_len.min(self.rip_history.len()).min(8);
+        let first = self.rip_history_len.wrapping_sub(count);
         let mut out = String::new();
-        for i in (0..len).rev().take(8) {
-            let idx = (self.rip_history_len + self.rip_history.len() - 1 - i) % self.rip_history.len();
+        for offset in 0..count {
+            let idx = first.wrapping_add(offset) % self.rip_history.len();
             out.push_str(&format!("0x{:x}@rsp=0x{:x} ", self.rip_history[idx], self.rip_rsp_history[idx]));
         }
         out.trim_end().to_string()
     }
 
     pub fn render_rip_history(&self) -> String {
-        let len = self.rip_history_len.min(self.rip_history.len());
+        let count = self.rip_history_len.min(self.rip_history.len()).min(8);
+        let first = self.rip_history_len.wrapping_sub(count);
         let mut out = String::new();
-        for i in (0..len).rev().take(8) {
-            let idx = (self.rip_history_len + self.rip_history.len() - 1 - i) % self.rip_history.len();
+        for offset in 0..count {
+            let idx = first.wrapping_add(offset) % self.rip_history.len();
             out.push_str(&format!("0x{:x} ", self.rip_history[idx]));
         }
         out.trim_end().to_string()
