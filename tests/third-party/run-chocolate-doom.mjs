@@ -178,6 +178,8 @@ function writeReport(report) {
     `frame_final=${run.finalFrame ? `${run.finalFrame.checksum} @presented=${run.finalFrame.presentedAtCapture} ${run.finalFrame.file}` : 'none'}`,
     `reason=${report.reason || 'none'}`,
     `fault_code=${run.faultCode || '(none)'}`,
+    `fault_mapping=${run.faultMapping || '(none)'}`,
+    `fault_code_window=${run.faultCodeWindow || '(none)'}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
     `jit_enabled=${jit.enabled ?? 'unknown'} jit_validate=${jit.validate ?? 'unknown'}`,
@@ -430,6 +432,10 @@ async function main() {
   const faultRip = faultRipMatch ? BigInt(`0x${faultRipMatch[1]}`) : null;
   const faultCode = faultRip !== null && typeof emu.peek_qwords === 'function'
     ? emu.peek_qwords(faultRip, 2) : '';
+  const faultMapping = faultRip !== null && typeof emu.describe_address === 'function'
+    ? emu.describe_address(faultRip) : '';
+  const faultCodeWindow = faultRip !== null && typeof emu.peek_qwords === 'function'
+    ? emu.peek_qwords(faultRip > 0x70n ? faultRip - 0x70n : faultRip, 18) : '';
   if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {
     const m = /MapViewOfFile[^\n]*rax=0x([0-9a-f]+)/.exec(trace);
     if (m) {
@@ -460,6 +466,8 @@ async function main() {
     rip: `0x${emu.rip().toString(16)}`,
     faultRip: faultRip === null ? null : `0x${faultRip.toString(16)}`,
     faultCode,
+    faultMapping,
+    faultCodeWindow,
     lastError: emu.last_error(),
     console: emu.take_console(),
     unimplemented: emu.unimplemented_symbols?.() || '',
