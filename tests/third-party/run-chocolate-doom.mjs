@@ -21,6 +21,7 @@
  *   PORTHOLE_DOOM_ARGS      guest argv tail, default "-iwad C:\Game\DOOM2.WAD -timedemo demo1 -nosound"
  *   PORTHOLE_DOOM_RESIDENT  VMM resident-page budget, default 65536 pages (256 MiB)
  *   PORTHOLE_DOOM_TIMEOUT_S wall-clock budget, default 1200 (measured full run: ~450 s)
+ *   PORTHOLE_DOOM_REPORT_PREFIX / PORTHOLE_DOOM_ARTIFACT_PREFIX isolate diagnostic outputs
  *
  * --title-probe mode (Gate 2 Wine reference): run WITHOUT -timedemo until the guest has
  * presented PORTHOLE_TITLE_PRESENTS frames (default 30 — the static Freedoom TITLEPIC is up),
@@ -49,6 +50,9 @@ const timeoutMs = Math.max(10, Number(process.env.PORTHOLE_DOOM_TIMEOUT_S || 120
 const limits = { slice: Math.max(1, Number(process.env.PORTHOLE_DOOM_SLICE || 2_000_000) || 2_000_000), maxSlices: 100000 };
 const jitEnabled = process.env.PORTHOLE_JIT !== '0';
 const jitValidate = process.env.PORTHOLE_JIT_VALIDATE !== '0';
+const watchBadReturn = process.env.PORTHOLE_DOOM_WATCH_BAD_RETURN === '1';
+const reportPrefix = process.env.PORTHOLE_DOOM_REPORT_PREFIX || 'chocolate-doom-tier-b';
+const artifactPrefix = process.env.PORTHOLE_DOOM_ARTIFACT_PREFIX || 'chocolate-doom';
 const maxInstructions = Math.max(0, Number(process.env.PORTHOLE_DOOM_MAX_INSTRUCTIONS || 0) || 0);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
@@ -126,6 +130,46 @@ function dumpImports(bytes) {
   return out.join('\n');
 }
 
+/** Locate a guest virtual address in the pinned PE image and report its original file bytes. */
+function inspectPeAddress(bytes, va, byteCount = 16) {
+  try {
+    const pe = bytes.readUInt32LE(0x3c);
+    const sectionCount = bytes.readUInt16LE(pe + 6);
+    const optionalSize = bytes.readUInt16LE(pe + 20);
+    const optional = pe + 24;
+    const imageBase = bytes.readBigUInt64LE(optional + 24);
+    const rva = va - imageBase;
+    if (rva < 0n || rva > 0xffffffffn) return { error: 'outside-image', va: `0x${va.toString(16)}` };
+    const sectionTable = optional + optionalSize;
+    for (let i = 0; i < sectionCount; i++) {
+      const off = sectionTable + i * 40;
+      const name = bytes.toString('ascii', off, off + 8).replace(/\0.*$/, '');
+      const virtualSize = bytes.readUInt32LE(off + 8);
+      const sectionRva = bytes.readUInt32LE(off + 12);
+      const rawSize = bytes.readUInt32LE(off + 16);
+      const rawPtr = bytes.readUInt32LE(off + 20);
+      const characteristics = bytes.readUInt32LE(off + 36);
+      const span = Math.max(virtualSize, rawSize);
+      const delta = rva - BigInt(sectionRva);
+      if (delta < 0n || delta >= BigInt(span)) continue;
+      const hasFileBytes = delta < BigInt(rawSize);
+      const fileOffset = hasFileBytes ? rawPtr + Number(delta) : null;
+      const count = hasFileBytes ? Math.min(byteCount, rawSize - Number(delta)) : 0;
+      return {
+        va: `0x${va.toString(16)}`, imageBase: `0x${imageBase.toString(16)}`,
+        rva: `0x${rva.toString(16)}`, section: name, sectionRva: `0x${sectionRva.toString(16)}`,
+        virtualSize: `0x${virtualSize.toString(16)}`, rawSize: `0x${rawSize.toString(16)}`,
+        characteristics: `0x${characteristics.toString(16)}`,
+        fileOffset: fileOffset === null ? null : `0x${fileOffset.toString(16)}`,
+        originalFileBytes: count ? bytes.subarray(fileOffset, fileOffset + count).toString('hex') : '(zero-fill/no raw bytes)',
+      };
+    }
+    return { va: `0x${va.toString(16)}`, rva: `0x${rva.toString(16)}`, section: '(no containing section)' };
+  } catch (error) {
+    return { va: `0x${va.toString(16)}`, error: `PE address inspection failed: ${error.message}` };
+  }
+}
+
 function missingWasm() {
   const glue = path.join(abs(wasmDir), 'porthole_x64_wasm.js');
   const wasm = path.join(abs(wasmDir), 'porthole_x64_wasm_bg.wasm');
@@ -149,11 +193,22 @@ async function loadBinding() {
 }
 
 function writeReport(report) {
-  const out = abs('artifacts/chocolate-doom-tier-b-report.json');
-  const textOut = abs('artifacts/chocolate-doom-tier-b-report.txt');
+  const out = abs(`artifacts/${reportPrefix}-report.json`);
+  const textOut = abs(`artifacts/${reportPrefix}-report.txt`);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
   const run = report.run || {};
+  const jit = report.jit || {};
+  const diagnostics = jit.diagnostics || {};
+  const diagnosticsSummary = {
+    validation: diagnostics.validation ?? 0,
+    traps: diagnostics.traps ?? 0,
+    runtimeUnsupportedFallbacks: diagnostics.unsupported ?? 0,
+    fallbackByReason: diagnostics.byReason || {},
+    fallbackByOpcode: diagnostics.byOpcode || {},
+    compileBoundaryObservations: diagnostics.compileBoundaries?.observations ?? 0,
+    compileBoundaryByOpcode: diagnostics.compileBoundaries?.byOpcode || {},
+  };
   const lines = [
     `GATE 1 Tier B / GATE 2 (Chocolate Doom): ${report.status}`,
     `binary=${report.binary} sha256=${report.binarySha256 || 'unknown'} bytes=${report.binaryBytes || 0}`,
@@ -167,8 +222,18 @@ function writeReport(report) {
     `frame_mid=${run.midFrame ? `${run.midFrame.checksum} @presented=${run.midFrame.presentedAtCapture} ${run.midFrame.file}` : 'none'}`,
     `frame_final=${run.finalFrame ? `${run.finalFrame.checksum} @presented=${run.finalFrame.presentedAtCapture} ${run.finalFrame.file}` : 'none'}`,
     `reason=${report.reason || 'none'}`,
+    `fault_code=${run.faultCode || '(none)'}`,
+    `fault_mapping=${run.faultMapping || '(none)'}`,
+    `fault_code_window=${run.faultCodeWindow || '(none)'}`,
+    `fault_pe_image=${JSON.stringify(run.faultPe || {})}`,
     '',
     `run: terminal=${run.terminal || 'not-started'} rip=${run.rip || '-'} last_error=${run.lastError ?? '-'} instructions=${run.instructions ?? 0} page_faults=${run.pageFaults ?? 0} wall_ms=${run.wallMs ?? 0} mips=${run.mips ?? '-'}`,
+    `jit_enabled=${jit.enabled ?? 'unknown'} jit_validate=${jit.validate ?? 'unknown'}`,
+    `STARTUP_TELEMETRY_JSON=${JSON.stringify(report.startup || {})}`,
+    `JIT_EXECUTION_STATS_JSON=${JSON.stringify(jit.stats || {})}`,
+    `JIT_DIAGNOSTICS_SUMMARY_JSON=${JSON.stringify(diagnosticsSummary)}`,
+    'JIT_COMPILE_BOUNDARY_NOTE=compile-boundary histogram counts hot-block compile attempts, not dynamic runtime fallbacks or unsupported CPU ISA coverage',
+    `CORE_TELEMETRY_JSON=${run.telemetry || '{}'}`,
     `named_blockers(unimplemented)=${run.unimplemented || '(none reported)'}`,
     `hle=${run.hle || ''}`,
     'guest_output:',
@@ -277,7 +342,15 @@ async function main() {
   const jit = new X64JitHost(emu, mod, { enabled: jitEnabled, memory, cache: jitCache, exeSha256: report.binarySha256, diagnostics: process.env.PORTHOLE_JIT_TELEMETRY === '1' });
   if (typeof emu.set_jit_validate_mode === 'function') emu.set_jit_validate_mode(Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)));
   else if (typeof emu.set_jit_validate === 'function') emu.set_jit_validate(jitValidate);
-  report.jit = { enabled: jitEnabled, validate: jitValidate, maxInstructions: maxInstructions || null };
+  report.jit = {
+    enabled: jitEnabled,
+    validate: jitValidate,
+    validateMode: Number(process.env.PORTHOLE_JIT_VALIDATE_MODE || (jitValidate ? 1 : 0)),
+    watchedReturnValue: watchBadReturn ? '0x140149600' : null,
+    reportPrefix,
+    artifactPrefix,
+    maxInstructions: maxInstructions || null,
+  };
   for (const dir of [
     'C:\\Windows', 'C:\\Windows\\System32', 'C:\\Users', 'C:\\Users\\PORTHOLE',
     'C:\\Users\\PORTHOLE\\Temp', 'C:\\Users\\PORTHOLE\\AppData', 'C:\\Users\\PORTHOLE\\AppData\\Roaming',
@@ -300,13 +373,24 @@ async function main() {
       }
     }
   } catch { /* missing DEMO1 is reported by the guest console */ }
-  if (process.env.PORTHOLE_DOOM_TRACE !== '0' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
+  // Instruction tracing disables native JIT handoff in the core and makes the long
+  // timedemo run interpreter-only. Keep the conformance/performance path JIT-capable by
+  // default; opt into trace collection explicitly when debugging.
+  if (process.env.PORTHOLE_DOOM_TRACE === '1' || process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
     emu.enable_trace?.(200000);
     emu.set_hle_trace_only?.(true);
     if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1') {
       // Keep the early file-mapping calls even if later CRT traffic fills the ring.
       emu.set_trace_filter?.(['CreateFileMapping', 'MapViewOfFile', 'ReadFile', 'fread', 'SetFilePointer']);
     }
+  }
+  if (watchBadReturn) {
+    if (typeof emu.set_write_watch_value !== 'function') {
+      throw new Error('bad-return write watch requires a core exporting set_write_watch_value');
+    }
+    // The prior RET popped the saved RBP value 0x140149600 from [RSP]=0x21ff8e0.
+    // Watch only the faulting stack slot, before PE loading, to identify its writer.
+    emu.set_write_watch_value(0x21ff8e0n, 0x21ff8e8n, 0x140149600n, 256);
   }
   const load = JSON.parse(emu.load_pe(new Uint8Array(exeBytes)));
   const cacheStart = performance.now();
@@ -344,7 +428,7 @@ async function main() {
     const h = Number(emu.guest_frame_height?.() || 0);
     if (!rgba || !rgba.length || !w || !h) return null;
     const bytes = new Uint8Array(rgba);
-    const file = `artifacts/chocolate-doom-frame-${label}.ppm`;
+    const file = `artifacts/${artifactPrefix}-frame-${label}.ppm`;
     writePPM(abs(file), w, h, bytes);
     return { checksum: fnv1a64Frame(w, h, bytes), w, h, file, presentedAtCapture: Number(emu.presented_frames?.() || 0) };
   };
@@ -397,6 +481,7 @@ async function main() {
   report.jit.diagnostics = jit.diagnosticReport();
   await jit.flushCache();
   report.startup.jit_fallbacks_during_play = jit.stats.traps;
+  report.startup.fallback_instructions = jit.stats.fallbackInstructions;
   report.startup.jit_compile_time_ms = Number(jit.jitCompileMs.toFixed(3));
   report.startup.cache_miss_count = jit.cacheTelemetry.misses;
   report.startup.aot_cache_size_bytes = jit.cacheTelemetry.bytes;
@@ -404,6 +489,17 @@ async function main() {
   if (process.env.PORTHOLE_JIT_TELEMETRY === '1') console.log(`JIT_DIAGNOSTICS_JSON=${JSON.stringify(report.jit.diagnostics)}`);
   const instructions = Number(emu.instructions_executed());
   const trace = emu.take_trace?.() || '';
+  // Preserve the guest instruction bytes at a terminal fault in the check summary so
+  // unsupported-exit/access-violation triage does not depend on downloading CI artifacts.
+  const faultRipMatch = /at\s+(?:rip=)?0x([0-9a-f]+)/i.exec(terminal);
+  const faultRip = faultRipMatch ? BigInt(`0x${faultRipMatch[1]}`) : null;
+  const faultCode = faultRip !== null && typeof emu.peek_qwords === 'function'
+    ? emu.peek_qwords(faultRip, 2) : '';
+  const faultMapping = faultRip !== null && typeof emu.describe_address === 'function'
+    ? emu.describe_address(faultRip) : '';
+  const faultCodeWindow = faultRip !== null && typeof emu.peek_qwords === 'function'
+    ? emu.peek_qwords(faultRip > 0x70n ? faultRip - 0x70n : faultRip, 18) : '';
+  const faultPe = faultRip === null ? null : inspectPeAddress(exeBytes, faultRip, 16);
   if (process.env.PORTHOLE_DOOM_DEBUG_WAD === '1' && report.wad) {
     const m = /MapViewOfFile[^\n]*rax=0x([0-9a-f]+)/.exec(trace);
     if (m) {
@@ -432,6 +528,11 @@ async function main() {
     wallMs,
     mips: wallMs > 0 ? Number((instructions / (wallMs / 1000) / 1e6).toFixed(2)) : null,
     rip: `0x${emu.rip().toString(16)}`,
+    faultRip: faultRip === null ? null : `0x${faultRip.toString(16)}`,
+    faultCode,
+    faultMapping,
+    faultCodeWindow,
+    faultPe,
     lastError: emu.last_error(),
     console: emu.take_console(),
     unimplemented: emu.unimplemented_symbols?.() || '',

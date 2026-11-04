@@ -230,12 +230,13 @@ export function AppLauncher() {
             })}
 
             <div className="mt-auto hidden flex-col gap-1.5 px-1.5 pb-1 pt-3 xl:flex">
-              <Badge tone="warning" dot className="w-fit">
-                mock runtime
+              <Badge tone={mode === "wasm" ? "success" : "warning"} dot className="w-fit">
+                {mode} runtime
               </Badge>
               <p className="text-[10px] leading-relaxed text-ink-ghost">
-                Turn the Runtime into a Wasm adapter in <code>ui/runtime</code> — the
-                desktop code does not change.
+                {mode === "wasm"
+                  ? "Guest applications execute inside WebAssembly, not as host Windows processes."
+                  : "Guest execution is unavailable until the ABI-v3 Wasm artifact initializes; no simulator is substituted."}
               </p>
             </div>
           </nav>
@@ -247,7 +248,7 @@ export function AppLauncher() {
                 <EmptyState
                   icon={Search}
                   title="No applications match"
-                  body={`Nothing in the launcher matches “${query}”. Try “store”, “terminal” or “settings”.`}
+                  body={`Nothing in the launcher matches “${query}”. Try “store”, “emulator” or “settings”.`}
                   action={
                     <Button size="sm" variant="secondary" onClick={() => setQuery("")}>
                       Clear search

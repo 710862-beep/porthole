@@ -80,6 +80,10 @@ export class BrowserStorageService implements PortholeStorageService {
     this.setSelected(backend);
   }
 
+  getDirectoryHandle(): FileSystemDirectoryHandle | null {
+    return this.backend === "file-system-access" ? this.directory : null;
+  }
+
   describeSelected(): StorageState {
     return {
       backend: this.backend,

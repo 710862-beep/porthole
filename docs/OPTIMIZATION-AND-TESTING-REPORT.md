@@ -568,11 +568,15 @@ module-level instance (`malloc is not a function`) (`da4df2c`).
 
 ### Expanded JIT coverage (evidence-selected)
 
-The unsupported histogram after the correctness fixes was dominated by
-RIP-relative/SIB memory loads, `cmp reg,[mem]`, `movzx/movsx`, `lea`, `pop`, and
-partial-register ALU — not SSE. The hand-written decoder was replaced with
-`iced-x86` (correct ModRM/SIB/RIP-relative/segment parsing, instruction lengths
-for AOT). The lowering now covers:
+The historical “unsupported” histogram records hot-block compile-boundary
+observations from `maybe_jit_compile`: the block compiler's interpreter boundary
+or a failed compile attempt. It is not a dynamic interpreter-fallback count and
+does not prove that an opcode is unsupported by the CPU interpreter or generally
+unsupported by the JIT. Its entries (RIP-relative/SIB loads, `cmp reg,[mem]`,
+`movzx/movsx`, `lea`, `pop`, partial-register ALU) were candidates for inspection,
+not evidence of unsupported ISA coverage. The hand-written decoder was replaced
+with `iced-x86` (correct ModRM/SIB/RIP-relative/segment parsing, instruction
+lengths for AOT). The lowering now covers:
 
 - integer ALU reg/imm and reg←[mem] (read-only), byte/16/32/64-bit widths with
   correct partial-register merge and 32-bit zero-extension;
@@ -581,11 +585,11 @@ for AOT). The lowering now covers:
 
 Memory reads import a core helper (`jit_read_mem`). A fault sets a context flag;
 the module flushes Wasm locals and resumes the interpreter at the exact RIP
-without applying the faulting instruction's effects. **Stores, CALL, indirect
-jumps and SIMD still terminate the block before their side effect** and are
-executed precisely by the interpreter. The remaining unsupported histogram is
-now byte stores (`mov [mem], r8`), SSE2 `movdqa/movdqu`, rotate/shift-by-CL, and
-CALL — the next coverage targets, named by telemetry rather than guessed.
+without applying the faulting instruction's effects. At this historical stage,
+stores, CALL, indirect jumps and SIMD still terminated blocks before their side
+effects. Repeated compile-boundary entries around byte stores, SSE2 `movdqa/movdqu`,
+rotate/shift-by-CL, and CALL were follow-up inspection targets only; they did not
+establish dynamic fallback frequency or unsupported interpreter coverage.
 
 ### AOT `.text` scan + SHA-256 keyed cache
 
@@ -693,3 +697,37 @@ Warm-cache local JSON (23,220 hits, 0 misses, 0 AOT recompiles):
 ```json
 {"disk_read_time_ms":13.386,"aot_compilation_time_ms":235.313,"cache_load_time_ms":2668.096,"total_startup_lag_ms":2916.795,"aot_blocks_compiled":0,"aot_cache_size_bytes":9820947,"cache_hit_count":23220,"cache_miss_count":0,"jit_compile_time_ms":2233.418,"aot":{"blocks":0,"wasmBytes":0,"instructionsScanned":99023,"textBase":"5368713216","textSize":392704},"jit_fallbacks_during_play":25}
 ```
+
+### Phase 4 measured results (CI run `41382919127`, commit `73d2a0e`)
+
+Existing native integer stores, CALL/RET stack updates, and covered SSE2 `v128` lowering were already present; this phase did not duplicate those paths or add synthetic tests. It extended direct-CALL links to leaf-RET callees and, when available, a leaf-RET return continuation (compiler version 13), bounding the transitive link graph. The Chocolate Doom runner now keeps tracing opt-in (`PORTHOLE_DOOM_TRACE=1`), since the core deliberately disables JIT handoff while instruction tracing is active.
+
+**The JIT timedemo failed and produced zero gametics.** On the real JIT path, Chocolate Doom executed 466,037,644 guest instructions before an unhandled access violation: guest RIP `0x300f70d31`, write address `0x33000`, exception `0xc0000005` with parameters `[0x1,0x33000]`. It presented 416 frames with 221 distinct frame checksums, but `timedemo_gametics=0`, `realtics=0`; do not treat the earlier pre-Phase-4 2,664-gametic run as evidence for this JIT build. Runtime was 246,550 ms (1.89 MIPS), page faults 0.
+
+Exact startup telemetry from Tier B check `125079041463`:
+
+```json
+{"disk_read_time_ms":23.537,"aot_compilation_time_ms":3614.19,"cache_load_time_ms":0.577,"total_startup_lag_ms":3638.303,"aot_blocks_compiled":25274,"aot_cache_size_bytes":20511047,"cache_hit_count":0,"cache_miss_count":1159,"jit_compile_time_ms":3766.143,"aot":{"blocks":25274,"wasmBytes":20049837,"instructionsScanned":99023,"textBase":"5368713216","textSize":392704},"jit_fallbacks_during_play":0,"fallback_instructions":24447639}
+```
+
+Exact execution statistics:
+
+```json
+{"compiled":26543,"executedBlocks":47626970,"executedInstructions":441590005,"traps":0,"cacheHits":47625811,"cacheMisses":1159,"saved":26543,"loaded":0,"fallbackInstructions":24447639,"discarded":0,"compileErrors":0,"cacheErrors":0,"commitPageFaults":0,"tailCalls":true}
+```
+
+The JIT executed 441,590,005 instructions; the interpreter executed 24,447,639 (about 5.2% of total). JIT traps and validation mismatches were both zero. Core diagnostics recorded 212,506 hot-block compile-boundary observations (the historical `unsupported-exit` label is misleading: these are not dynamic fallback counts or proof of unsupported ISA); the raw-opcode histogram, `JIT_DIAGNOSTICS_SUMMARY_JSON`, and `CORE_TELEMETRY_JSON` are preserved in [Tier B check 125079041463](https://github.com/710862-beep/porthole/runs/125079041463). Rust core tests, Wasm build, Tier A 7-Zip, and the real-Wine reference gate passed on this commit; the Doom Tier B gate failed as stated. The old traced run had zero executed JIT blocks, and the first untraced direct-CALL run exposed `fault:jit-link-depth`; both were corrected before recording the current result, but the guest access violation remains unresolved.
+
+### Latest Doom run (CI run `41622337559`, commit `586f7d7`)
+
+**FAIL — 0 gametics, 0 realtics.** The pinned unmodified Chocolate Doom 3.1.1 guest presented 289 frames (140 distinct checksums) then faulted at RIP `0x140149663` with `0xc0000005`, parameters `[0x1,0x3f3cd000]`. The primary run processed 304,000,035 guest instructions in 126,906 ms (**2.40 MIPS**), with zero page faults, **1 JIT fallback/trap**, and **11,054,043 interpreter-fallback instructions**. Its top hot-block compile-boundary entry was `48f7f9c3` ×720 (64-bit `IDIV RCX`; the fourth histogram byte is the next `c3`), followed by `4883c428` ×707 (`ADD RSP,0x28`). The full report is [Tier B check 125874849967](https://github.com/710862-beep/porthole/runs/125874849967).
+
+The validate-every-commit/write-watch diagnostic also ended with 0 gametics at the same fault: **1 fallback/trap**, **11,776,028 interpreter-fallback instructions**, 277,840 ms (**1.09 MIPS**). Its JIT shadow record for the faulting `RET` matched the interpreter state (all step/XMM/GPR/flags/RIP checks true). The CALL/callee/RET state comparison, stack-slot writer, histogram semantics and caveats are documented in [`x64-emulator-status.md`](x64-emulator-status.md) and [diagnostic check 125874855896](https://github.com/710862-beep/porthole/runs/125874855896).
+
+**Follow-up CI run `41654191362` / commit `bebab74`:** the result remained 0 gametics / 0 realtics at the same fault. Primary: 3.6 MIPS, one JIT fallback/trap, 11,054,043 interpreter-fallback instructions; top compile-boundary entry `48f7f9c3` ×720. Validate-every-commit control: 1 fallback/trap, 11,776,028 fallback instructions, 1.89 MIPS, same fault. The report now labels this histogram as compile-boundary observations; it is not a dynamic fallback counter or unsupported-ISA proof. See [primary check 125983400696](https://github.com/710862-beep/porthole/runs/125983400696) and [diagnostic check 125983406982](https://github.com/710862-beep/porthole/runs/125983406982).
+
+**ABI-v3 JIT-disabled control (CI run `41657868882`, commit `1ec0ac5`):** the same pinned, unmodified Chocolate Doom binary completed its timedemo with **2,664 gametics / 2,614 realtics**, presenting 2,704 frames and 1,782 distinct checksums. The interpreter-only run processed 3,603,983,437 instructions with 0 page faults in 1,203,952 ms (**2.99 MIPS**); there were 0 JIT traps, 0 interpreter-fallback instructions, and 0 runtime-unsupported fallbacks. The report explicitly contains `timed 2664 gametics in 2614 realtics (35.669472 fps)` and uses Chocolate Doom's normal `exit:4294967295` timedemo-completion path. This verifies the guest timedemo in the interpreter-only mode, not a native host process, a Wine reference match, or general game compatibility: [control check 126016993076](https://github.com/710862-beep/porthole/runs/126016993076).
+
+The default hybrid-JIT primary in that same CI run still failed with 0 gametics / 0 realtics at RIP `0x140149663` (`0xc0000005`, parameters `[0x1,0x3f3cd000]`): 304,000,035 instructions, 0 page faults, 107,527 ms (**2.83 MIPS**), **1 fallback/trap** and **11,054,043 interpreter-fallback instructions**. `runtimeUnsupportedFallbacks=0`; the fallback was reason `commit`, opcode `8b0d`. The 5,669 compile-boundary observations are separate from runtime fallback counts; the top entries were `48f7f9c3` ×720 (`IDIV RCX` plus following byte `c3`), `4883c428` ×707 (`ADD RSP,0x28`), and `f6c5800f` ×488. The validate-every-commit/write-watch replay failed at the same fault: 304,000,035 instructions, 216,196 ms (**1.41 MIPS**), 1 fallback/trap, 11,776,028 interpreter-fallback instructions; its warm-cache compile-boundary histogram was empty with 22,772 loaded artifacts. The CALL/callee/RET/shadow comparison remains as recorded in [`x64-emulator-status.md`](x64-emulator-status.md); it does not establish a JIT root cause. See [hybrid primary check 126016977911](https://github.com/710862-beep/porthole/runs/126016977911) and [diagnostic check 126016985404](https://github.com/710862-beep/porthole/runs/126016985404).
+
+The same run's separate in-emulator Wine64 job passed the `kernel32` `power`, `drive`, `environ`, `directory` and `atom` suites (1,049,715 atom tests), but reported `d3d9_test.exe stateblock` as FAIL (exit 0, 1,100 instructions, zero reported faults/failures) and `d3d9_test.exe d3d9ex` as a 600,000 ms timeout at 526,000,019 guest instructions and zero page faults. The Wine job remains a failure; its annotations are [check 126001242646](https://github.com/710862-beep/porthole/runs/126001242646).

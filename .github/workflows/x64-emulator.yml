@@ -2,7 +2,7 @@ name: x86-64 emulator (Wasm core + real Wine64 conformance)
 
 on:
   push:
-    branches: [arena/633a2716-porthole]
+    branches: [arena/633a2716-porthole, 'arena/**']
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: porthole-x64-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep a full Wine/Wasm conformance run alive when diagnostic commits are pushed;
+  # GitHub will queue the newest same-branch run instead of cancelling active evidence.
+  cancel-in-progress: false
 
 jobs:
   rust-unit-tests:
@@ -72,7 +74,12 @@ jobs:
           wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm \
             rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
           ls -lh artifacts/porthole-x64-wasm
-          sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+          (cd artifacts/porthole-x64-wasm && sha256sum * > SHA256SUMS)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run all x64 JIT Node tests against this freshly built ABI-v3 core
+        run: npm run test:x64-jit
       - uses: actions/upload-artifact@v4
         with:
           name: porthole-x64-wasm
@@ -93,6 +100,58 @@ jobs:
           path: rust/porthole-x64-wasm/cargo-build.log
           if-no-files-found: warn
           retention-days: 14
+
+  publish-wasm-runtime:
+    name: Publish ABI-v3 Wasm runtime for the browser UI
+    needs: wasm-build
+    if: startsWith(github.ref, 'refs/heads/arena/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: artifacts/porthole-x64-wasm
+      - name: Verify the generated runtime
+        working-directory: artifacts/porthole-x64-wasm
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS
+          test -s porthole_x64_wasm.js
+          test -s porthole_x64_wasm_bg.wasm
+      - name: Publish the verified runtime to the browser app
+        run: |
+          set -euo pipefail
+          mkdir -p ui/public/wasm
+          find ui/public/wasm -maxdepth 1 -type f -delete
+          cp artifacts/porthole-x64-wasm/* ui/public/wasm/
+          (cd ui/public/wasm && sha256sum --check SHA256SUMS)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the browser app against the verified runtime
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+          test -s dist/wasm/porthole_x64_wasm.js
+          test -s dist/wasm/porthole_x64_wasm_bg.wasm
+      - name: Commit runtime when the generated artifact changes
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ui/public/wasm
+          if git diff --cached --quiet; then
+            echo 'The published ABI-v3 runtime is already current.'
+            exit 0
+          fi
+          git commit -m 'Publish CI-built ABI-v3 Wasm runtime'
+          git push origin "HEAD:${GITHUB_REF}"
 
   tier-a-independent-7zip:
     name: GATE 1 Tier A — unmodified 7-Zip x64 PE archive round-trip
@@ -160,7 +219,34 @@ jobs:
         run: |
           mkdir -p artifacts
           set -o pipefail
+          set +e
           PORTHOLE_JIT_TELEMETRY=1 node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-run.log
+          jit_rc=${PIPESTATUS[0]}
+          # The prior interpreter-only PASS predates this ABI-v3 core. On a hybrid guest fault,
+          # preserve the primary report, replay with validate-every-commit + a bad-return write
+          # watch, then run the same unmodified PE with JIT disabled as a control. Diagnostics
+          # never override the primary Tier B result.
+          if [ "$jit_rc" -ne 0 ] && grep -q 'terminal=fault:' artifacts/chocolate-doom-tier-b-report.txt; then
+            cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-jit-report.json
+            cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-jit-report.txt
+            PORTHOLE_JIT=1 PORTHOLE_JIT_TELEMETRY=1 PORTHOLE_JIT_VALIDATE_MODE=2 \
+              PORTHOLE_DOOM_WATCH_BAD_RETURN=1 PORTHOLE_DOOM_TIMEOUT_S=1800 PORTHOLE_DOOM_RESIDENT=65536 \
+              node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-jit-validate-run.log
+            validate_rc=${PIPESTATUS[0]}
+            cp artifacts/chocolate-doom-tier-b-report.json artifacts/chocolate-doom-jit-validate-report.json || true
+            cp artifacts/chocolate-doom-tier-b-report.txt artifacts/chocolate-doom-jit-validate-report.txt || true
+            echo "JIT validate-every-commit + bad-return write-watch diagnostic exit=$validate_rc"
+            cp artifacts/chocolate-doom-jit-report.json artifacts/chocolate-doom-tier-b-report.json
+            cp artifacts/chocolate-doom-jit-report.txt artifacts/chocolate-doom-tier-b-report.txt
+
+            PORTHOLE_JIT=0 PORTHOLE_JIT_TELEMETRY=1 PORTHOLE_DOOM_TIMEOUT_S=1800 \
+              PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_REPORT_PREFIX=chocolate-doom-interpreter-control \
+              PORTHOLE_DOOM_ARTIFACT_PREFIX=chocolate-doom-interpreter-control \
+              node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-interpreter-control-run.log
+            interpreter_rc=${PIPESTATUS[0]}
+            echo "Current-core interpreter-only control exit=$interpreter_rc (does not change Tier B result)"
+          fi
+          exit "$jit_rc"
       - name: Publish the Tier B guest report through the Checks API
         if: always()
         env:
@@ -171,6 +257,22 @@ jobs:
           else
             echo "::error::Tier B guest report missing"
           fi
+      - name: Publish JIT validate-every-commit Doom diagnostic through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/chocolate-doom-jit-validate-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-jit-validate-report.txt porthole-x64-tier-b-jit-write-watch-diagnostic
+          fi
+      - name: Publish current-core interpreter-only Doom control through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/chocolate-doom-interpreter-control-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-interpreter-control-report.txt porthole-x64-tier-b-interpreter-control
+          fi
       - name: Upload Tier B evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -180,6 +282,17 @@ jobs:
             artifacts/chocolate-doom-tier-b-report.json
             artifacts/chocolate-doom-tier-b-report.txt
             artifacts/chocolate-doom-run.log
+            artifacts/chocolate-doom-jit-report.json
+            artifacts/chocolate-doom-jit-report.txt
+            artifacts/chocolate-doom-jit-validate-report.json
+            artifacts/chocolate-doom-jit-validate-report.txt
+            artifacts/chocolate-doom-jit-validate-run.log
+            artifacts/chocolate-doom-interpreter-control-report.json
+            artifacts/chocolate-doom-interpreter-control-report.txt
+            artifacts/chocolate-doom-interpreter-control-run.log
+            artifacts/chocolate-doom-interpreter-control-frame-first.ppm
+            artifacts/chocolate-doom-interpreter-control-frame-mid.ppm
+            artifacts/chocolate-doom-interpreter-control-frame-final.ppm
             artifacts/tier-b-pin.json
             artifacts/chocolate-doom-frame-first.ppm
             artifacts/chocolate-doom-frame-mid.ppm

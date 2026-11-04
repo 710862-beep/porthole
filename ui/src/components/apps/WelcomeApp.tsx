@@ -1,15 +1,16 @@
 import {
   BookOpen,
+  Code2,
   Cpu,
   ExternalLink,
   Gamepad2,
   LayoutGrid,
   ShieldCheck,
   Sparkles,
-  Terminal,
 } from "lucide-react";
 import { useWindowManager } from "@/hooks/useWindowManager";
 import { useUiStore } from "@/store/uiStore";
+import { useEmulatorStore } from "@/store/emulatorStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Kbd } from "@/components/ui/Kbd";
@@ -22,6 +23,7 @@ const REPO = "https://github.com/710862-beep/porthole";
 /** About window: product framing plus the honest limits, no marketing claims. */
 export function WelcomeApp() {
   const { openApp } = useWindowManager();
+  const runtimeMode = useEmulatorStore((state) => state.mode);
   const openOverview = useUiStore((state) => state.openOverview);
 
   return (
@@ -45,12 +47,12 @@ export function WelcomeApp() {
                 Welcome to Porthole
               </h1>
               <Badge tone="accent">desktop 0.5.0</Badge>
-              <Badge tone="warning" dot>
-                mock runtime
+              <Badge tone={runtimeMode === "wasm" ? "success" : "warning"} dot>
+                {runtimeMode} runtime
               </Badge>
             </div>
             <p className="mt-1 max-w-[62ch] text-[11.5px] leading-relaxed text-ink-muted">
-              A CachyOS-flavoured desktop environment running entirely in your browser, built as
+              A Linux-desktop-inspired environment running entirely in your browser, built as
               the shell for the Porthole x86-64 runtime. This window is the honest tour.
             </p>
             <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -77,16 +79,15 @@ export function WelcomeApp() {
             <ul className="mt-2 flex flex-col gap-2 text-[10.5px] leading-relaxed text-ink-muted">
               <li className="flex gap-2">
                 <Gamepad2 size={12} className="mt-0.5 flex-none text-violet" aria-hidden />
-                Browse the library, install entries, open the labelled emulator and inspect
-                telemetry.
+                Browse 24 categorized entries, refresh Chocolatey metadata only, register local library entries and inspect runtime telemetry.
               </li>
               <li className="flex gap-2">
                 <LayoutGrid size={12} className="mt-0.5 flex-none text-accent" aria-hidden />
                 Multi-task with four workspaces, the Overview and the top-left hot corner.
               </li>
               <li className="flex gap-2">
-                <Terminal size={12} className="mt-0.5 flex-none text-mint" aria-hidden />
-                Drive the shell from the terminal app — including installs and window commands.
+                <Code2 size={12} className="mt-0.5 flex-none text-mint" aria-hidden />
+                Inspect shell events and runtime telemetry in the Developer Console.
               </li>
             </ul>
           </div>
@@ -98,11 +99,9 @@ export function WelcomeApp() {
             </p>
             <ul className="mt-2 flex flex-col gap-1.5 text-[10.5px] leading-relaxed text-ink-muted">
               <li>Not a Windows kernel, BIOS or OS image.</li>
-              <li>Not a compatibility claim: the store is mock-driven today.</li>
-              <li>No game bytes are downloaded by this shell.</li>
-              <li>
-                Guest input forwarding is pending (KI-04) — keystrokes are counted, not delivered.
-              </li>
+              <li>Not a Windows compatibility guarantee: the Doom timedemo remains unresolved in the current hybrid-JIT path.</li>
+              <li>Chocolatey metadata only; no `.nupkg`, installer or executable is downloaded or run.</li>
+              <li>Keyboard and mouse-button delivery remain pending (KI-04); pointer coordinates are a separate limited path.</li>
             </ul>
           </div>
         </div>
@@ -114,10 +113,10 @@ export function WelcomeApp() {
           </p>
           <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-muted">
             The UI lives in <code className="font-mono text-ink">ui/</code> and talks only to{" "}
-            <code className="font-mono text-ink">ui/runtime/contracts.ts</code>. The emulator core
-            lives in <code className="font-mono text-ink">rust/porthole-x64-wasm</code> and is reached
-            through the platform layer. The only pixels ever labelled &ldquo;the guest frame&rdquo;
-            come from <code className="font-mono text-ink">guest_frame_rgba()</code> after a present.
+            <code className="font-mono text-ink">ui/runtime/contracts.ts</code>. The production router
+            uses the ABI-v3 Wasm adapter and reports unavailable if its artifact cannot initialize; it
+            does not substitute a mock runtime. Guest frames are shown only after core scanout reports
+            a present. This is a browser desktop, not a native Windows process host.
           </p>
         </div>
 
@@ -144,16 +143,16 @@ export function WelcomeApp() {
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button size="sm" variant="primary" icon={Gamepad2} onClick={() => openApp("store")}>
-              Open Game Store
-            </Button>
-            <Button size="sm" variant="secondary" icon={Terminal} onClick={() => openApp("terminal")}>
-              Terminal
+              Open App Store
             </Button>
             <Button size="sm" variant="ghost" icon={LayoutGrid} onClick={openOverview}>
               Overview
             </Button>
             <Button size="sm" variant="ghost" icon={Cpu} onClick={() => openApp("system")}>
               System Monitor
+            </Button>
+            <Button size="sm" variant="ghost" icon={Code2} onClick={() => openApp("devtools")}>
+              Developer Console
             </Button>
           </div>
         </div>
@@ -193,7 +192,7 @@ export function WelcomeApp() {
         <span className="font-mono text-[9px] text-ink-ghost">
           ui/components/apps · consumed through contracts only
         </span>
-        <span className="font-mono text-[9px] text-ink-ghost">CachyOS-inspired · dark</span>
+        <span className="font-mono text-[9px] text-ink-ghost">Porthole · browser desktop</span>
       </footer>
     </div>
   );

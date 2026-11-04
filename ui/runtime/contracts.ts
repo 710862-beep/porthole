@@ -18,12 +18,14 @@
 // ---------------------------------------------------------------------------
 export interface WasmEmulatorBindings {
   // construction: new BrowserX64Emulator(maxResidentPages)
-  load_pe(exe: Uint8Array): string;                    // JSON load report
+  load_pe(exe: Uint8Array): string;                    // JSON PE load report
   set_exe_path(path: string): void;
   set_command_line(cmd: string): void;
+  set_environment_variable(name: string, value: string): boolean;
   vfs_mkdir(path: string): void;
   vfs_insert(path: string, bytes: Uint8Array): void;
-  // run loop: "next" | "exit:<code>" | "fault:<msg>" | "page-fault:<addr>" | "halt"
+  vfs_read(path: string): Uint8Array | undefined;
+  // run loop: "next" | "exit:<code>" | "fault:<msg>" | "page-fault:<addr>" | "modal" | "halt"
   run_slice(budget: number): string;
   drain_evicted_pages(): Uint8Array;                   // [u64 base][4096 bytes]*
   supply_page(pageBase: bigint, bytes: Uint8Array): void;
@@ -33,22 +35,61 @@ export interface WasmEmulatorBindings {
   instructions_executed(): number;
   rip(): bigint;
   last_error(): number;
+  status_text(): string;
   take_console(): string;
   unimplemented_symbols(): string;                     // fail-closed evidence channel
   hle_histogram(max: number): string;
   fault_snapshot(): string;
-  // SDL-path frame evidence (Gate 2)
+  aot_compile_text(): number;
+  aot_stats_json(): string;
+  set_jit_enabled(enabled: boolean): void;
+  set_jit_validate_mode(mode: number): void;
+  set_jit_tail_calls(enabled: boolean): void;
+  jit_artifacts(): number;
+  jit_pending_count(): number;
+  jit_pending_meta(index: number): string;
+  jit_pending_wasm(index: number): Uint8Array;
+  jit_clear_pending(): void;
+  jit_enter_block(): string;
+  jit_active_wasm(): Uint8Array;
+  jit_commit_block(): string;
+  jit_abort_block(): void;
+  jit_import_cached(
+    entryRip: bigint,
+    pageEpoch: number,
+    byteLen: number,
+    instructionCount: number,
+    endsWithRet: boolean,
+    hasStores: boolean,
+    hasSimd: boolean,
+    selfLoop: boolean,
+    codeHash: bigint,
+    wasmBytes: Uint8Array,
+  ): boolean;
+  jit_resolve_page(address: bigint, write: number): number;
+  jit_clear_mem_fault(): void;
+  jit_mem_fault(): number;
+  // SDL-path frame evidence (Gate 2): this is authoritative for guest-presented SDL frames.
   presented_frames(): number;
   frame_checksum(): string;                            // fnv1a64:<16hex> or ""
   guest_frame_rgba(): Uint8Array;                      // tight RGBA8, guest-composed
   guest_frame_width(): number;
   guest_frame_height(): number;
-  // native-resolution measurement tap (Wine-reference comparison; not a presented frame)
+  // Native-resolution measurement tap (Wine-reference comparison; not a presented frame).
   guest_native_frame_rgba(): Uint8Array;
   guest_native_frame_width(): number;
   guest_native_frame_height(): number;
   guest_native_frames(): number;
   native_frame_checksum(): string;
+  // D3D12 HLE scanout path used by js/x64-app.js for native Windows workloads.
+  frames_presented(): number;
+  take_frame(): Uint8Array | undefined;
+  frame_width(): number;
+  frame_height(): number;
+  inject_mouse_move(x: number, y: number): void;
+  set_virtual_input_profile(enabled: boolean): void;
+  modal_request(): string;
+  modal_respond(result: number): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +105,9 @@ export type KeyState = "down" | "up";
 export type MouseButton = 0 | 1 | 2;
 
 export interface EmulatorRuntime {
-  loadExecutable(path: string): Promise<ProcessHandle>;
+  loadExecutable(path: string, argumentsLine?: string): Promise<ProcessHandle>;
+  /** Imports user-selected files into the mounted C:\\Game folder; it never fetches packages. */
+  importFiles?(files: readonly File[]): Promise<string[]>;
   launch(handle: ProcessHandle): Promise<void>;
   pause(handle: ProcessHandle): Promise<void>;
   terminate(handle: ProcessHandle): Promise<void>;
@@ -87,23 +130,32 @@ export interface EmulatorRuntime {
 // Modes
 // ---------------------------------------------------------------------------
 export type AppCategoryId = "games" | "utilities" | "system";
+export type StoreCategoryId =
+  | AppCategoryId
+  | "development"
+  | "browsers"
+  | "media"
+  | "creativity"
+  | "productivity"
+  | "communications";
 export interface AppCategory { id: AppCategoryId; label: string }
 export interface GameMetadata {
   appId: string;
   title: string;
   kind: "game" | "utility" | "system";
-  category: AppCategoryId;                             // derived from kind today
+  category: StoreCategoryId;
   exePath: string;                                     // guest path, e.g. C:\Game\...
   sha256?: string;                                     // pinned identity when known
-  status: "installed" | "not-installed";
+  launchArguments?: string;
+  status: "in-library" | "not-in-library";
   evidence?: string;                                   // e.g. "Gate 2 PASS — 2664 gametics"
 }
 
-export interface GameStoreMode {
+export interface GameLibrary {
   listGames(): GameMetadata[];
-  installGame(source: string): Promise<void>;
-  launchGame(appId: string): Promise<void>;           // switches shell to Desktop mode
-  uninstallGame(appId: string): Promise<void>;        // behind a Yes/No dialog
+  addToLibrary(appId: string): Promise<void>;
+  removeFromLibrary(appId: string): Promise<void>;
+  isInLibrary(appId: string): boolean;
 }
 
 export type WindowHandle = string;

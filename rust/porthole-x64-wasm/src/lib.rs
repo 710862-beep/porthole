@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use iced_x86::{Decoder, DecoderOptions, OpKind};
 use wasm_bindgen::prelude::*;
 
 pub mod cpu;
@@ -13,7 +14,7 @@ pub mod win32_fmt;
 pub mod win32_hle;
 
 use cpu::{CpuState, ExecOutcome};
-use jit::HybridWasmJit;
+use jit::{HybridWasmJit, JIT_COMPILER_VERSION};
 use pe64::{load_pe64_image, init_teb, LoadedPe64Info, MAIN_STACK_BOTTOM, MAIN_STACK_TOP,
            IMPORT_THUNK_BASE, MAIN_TEB_ADDR, THUNK_BASE, THUNK_REGION_SIZE, THUNK_STRIDE};
 use vmm::{MemoryTrap, VirtualMemoryManager, MEM_COMMIT, PAGE_READWRITE};
@@ -32,6 +33,91 @@ pub enum RunStatus {
 }
 
 const MAX_CONSOLE_BYTES: usize = 8 * 1024 * 1024;
+const JIT_SHADOW_HISTORY_CAP: usize = 8;
+
+#[derive(Clone, Copy, Default)]
+struct JitShadowBoundary {
+    artifact_rip: u64,
+    artifact_insns: u32,
+    input_rip: u64,
+    input_rsp: u64,
+    executed: u64,
+    status: u64,
+    exit_rip: u64,
+    shadow_rip: u64,
+    shadow_rsp: u64,
+    links: [u64; 2],
+    link_count: u8,
+    dynamic_count: bool,
+    ends_with_ret: bool,
+    step_ok: bool,
+    xmm_ok: bool,
+    gpr_ok: bool,
+    flags_ok: bool,
+    rip_ok: bool,
+}
+
+fn format_instruction_operand(ins: &iced_x86::Instruction, operand: u32) -> String {
+    match ins.op_kind(operand) {
+        OpKind::Register => format!("{:?}", ins.op_register(operand)),
+        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => {
+            format!("0x{:x}", ins.near_branch_target())
+        }
+        OpKind::Memory => format!(
+            "[base={:?} index={:?}*{} disp={:#x}]",
+            ins.memory_base(), ins.memory_index(), ins.memory_index_scale(),
+            ins.memory_displacement64()
+        ),
+        OpKind::Immediate8 => format!("{:#x}", ins.immediate8()),
+        OpKind::Immediate16 => format!("{:#x}", ins.immediate16()),
+        OpKind::Immediate32 => format!("{:#x}", ins.immediate32()),
+        OpKind::Immediate64 => format!("{:#x}", ins.immediate64()),
+        OpKind::Immediate8to16 => format!("{:#x}", ins.immediate8to16()),
+        OpKind::Immediate8to32 => format!("{:#x}", ins.immediate8to32()),
+        OpKind::Immediate8to64 => format!("{:#x}", ins.immediate8to64()),
+        OpKind::Immediate32to64 => format!("{:#x}", ins.immediate32to64()),
+        kind => format!("{kind:?}"),
+    }
+}
+
+fn decode_guest_instruction(vmm: &VirtualMemoryManager, rip: u64) -> String {
+    let mut bytes = [0u8; 16];
+    if vmm.audit_read_bytes(rip, &mut bytes).is_err() {
+        return "bytes=unavailable".to_string();
+    }
+    let Ok(mut decoder) = Decoder::try_new(64, &bytes, DecoderOptions::NONE) else {
+        return "decode=unavailable".to_string();
+    };
+    decoder.set_ip(rip);
+    let ins = decoder.decode();
+    let len = (ins.len() as usize).min(bytes.len());
+    let code = bytes[..len]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if ins.is_invalid() {
+        return format!("bytes={code} decode=invalid");
+    }
+    let operands = (0..ins.op_count())
+        .map(|operand| format_instruction_operand(&ins, operand))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("bytes={code} {:?} {operands}", ins.mnemonic())
+}
+
+fn decode_rip_history(vmm: &VirtualMemoryManager, history: &str, source_rip: u64) -> String {
+    let mut rips = history
+        .split_whitespace()
+        .filter_map(|item| u64::from_str_radix(item.trim_start_matches("0x"), 16).ok())
+        .collect::<Vec<_>>();
+    if !rips.contains(&source_rip) {
+        rips.push(source_rip);
+    }
+    rips.iter()
+        .map(|rip| format!("0x{rip:x} {}", decode_guest_instruction(vmm, *rip)))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
 
 /// Phase 5 driver: owns the Wasm x86-64 core, VMM, HLE kernel and JIT cache, and exposes a
 /// slice-based execution API that a browser (or a Node conformance harness) pumps from JS.
@@ -44,6 +130,13 @@ pub struct BrowserX64Emulator {
     loaded: Option<LoadedPe64Info>,
     status: RunStatus,
     fault_message: String,
+    /// First and most recent guest/JIT control transfers into the image outside its PE text range.
+    first_nontext_transfer: String,
+    last_nontext_transfer: String,
+    /// Architectural state captured before the guest's first-chance AV handler runs.
+    /// The regular fault snapshot is taken after unhandled-exception dispatch and can
+    /// otherwise lose the instruction/register context that caused the fault.
+    faulting_context: String,
     pending_upcall: bool,
     modal_pending: Option<(u64, String, String, [u64; 10], Vec<String>)>,
     frames_presented_seen: u64,
@@ -68,9 +161,12 @@ pub struct BrowserX64Emulator {
     jit_shadow: Option<cpu::CpuState>,
     jit_validate: bool,
     jit_validate_always: bool,
+    jit_shadow_history: [JitShadowBoundary; JIT_SHADOW_HISTORY_CAP],
+    jit_shadow_history_len: usize,
     jit_last_failure: String,
-    jit_unsupported: std::collections::HashMap<String, u64>,
-    jit_unsupported_exits: u64,
+    /// Histogram of hot-block compile boundaries; not dynamic interpreter exits or ISA support.
+    jit_compile_boundaries: std::collections::HashMap<String, u64>,
+    jit_compile_boundary_observations: u64,
     jit_mem_fault: u32,
     jit_tlb: Vec<u64>,
     jit_undo: Vec<u64>,
@@ -91,6 +187,9 @@ impl BrowserX64Emulator {
             loaded: None,
             status: RunStatus::Ready,
             fault_message: String::new(),
+            first_nontext_transfer: String::new(),
+            last_nontext_transfer: String::new(),
+            faulting_context: String::new(),
             pending_upcall: false,
             modal_pending: None,
             frames_presented_seen: 0,
@@ -105,15 +204,19 @@ impl BrowserX64Emulator {
             audit_seq: 0,
             audit_dropped: 0,
             jit_enabled: false,
-            // ABI v2: 0..15 GPRs; 16 status; 17 exit RIP; 18 executed; 19 RFLAGS; 20 budget; 21 entry.
+            // ABI v3: 0..15 GPRs; 16 status; 17 exit RIP; 18 executed; 19 RFLAGS;
+            // 20 budget; 21 entry; 22..23 FS/GS; 24 scratch; 25..31 MMU transaction;
+            // 32..63 XMM0..15 (low/high qwords).
             jit_ctx: vec![0; jit::JIT_CONTEXT_SLOTS],
             jit_active: None,
             jit_shadow: None,
             jit_validate: true,
             jit_validate_always: false,
+            jit_shadow_history: [JitShadowBoundary::default(); JIT_SHADOW_HISTORY_CAP],
+            jit_shadow_history_len: 0,
             jit_last_failure: String::new(),
-            jit_unsupported: std::collections::HashMap::new(),
-            jit_unsupported_exits: 0,
+            jit_compile_boundaries: std::collections::HashMap::new(),
+            jit_compile_boundary_observations: 0,
             jit_mem_fault: 0,
             jit_tlb: {
                 let mut v = vec![0u64; jit::JIT_TLB_ENTRIES * 4];
@@ -613,8 +716,15 @@ impl BrowserX64Emulator {
             // --- ordinary guest instruction ----------------------------------------------------
             let exception_snapshot = if self.kernel.has_exception_handlers() { Some(self.cpu.exception_snapshot()) } else { None };
             let outcome = self.cpu.step_one(&mut self.vmm);
+            let branch_target = match &outcome {
+                Ok(ExecOutcome::Branch(target)) => Some(*target),
+                _ => None,
+            };
             match outcome {
                 Ok(ExecOutcome::Next) | Ok(ExecOutcome::Branch(_)) => {
+                    if let Some(target) = branch_target {
+                        self.note_nontext_image_transfer(insn_rip, target, "interpreter");
+                    }
                     executed += 1;
                     if !self.hle_trace_only {
                         self.trace_instruction(insn_rip, rsp_before);
@@ -697,6 +807,33 @@ impl BrowserX64Emulator {
                     let snapshot = exception_snapshot.or_else(|| {
                         if self.kernel.has_seh_pdata() { Some(self.cpu.exception_snapshot()) } else { None }
                     });
+                    // Preserve the precise pre-instruction state before first-chance SEH can
+                    // replace the CPU state. MemoryTrap currently does not distinguish read,
+                    // write, and instruction-fetch violations, so record that access kind as
+                    // unknown rather than inferring it from the exception parameters below.
+                    let fault_cpu = snapshot.as_ref().unwrap_or(&self.cpu);
+                    let mut instruction = [0u8; 16];
+                    let instruction_hex = if self.vmm.audit_read_bytes(fault_cpu.rip, &mut instruction).is_ok() {
+                        instruction.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    } else { "<unavailable>".to_string() };
+                    let register_names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+                    let registers = register_names.iter().enumerate()
+                        .map(|(i, name)| format!("{name}=0x{:x}", fault_cpu.gpr[i]))
+                        .collect::<Vec<_>>().join(" ");
+                    let mut stack = Vec::new();
+                    for i in 0..8u64 {
+                        let stack_addr = fault_cpu.gpr[4].wrapping_add(i * 8);
+                        let mut bytes = [0u8; 8];
+                        let value = if self.vmm.audit_read_bytes(stack_addr, &mut bytes).is_ok() {
+                            format!("0x{:016x}", u64::from_le_bytes(bytes))
+                        } else { "<unavailable>".to_string() };
+                        stack.push(format!("[0x{stack_addr:x}]={value}"));
+                    }
+                    self.faulting_context = format!(
+                        "access=unknown target=0x{addr:x} rip=0x{:x} rflags=0x{:x}\ninstruction_bytes={instruction_hex}\nregisters={registers}\nstack={}\nlast_rips={}\nlast_rip_states={}\n",
+                        fault_cpu.rip, fault_cpu.rflags, stack.join(" "), fault_cpu.render_rip_history(),
+                        fault_cpu.render_rip_history_with_rsp()
+                    );
                     if let Some(snapshot) = snapshot {
                         if let Some(action) = self.kernel.begin_exception(&mut self.vmm, &snapshot, 0xC000_0005, 0, insn_rip, snapshot.gpr[4], &[1, addr]) {
                             self.cpu = snapshot;
@@ -838,6 +975,112 @@ impl BrowserX64Emulator {
         }
     }
 
+    fn record_jit_shadow_boundary(
+        &mut self,
+        art: &jit::CompiledJitArtifact,
+        input_rip: u64,
+        input_rsp: u64,
+        executed: u64,
+        status: u64,
+        exit_rip: u64,
+        shadow_rip: u64,
+        shadow_rsp: u64,
+        step_ok: bool,
+        xmm_ok: bool,
+        gpr_ok: bool,
+        flags_ok: bool,
+        rip_ok: bool,
+    ) {
+        let slot = self.jit_shadow_history_len % JIT_SHADOW_HISTORY_CAP;
+        let mut links = [0; 2];
+        let link_count = art.links.len().min(links.len());
+        for (index, link) in art.links.iter().take(link_count).enumerate() {
+            links[index] = link.target_rip;
+        }
+        self.jit_shadow_history[slot] = JitShadowBoundary {
+            artifact_rip: art.entry_rip,
+            artifact_insns: art.insn_count,
+            input_rip,
+            input_rsp,
+            executed,
+            status,
+            exit_rip,
+            shadow_rip,
+            shadow_rsp,
+            links,
+            link_count: link_count as u8,
+            dynamic_count: art.dynamic_count,
+            ends_with_ret: art.ends_with_ret,
+            step_ok,
+            xmm_ok,
+            gpr_ok,
+            flags_ok,
+            rip_ok,
+        };
+        self.jit_shadow_history_len = self.jit_shadow_history_len.wrapping_add(1);
+    }
+
+    fn render_jit_shadow_history(&self) -> String {
+        let count = self.jit_shadow_history_len.min(JIT_SHADOW_HISTORY_CAP);
+        let first = self.jit_shadow_history_len.wrapping_sub(count);
+        let mut out = String::new();
+        for offset in 0..count {
+            let event = self.jit_shadow_history[
+                first.wrapping_add(offset) % JIT_SHADOW_HISTORY_CAP
+            ];
+            let links = event.links.iter().take(event.link_count as usize)
+                .map(|rip| format!("0x{rip:x}"))
+                .collect::<Vec<_>>().join(",");
+            out.push_str(&format!(
+                "block=0x{:x}/{} dyn={} ret={} input=0x{:x}@rsp=0x{:x} executed={} status={} exit=0x{:x} shadow=0x{:x}@rsp=0x{:x} links=[{}] checks=step:{},xmm:{},gpr:{},flags:{},rip:{} | ",
+                event.artifact_rip, event.artifact_insns,
+                event.dynamic_count, event.ends_with_ret,
+                event.input_rip, event.input_rsp, event.executed, event.status,
+                event.exit_rip, event.shadow_rip, event.shadow_rsp, links,
+                event.step_ok, event.xmm_ok, event.gpr_ok, event.flags_ok, event.rip_ok
+            ));
+        }
+        out.trim_end_matches(" | ").to_string()
+    }
+
+    /// Record a transfer into the image but outside its executable text range. PE images are
+    /// currently mapped RWX as a whole, so this catches bad indirect targets before the guest
+    /// executes zero-filled .bss or other data as if it were code.
+    fn note_nontext_image_transfer(&mut self, source_rip: u64, target_rip: u64, origin: &str) {
+        let Some(info) = self.loaded.as_ref() else { return; };
+        let (image_base, image_size, text_base, text_size) =
+            (info.image_base, info.size_of_image, info.text_base, info.text_size);
+        let image_end = image_base.saturating_add(image_size);
+        let text_end = text_base.saturating_add(text_size);
+        if target_rip < image_base || target_rip >= image_end
+            || (target_rip >= text_base && target_rip < text_end) {
+            return;
+        }
+        let mut instruction = [0u8; 16];
+        let instruction_hex = if self.vmm.audit_read_bytes(source_rip, &mut instruction).is_ok() {
+            instruction.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        } else { "<unavailable>".to_string() };
+        let register_names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+        let registers = register_names.iter().enumerate()
+            .map(|(i, name)| format!("{name}=0x{:x}", self.cpu.gpr[i]))
+            .collect::<Vec<_>>().join(" ");
+        let last_rips = self.cpu.render_rip_history();
+        let last_rip_states = self.cpu.render_rip_history_with_rsp();
+        let control_flow = self.cpu.render_control_history();
+        let control_targets = self.cpu.render_control_targets();
+        let decoded_rips = decode_rip_history(&self.vmm, &last_rips, source_rip);
+        let decoded_control_targets = decode_rip_history(&self.vmm, &control_targets, source_rip);
+        let jit_shadow_boundaries = self.render_jit_shadow_history();
+        let transfer = format!(
+            "origin={origin} source=0x{source_rip:x} target=0x{target_rip:x} target_rva=0x{:x} image=0x{image_base:x}+0x{image_size:x} text=0x{text_base:x}+0x{text_size:x} source_bytes={instruction_hex} registers={registers} last_rips={last_rips} last_rip_states={last_rip_states} control_flow={control_flow} decoded_rips={decoded_rips} decoded_control_targets={decoded_control_targets} jit_shadow_boundaries={jit_shadow_boundaries}",
+            target_rip - image_base
+        );
+        if self.first_nontext_transfer.is_empty() {
+            self.first_nontext_transfer = transfer.clone();
+        }
+        self.last_nontext_transfer = transfer;
+    }
+
     /// Full register + stack + page report for the current (or last) fault. Deliberately verbose:
     /// it is the only state that survives a `run_slice` returning `fault:`.
     pub fn fault_snapshot(&mut self) -> String {
@@ -887,9 +1130,48 @@ impl BrowserX64Emulator {
             out.push_str(&format!("  [0x{addr:x}] 0x{val:016x}{marker}\n"));
         }
         out.push_str(&format!(
-            "last RIPs: {}\n",
-            self.cpu.render_rip_history()
+            "last RIPs: {}\nlast RIP/RSP states: {}\n",
+            self.cpu.render_rip_history(),
+            self.cpu.render_rip_history_with_rsp()
         ));
+        let control_flow = self.cpu.render_control_history();
+        if !control_flow.is_empty() {
+            out.push_str(&format!("recent CALL/RET stack transitions: {control_flow}\n"));
+        }
+        let shadow_boundaries = self.render_jit_shadow_history();
+        if !shadow_boundaries.is_empty() {
+            out.push_str(&format!("recent JIT shadow boundaries: {shadow_boundaries}\n"));
+        }
+        if !self.first_nontext_transfer.is_empty() {
+            out.push_str("first transfer into loaded image outside text:\n");
+            out.push_str(&self.first_nontext_transfer);
+            out.push('\n');
+        }
+        if !self.last_nontext_transfer.is_empty()
+            && self.last_nontext_transfer != self.first_nontext_transfer {
+            out.push_str("last transfer into loaded image outside text:\n");
+            out.push_str(&self.last_nontext_transfer);
+            out.push('\n');
+        }
+        if !self.vmm.watch_log.is_empty() {
+            out.push_str("watched writes of the suspected return target:\n");
+            let first = self.vmm.watch_log.len().saturating_sub(64);
+            if first != 0 {
+                out.push_str(&format!("  {} earlier matching writes omitted\n", first));
+            }
+            for event in self.vmm.watch_log.iter().skip(first) {
+                let decoded = decode_guest_instruction(&self.vmm, event.rip);
+                out.push_str(&format!(
+                    "  store 0x{:016x} at 0x{:x} len={} by RIP 0x{:x} ({}) {decoded}\n",
+                    event.value, event.addr, event.len, event.rip,
+                    if event.host { "host" } else { "guest" }
+                ));
+            }
+        }
+        if !self.faulting_context.is_empty() {
+            out.push_str("faulting instruction context (captured before exception dispatch):\n");
+            out.push_str(&self.faulting_context);
+        }
         out
     }
 
@@ -994,8 +1276,8 @@ impl BrowserX64Emulator {
         let mut window = vec![0u8; len];
         if self.vmm.host_read_bytes(insn_rip, &mut window).is_ok() {
             match self.jit.try_compile_block(insn_rip, epoch, &window) {
-                Some(art) => { if art.interpret_rip != 0 { self.record_unsupported(art.interpret_rip); } }
-                None => self.record_unsupported(insn_rip),
+                Some(art) => { if art.interpret_rip != 0 { self.record_compile_boundary(art.interpret_rip); } }
+                None => self.record_compile_boundary(insn_rip),
             }
         }
     }
@@ -1045,6 +1327,11 @@ impl BrowserX64Emulator {
 
     pub fn set_write_watch(&mut self, lo: u64, hi: u64, capacity: u32) {
         self.vmm.set_write_watch(lo, hi, capacity as usize);
+    }
+
+    /// Watches writes that contain a specific little-endian qword value; used for return-address triage.
+    pub fn set_write_watch_value(&mut self, lo: u64, hi: u64, value: u64, capacity: u32) {
+        self.vmm.set_write_watch_value(lo, hi, value, capacity as usize);
     }
 
     /// Adds an extra watched window (globals, heap head, ...) to the data breakpoint set.
@@ -1321,19 +1608,22 @@ impl BrowserX64Emulator {
         self.jit_validate_always = mode == 2;
     }
     pub fn jit_failure_json(&self) -> String { self.jit_last_failure.clone() }
-    pub fn jit_unsupported_json(&self) -> String {
-        let mut entries: Vec<_> = self.jit_unsupported.iter().collect();
+    /// Histogram of hot-block compiler boundaries encountered by `maybe_jit_compile`.
+    /// These counts are compile observations, not dynamic interpreter fallbacks and do not
+    /// prove an opcode is unsupported by the CPU interpreter or by the JIT in general.
+    pub fn jit_compile_boundaries_json(&self) -> String {
+        let mut entries: Vec<_> = self.jit_compile_boundaries.iter().collect();
         entries.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
         let items: Vec<String> = entries.iter().take(256).map(|(k, v)| format!("\"{}\":{}", k, v)).collect();
-        format!("{{\"exits\":{},\"byOpcode\":{{{}}}}}", self.jit_unsupported_exits, items.join(","))
+        format!("{{\"observations\":{},\"byOpcode\":{{{}}}}}", self.jit_compile_boundary_observations, items.join(","))
     }
-    fn record_unsupported(&mut self, rip: u64) {
+    fn record_compile_boundary(&mut self, rip: u64) {
         let mut bytes = [0u8; 4];
         let key = if self.vmm.host_read_bytes(rip, &mut bytes).is_ok() {
             format!("{:02x}{:02x}{:02x}{:02x}", bytes[0], bytes[1], bytes[2], bytes[3])
         } else { format!("unmapped:{:x}", rip) };
-        *self.jit_unsupported.entry(key).or_insert(0) += 1;
-        self.jit_unsupported_exits += 1;
+        *self.jit_compile_boundaries.entry(key).or_insert(0) += 1;
+        self.jit_compile_boundary_observations += 1;
     }
     /// Host WebAssembly tail-call feature probe. Rust +tail-call only permits the opcode;
     /// the runtime validator must also accept it before we link cross-module edges.
@@ -1343,6 +1633,8 @@ impl BrowserX64Emulator {
     /// cores that lack flag-materialization slots instead of silently miscomputing RFLAGS.
     #[wasm_bindgen]
     pub fn jit_context_slots(&self) -> u32 { self.jit_ctx.len() as u32 }
+    /// JIT lowering generation. Hosts use this to reject an ABI-compatible but stale core.
+    pub fn jit_compiler_version(&self) -> u32 { JIT_COMPILER_VERSION as u32 }
     pub fn jit_pending_count(&self) -> u32 { self.jit.pending_count() as u32 }
     pub fn jit_pending_meta(&self, index: u32) -> String { self.jit.pending_meta(index as usize).unwrap_or_default() }
     pub fn jit_pending_wasm(&self, index: u32) -> Vec<u8> { self.jit.pending_wasm(index as usize).unwrap_or_default() }
@@ -1356,7 +1648,7 @@ impl BrowserX64Emulator {
     }
     pub fn jit_context_ptr(&mut self) -> u32 { self.jit_ctx.as_mut_ptr() as u32 }
 
-    /// Copies GPRs/RFLAGS into the shared v2 context and arms the artifact at current RIP.
+    /// Copies GPRs/RFLAGS/XMM state into the shared v3 context and arms the artifact at current RIP.
     pub fn jit_enter_block(&mut self) -> String {
         // A guard page must be consumed by the interpreter's instruction fetch so
         // the guest receives STATUS_GUARD_PAGE_VIOLATION; native entry must not
@@ -1452,8 +1744,11 @@ impl BrowserX64Emulator {
                 self.vmm.read_page(p).ok().map(|d| (p, d.to_vec()))
             }).collect();
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
+            let input_rip = shadow.rip;
+            let input_rsp = shadow.gpr[4];
             let mut ok = true;
             for _ in 0..executed {
+                self.vmm.current_rip = shadow.rip;
                 match shadow.step_one(&mut self.vmm) {
                     Ok(cpu::ExecOutcome::Next) | Ok(cpu::ExecOutcome::Branch(_)) => {}
                     _ => { ok = false; break; }
@@ -1465,7 +1760,14 @@ impl BrowserX64Emulator {
                 let hi = u64::from_le_bytes(shadow.ymm[i][8..16].try_into().unwrap());
                 if self.jit_ctx[32 + i * 2] != lo || self.jit_ctx[33 + i * 2] != hi { xmm_ok = false; }
             }
-            if !ok || !xmm_ok || shadow.gpr[..] != self.jit_ctx[..16] || self.jit_ctx[19] != shadow.rflags || shadow.rip != exit_rip {
+            let gpr_ok = shadow.gpr[..] == self.jit_ctx[..16];
+            let flags_ok = self.jit_ctx[19] == shadow.rflags;
+            let rip_ok = shadow.rip == exit_rip;
+            self.record_jit_shadow_boundary(
+                &art, input_rip, input_rsp, executed, status, exit_rip,
+                shadow.rip, shadow.gpr[4], ok, xmm_ok, gpr_ok, flags_ok, rip_ok,
+            );
+            if !ok || !xmm_ok || !gpr_ok || !flags_ok || !rip_ok {
                 let actual: Vec<String> = self.jit_ctx[..16].iter().map(|v| format!("\"{}\"", v)).collect();
                 let expected: Vec<String> = shadow.gpr.iter().map(|v| format!("\"{}\"", v)).collect();
                 let mut code = [0u8; 16]; let _ = self.vmm.host_read_bytes(art.entry_rip, &mut code);
@@ -1482,6 +1784,7 @@ impl BrowserX64Emulator {
             self.cpu = shadow;
             self.cpu.instructions_executed = base_insns.wrapping_add(executed);
             self.kernel.instructions = self.cpu.instructions_executed;
+            self.note_nontext_image_transfer(art.entry_rip, exit_rip, "jit-validated");
             self.jit.mark_proven(art.entry_rip);
             return "next".into();
         }
@@ -1497,6 +1800,7 @@ impl BrowserX64Emulator {
         }
         self.cpu.instructions_executed = self.cpu.instructions_executed.wrapping_add(executed);
         self.kernel.instructions = self.cpu.instructions_executed;
+        self.note_nontext_image_transfer(art.entry_rip, exit_rip, "jit");
         self.jit.mark_proven(art.entry_rip);
         "next".into()
     }

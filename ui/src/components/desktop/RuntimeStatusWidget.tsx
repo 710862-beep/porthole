@@ -1,72 +1,72 @@
-import { Activity, Cpu, HardDrive } from "lucide-react";
+import { Activity, ArrowUpRight } from "lucide-react";
 import { useEmulator } from "@/hooks/useEmulator";
 import { useWindowManager } from "@/hooks/useWindowManager";
+import { useEmulatorStore } from "@/store/emulatorStore";
 import { cn } from "@/lib/cn";
 
-const STATE_TONE: Record<string, string> = {
-  running: "text-success",
-  paused: "text-warning",
-  loading: "text-info",
-  exited: "text-ink-faint",
-  faulted: "text-danger",
-  idle: "text-ink-faint",
-  "page-fault-wait": "text-warning",
-};
-
-/** Compact KDE-plasmoid: storage, guest state, present rate. Opens System Monitor. */
+/** Desktop system card: real browser/runtime facts, styled after a terminal window. */
 export function RuntimeStatusWidget() {
   const { telemetry, guestState, mode, status } = useEmulator();
   const { openApp } = useWindowManager();
-  const storage = telemetry?.storageBackend ?? "opfs";
+  const storage = useEmulatorStore((state) => state.storage);
+  const runtimeReady = mode === "wasm";
+
+  const rows = [
+    ["environment", "browser sandbox"],
+    ["guest runtime", runtimeReady ? "ABI-v3 WebAssembly" : "unavailable"],
+    ["guest state", status === "initializing" ? "initializing" : guestState],
+    ["storage", storage?.label ?? "not selected"],
+    ["guest presents", runtimeReady ? String(telemetry?.presentedFrames ?? 0) : "not available"],
+    ["host Windows process", "not accessible"],
+  ] as const;
 
   return (
     <button
       type="button"
       onClick={() => openApp("system")}
       title="Open System Monitor"
+      aria-label="Open System Monitor. Porthole runs in a browser and cannot start host Windows processes."
       className={cn(
-        "group fixed bottom-[60px] left-4 z-10 flex items-center gap-3 rounded-full border border-white/[0.09]",
-        "bg-[#11111b]/70 px-3.5 py-1.5 text-[10.5px] text-ink-muted shadow-[0_8px_30px_rgba(0,0,0,0.45)]",
-        "backdrop-blur-xl transition-colors duration-200 hover:border-accent/30 hover:bg-[#11111b]/85 hover:text-ink",
+        "fixed right-5 top-5 z-10 block w-[min(460px,calc(100vw-2.5rem))] overflow-hidden rounded-[10px]",
+        "border border-white/[0.14] bg-[rgba(29,22,42,0.91)] text-left shadow-[0_24px_80px_rgba(15,5,31,0.55)]",
+        "backdrop-blur-2xl transition duration-200 hover:border-white/[0.22] hover:bg-[rgba(31,23,46,0.95)]",
       )}
     >
-      <span className="flex items-center gap-1.5">
-        <HardDrive size={11} aria-hidden className="text-accent" />
-        <span className="font-mono uppercase tracking-[0.08em]">
-          {storage === "file-system-access" ? "nvme" : storage}
+      <div className="flex h-8 items-center gap-2 border-b border-white/[0.08] bg-white/[0.035] px-2.5">
+        <span className="grid h-[17px] w-[17px] place-items-center rounded-[4px] border border-accent/25 bg-accent/10 text-accent">
+          <Activity size={10} aria-hidden />
         </span>
-      </span>
-      <span className="h-3 w-px bg-white/10" aria-hidden />
-      <span className="flex items-center gap-1.5">
-        <span
-          className={cn(
-            "h-1.5 w-1.5 rounded-full",
-            guestState === "running"
-              ? "animate-pulse-dot bg-success"
-              : guestState === "faulted"
-                ? "bg-danger"
-                : "bg-overlay",
-          )}
-          aria-hidden
-        />
-        <span className={cn("font-mono uppercase tracking-[0.08em]", STATE_TONE[guestState])}>
-          {status === "initializing" ? "init" : guestState}
+        <span className="font-mono text-[9.5px] text-ink-muted">Porthole · system status</span>
+        <span className="ml-auto flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.12em] text-ink-ghost">
+          <i className={cn("h-1.5 w-1.5 rounded-full", runtimeReady ? "bg-success" : "bg-warning")} aria-hidden />
+          {runtimeReady ? "ready" : "browser session"}
         </span>
-      </span>
-      {telemetry && guestState === "running" && (
-        <>
-          <span className="h-3 w-px bg-white/10" aria-hidden />
-          <span className="flex items-center gap-1.5 font-mono tabular-nums">
-            <Activity size={11} aria-hidden className="text-violet" />
-            {telemetry.fps} fps
-          </span>
-        </>
-      )}
-      <span className="h-3 w-px bg-white/10" aria-hidden />
-      <span className="flex items-center gap-1.5">
-        <Cpu size={11} aria-hidden className={mode === "mock" ? "text-warning" : "text-success"} />
-        <span className="font-mono uppercase tracking-[0.08em]">{mode}</span>
-      </span>
+      </div>
+
+      <div className="p-3.5 font-mono text-[10px] leading-[1.7]">
+        <p className="mb-2 text-accent/90">$ porthole status</p>
+        <dl className="grid grid-cols-[minmax(112px,0.42fr)_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+          {rows.map(([label, value]) => (
+            <div key={label} className="contents">
+              <dt className="truncate text-ink-faint">{label}</dt>
+              <dd
+                className={cn(
+                  "truncate text-[#cbd6e2]",
+                  label === "guest runtime" && !runtimeReady && "text-warning",
+                  label === "guest runtime" && runtimeReady && "text-success",
+                  label === "host Windows process" && "text-ink-muted",
+                  label === "guest state" && guestState === "faulted" && "text-danger",
+                )}
+              >
+                {value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <span className="mt-3 flex items-center gap-1 text-[9px] text-accent/80">
+          Open browser and guest telemetry <ArrowUpRight size={10} aria-hidden />
+        </span>
+      </div>
     </button>
   );
 }

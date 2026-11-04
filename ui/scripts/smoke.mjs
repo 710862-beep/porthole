@@ -4,9 +4,9 @@
  *   npm run smoke
  *
  * Mounts the real App inside jsdom through Vite's module graph, walks boot →
- * setup → desktop, then drives the window manager, store, terminal, settings,
- * overview, hot corner, dialogs and the mock runtime. Canvas 2D is stubbed
- * because jsdom cannot rasterise; every other DOM path is real.
+ * setup → desktop, then drives the window manager, metadata-only catalog,
+ * Developer Console, settings, overview, hot corner, dialogs and the browser-only
+ * production-runtime boundary. Canvas 2D is stubbed because jsdom cannot rasterise.
  */
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
@@ -187,50 +187,11 @@ try {
   const { useEmulatorStore } = await server.ssrLoadModule("/src/store/emulatorStore.ts");
   const { useLibraryStore } = await server.ssrLoadModule("/src/store/libraryStore.ts");
   const { confirmAction, reportError } = await server.ssrLoadModule("/src/store/dialogStore.ts");
-  const { MockEmulatorRuntime } = await server.ssrLoadModule("/runtime/mockRuntime.ts");
-  const { DEFAULT_INSTALLED_IDS } = await server.ssrLoadModule("/runtime/catalog.ts");
+  const { DEFAULT_IN_LIBRARY_IDS } = await server.ssrLoadModule("/runtime/catalog.ts");
 
   const ui = () => useUiStore.getState();
   const wm = () => useWindowStore.getState();
   const emu = () => useEmulatorStore.getState();
-
-  /* ====================================================================== *
-   * 1. Mock runtime in isolation
-   * ====================================================================== */
-  console.log("\nruntime");
-  const rt = new MockEmulatorRuntime();
-  let frames = 0;
-  rt.onFrameReady(() => {
-    frames += 1;
-  });
-  await rt.initialize("memory");
-  const handle = await rt.loadExecutable("C:\\games\\probe.exe");
-  await rt.launch(handle);
-  await sleep(500);
-  const framebuffer = rt.getFramebuffer();
-  const telemetry = rt.getTelemetry();
-  check("frames presented", frames > 8, `${frames}`);
-  check("framebuffer 240×135", framebuffer?.width === 240 && framebuffer?.height === 135);
-  const hasColour = framebuffer
-    ? framebuffer.data.some((value, index) => index % 4 !== 3 && value > 8)
-    : false;
-  check("framebuffer has colour", hasColour);
-  await until(() => /^fnv1a64:[0-9a-f]{16}$/.test(rt.getTelemetry().frameChecksum), 2000);
-  const liveTelemetry = rt.getTelemetry();
-  check(
-    "checksum populated",
-    /^fnv1a64:[0-9a-f]{16}$/.test(liveTelemetry.frameChecksum),
-    liveTelemetry.frameChecksum,
-  );
-  check("telemetry fps > 0", telemetry.fps > 0, String(telemetry.fps));
-  check("telemetry uptime", telemetry.uptimeMs > 0);
-  await rt.pause(handle);
-  const pausedFrames = frames;
-  await sleep(220);
-  check("pause stops presenting", frames - pausedFrames <= 1);
-  await rt.terminate(handle);
-  check("terminate exits", rt.getTelemetry().state === "exited");
-  rt.dispose();
 
   /* ====================================================================== *
    * 2. Boot → storage setup → desktop
@@ -259,7 +220,7 @@ try {
    * ====================================================================== */
   console.log("\nwindows");
   const ids = {};
-  for (const appId of ["store", "terminal", "settings", "system", "welcome", "emulator"]) {
+  for (const appId of ["store", "devtools", "settings", "system", "welcome", "emulator"]) {
     ids[appId] = wm().openWindow(appId);
     await sleep(120);
   }
@@ -267,13 +228,13 @@ try {
   check("all six frames in DOM", $$("[data-window-id]").length === 6, String($$("[data-window-id]").length));
 
   const storeFrame = () => document.querySelector(`[data-window-id="${ids.store}"]`);
-  const otherFrame = () => document.querySelector(`[data-window-id="${ids.terminal}"]`);
+  const otherFrame = () => document.querySelector(`[data-window-id="${ids.devtools}"]`);
   check("focused frame is unique", $$("[data-window-id][data-focused]").length === 1);
 
   pointer(otherFrame(), "pointerdown", 500, 400);
   pointer(window, "pointerup", 500, 400);
   await sleep(60);
-  check("pointerdown focuses background window", wm().focusedId === ids.terminal);
+  check("pointerdown focuses background window", wm().focusedId === ids.devtools);
 
   const titlebar = storeFrame()?.querySelector("header");
   pointer(titlebar, "pointerdown", 640, 300);
@@ -306,7 +267,7 @@ try {
   check("minimised frame is hidden", storeFrame()?.getAttribute("data-minimized") === "true");
 
   const dockButton = [...(byLabel("Desktop panel")?.querySelectorAll("button") ?? [])].find((b) =>
-    /^Game Store/.test(b.getAttribute("aria-label") ?? ""),
+    /^App Store/.test(b.getAttribute("aria-label") ?? ""),
   );
   click(dockButton);
   await sleep(80);
@@ -333,12 +294,12 @@ try {
   const search = byLabel("Search applications");
   check("launcher search input", Boolean(search));
   if (search) {
-    typeInto(search, "term");
+    typeInto(search, "developer console");
     await sleep(80);
-    check("search filters to Terminal", /Terminal/.test(text()));
+    check("search filters to Developer Console", /Developer Console/.test(text()));
     search.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await sleep(120);
-    check("enter launches the first result", wm().order.some((id) => wm().windows[id]?.appId === "terminal"));
+    check("enter launches the first result", wm().order.some((id) => wm().windows[id]?.appId === "devtools"));
     check("launcher closes after launch", !ui().launcherOpen);
   }
 
@@ -359,75 +320,61 @@ try {
   window.dispatchEvent(new window.KeyboardEvent("keyup", { key: "Meta" }));
   await sleep(120);
   check("Super opens Overview", ui().overviewOpen);
-  const card = buttonByText(/Terminal/, document.querySelector('[aria-label="Window overview"]') ?? document);
+  const card = buttonByText(/Developer Console/, document.querySelector('[aria-label="Window overview"]') ?? document);
   click(card);
   await sleep(120);
   check("window card closes Overview", !ui().overviewOpen);
 
   /* ====================================================================== *
-   * 6. Store install flow
+   * 6. Store catalog bookmark flow
    * ====================================================================== */
   console.log("\nstore");
   wm().openWindow("store");
   await sleep(200);
   const shelf = document.querySelector('[aria-label="Game library"]');
   const cards = [...(shelf?.querySelectorAll("button") ?? [])];
-  check("library renders covers", cards.length >= 5, String(cards.length));
-  let installStarted = false;
+  check("catalog renders covers", cards.length >= 5, String(cards.length));
+  let addToLibrary = null;
   for (const card of cards) {
     click(card);
     await sleep(60);
-    const install = buttonByText(/^Install$/, document);
-    if (install && !install.disabled) {
-      click(install);
-      installStarted = true;
+    const add = buttonByText(/^Add to library$/, document);
+    if (add && !add.disabled) {
+      addToLibrary = add;
       break;
     }
   }
-  check("install action available", installStarted);
+  check("bookmark action available", Boolean(addToLibrary));
+  if (addToLibrary) click(addToLibrary);
   check(
-    "install progress appears",
-    await until(() => Object.values(useLibraryStore.getState().progress).some((p) => p.percent > 0), 3000),
+    "catalog bookmark saved without install progress",
+    await until(() => useLibraryStore.getState().games.filter((game) => game.status === "in-library").length > DEFAULT_IN_LIBRARY_IDS.length, 2000),
   );
-  const installedTarget = Object.values(useLibraryStore.getState().progress)[0]?.appId;
+  check("store labels membership as library-only", /Added to library|catalog bookmark/i.test(text()));
+  check("Chocolatey package-download control absent", !/Install progress/.test(text()));
+
+  const doomCard = cards.find((card) => (card.textContent ?? "").includes("Chocolate Doom 3.1.1"));
+  click(doomCard);
+  await sleep(60);
+  const prepareDoom = buttonByText(/^Prepare to launch$/);
+  check("Chocolate Doom exposes an Emulator setup action", Boolean(prepareDoom));
+  click(prepareDoom);
   check(
-    "install completes",
-    await until(
-      () =>
-        installedTarget !== undefined &&
-        useLibraryStore.getState().games.some(
-          (game) => game.appId === installedTarget && game.status === "installed",
-        ),
-      9000,
-    ),
+    "Store opens the selected Chocolate Doom profile",
+    await until(() => (document.querySelector(`[data-window-id=\"${ids.emulator}\"]`)?.textContent ?? "").includes("Chocolate Doom 3.1.1")),
   );
-  check("library is larger than defaults", useLibraryStore.getState().games.filter((g) => g.status === "installed").length >= DEFAULT_INSTALLED_IDS.length);
-  check("store console logs install", /install/i.test(text()));
+  const doomEmulatorFrame = document.querySelector(`[data-window-id=\"${ids.emulator}\"]`);
+  check("missing Doom files are routed to import instead of launch failure", /Import files for Chocolate Doom 3.1.1/.test(doomEmulatorFrame?.textContent ?? "") && !text().includes("Launch failed"));
 
   /* ====================================================================== *
-   * 7. Terminal
+   * 7. Developer Console
    * ====================================================================== */
-  console.log("\nterminal");
-  wm().openWindow("terminal");
+  console.log("\ndeveloper console");
+  wm().openWindow("devtools");
   await sleep(160);
-  const terminalFrame = [...document.querySelectorAll("[data-window-id]")].find((frame) =>
-    (frame.textContent ?? "").includes("porthole@cachy"),
-  );
-  const shellInput = terminalFrame?.querySelector('input[aria-label="Shell command"]');
-  check("terminal input present", Boolean(shellInput));
-  if (shellInput) {
-    const before = terminalFrame.textContent.length;
-    typeInto(shellInput, "help");
-    await sleep(40);
-    click(byLabel("Run command", terminalFrame));
-    await sleep(400);
-    check("terminal prints help output", terminalFrame.textContent.length > before && /commands/i.test(terminalFrame.textContent));
-    typeInto(shellInput, "uname");
-    await sleep(40);
-    click(byLabel("Run command", terminalFrame));
-    await sleep(300);
-    check("terminal answers uname", /PORTHOLE|mock/i.test(terminalFrame.textContent));
-  }
+  const devtoolsFrame = document.querySelector(`[data-window-id="${ids.devtools}"]`);
+  check("Developer Console surface renders", /Developer Console/.test(devtoolsFrame?.textContent ?? ""));
+  check("console distinguishes SHIM aggregates", /aggregate|per-call traces/i.test(devtoolsFrame?.textContent ?? ""));
 
   /* ====================================================================== *
    * 8. Settings: accent, wallpaper, switches, workspaces
@@ -509,14 +456,13 @@ try {
   const emulatorFrame = document.querySelector(`[data-window-id="${ids.emulator}"]`);
   check("emulator frame renders", Boolean(emulatorFrame));
   const launch = buttonByText(/^Launch$/, emulatorFrame ?? document);
-  check("launch enabled once runtime is ready", Boolean(launch) && !launch.disabled);
-  if (launch) {
-    click(launch);
-    check("guest reaches running", await until(() => emu().telemetry?.state === "running", 4000), emu().telemetry?.state);
-    await sleep(500);
-    check("frames counted", (emu().telemetry?.presentedFrames ?? 0) > 3);
-    check("canvas has guest resolution", (emulatorFrame?.querySelector("canvas")?.width ?? 0) === 240);
-  }
+  check("headless smoke does not initialize the browser-only runtime", emu().mode === "unavailable", emu().mode);
+  check("guest launch stays disabled in the SSR smoke harness", Boolean(launch) && launch.disabled);
+  const importButton = [...(emulatorFrame?.querySelectorAll("button") ?? [])].find((button) =>
+    (button.getAttribute("aria-label") ?? "").startsWith("Import guest files into"),
+  );
+  check("file import stays disabled in the SSR smoke harness", Boolean(importButton) && importButton.disabled);
+  check("no guest frames are synthesized", (emu().telemetry?.presentedFrames ?? 0) === 0);
 
   /* ====================================================================== *
    * 12. Workspaces + hygiene
@@ -546,15 +492,15 @@ try {
   await sleep(450);
   check("Escape closes tray popover", !byLabel("Shell output volume"));
 
-  const terminalFrame2 = document.querySelector(`[data-window-id="${ids.terminal}"]`);
-  terminalFrame2
+  const devtoolsFrame2 = document.querySelector(`[data-window-id="${ids.devtools}"]`);
+  devtoolsFrame2
     ?.querySelector("header")
     ?.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
   await sleep(120);
   check("window menu lists workspaces", text().includes("Move to workspace"));
   click(buttonByText(/^Minimize$/) ?? byLabel("Minimize window"));
   await sleep(120);
-  check("window menu minimises", wm().windows[ids.terminal].status === "minimized");
+  check("window menu minimises", wm().windows[ids.devtools].status === "minimized");
 
   ui().openOverview();
   await sleep(200);

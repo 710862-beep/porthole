@@ -18,6 +18,7 @@ interface EmulatorStore {
   storage: StorageState | null;
   telemetry: RuntimeTelemetry | null;
   processHandle: ProcessHandle | null;
+  selectedProfileId: string | null;
   logs: RuntimeLogEntry[];
   logsOpen: boolean;
   lastFrameAt: number | null;
@@ -28,6 +29,7 @@ interface EmulatorStore {
   setStorage: (storage: StorageState | null) => void;
   setTelemetry: (telemetry: RuntimeTelemetry) => void;
   setProcessHandle: (handle: ProcessHandle | null) => void;
+  setSelectedProfileId: (appId: string | null) => void;
   pushLog: (entry: RuntimeLogEntry) => void;
   replaceLogs: (logs: readonly RuntimeLogEntry[]) => void;
   clearLogs: () => void;
@@ -45,11 +47,12 @@ export function guestStateOf(telemetry: RuntimeTelemetry | null): EmulatorState 
 
 export const useEmulatorStore = create<EmulatorStore>()((set, get) => ({
   status: "cold",
-  mode: "mock",
+  mode: "unavailable",
   error: null,
   storage: null,
   telemetry: null,
   processHandle: null,
+  selectedProfileId: null,
   logs: [],
   logsOpen: false,
   lastFrameAt: null,
@@ -60,6 +63,7 @@ export const useEmulatorStore = create<EmulatorStore>()((set, get) => ({
   setStorage: (storage) => set({ storage }),
   setTelemetry: (telemetry) => set({ telemetry }),
   setProcessHandle: (processHandle) => set({ processHandle }),
+  setSelectedProfileId: (selectedProfileId) => set({ selectedProfileId }),
   pushLog: (entry) =>
     set((state) => ({
       logs: [...state.logs, entry].slice(-MAX_MIRRORED_LOGS),

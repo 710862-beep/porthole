@@ -52,11 +52,14 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: LucideIcon; blurb: s
 
 const VERSION = "0.5.0";
 
-const AURORA_URL = `${import.meta.env.BASE_URL}wallpapers/cachy-aurora.png`;
-
 function wallpaperPreview(id: WallpaperId): CSSProperties {
-  if (id === "cachy-aurora") {
-    return { backgroundImage: `url("${AURORA_URL}")`, backgroundSize: "cover", backgroundPosition: "center" };
+  if (id === "aurora") {
+    return {
+      backgroundImage:
+        "radial-gradient(ellipse 52% 72% at 50% 104%, rgba(255,112,151,.94), transparent 72%), radial-gradient(ellipse 60% 90% at 88% 40%, rgba(127,37,157,.84), transparent 72%), linear-gradient(132deg,#552d98 0%,#7b31aa 44%,#3b1057 100%)",
+      backgroundSize: "cover",
+      backgroundPosition: "center",
+    };
   }
   if (id === "nebula") {
     return {
@@ -92,7 +95,7 @@ function Card({ children, className }: { children: ReactNode; className?: string
 /** Settings window. Every control writes real state; destructive actions confirm. */
 export function SettingsApp() {
   const chrome = useWindowChrome();
-  const { storage } = useRuntime();
+  const { storage, runtime } = useRuntime();
   const { mode, status, telemetry, clearLogs, terminate, initialize } = useEmulator();
   const { openApp, closeAllWindows } = useWindowManager();
 
@@ -229,7 +232,7 @@ export function SettingsApp() {
         </nav>
 
         <div className="mt-auto space-y-2 p-2">
-          <Badge tone={mode === "mock" ? "warning" : "success"} dot className="w-fit">
+          <Badge tone={mode === "wasm" ? "success" : "warning"} dot className="w-fit">
             {mode} runtime
           </Badge>
           <p className="text-[9px] leading-relaxed text-ink-ghost">
@@ -244,7 +247,7 @@ export function SettingsApp() {
           <>
             <Section
               title="Wallpaper"
-              description="The generated aurora plate ships with the shell; the other two are procedural CSS."
+              description="Choose the local aurora, nebula or minimal-grid wallpaper."
             >
               <div className="grid grid-cols-3 gap-2.5">
                 {WALLPAPERS.map((option) => {
@@ -523,14 +526,14 @@ export function SettingsApp() {
 
         {section === "runtime" && (
           <>
-            <Section title="Runtime" description="This shell drives the labelled mock runtime behind ui/runtime/contracts.ts.">
+            <Section title="Runtime" description="The production router uses the ABI-v3 Wasm core and refuses guest execution when the artifact is unavailable.">
               <div className="grid grid-cols-2 gap-2.5">
                 <Card>
                   <p className="text-[9px] uppercase tracking-[0.14em] text-ink-faint">Mode</p>
                   <p className="mt-1 flex items-center gap-2 text-[12px] text-ink">
                     {mode}
-                    <Badge tone={mode === "mock" ? "warning" : "success"} dot>
-                      {mode === "mock" ? "synthetic" : "wasm"}
+                    <Badge tone={mode === "wasm" ? "success" : "warning"} dot>
+                      {mode}
                     </Badge>
                   </p>
                 </Card>
@@ -554,8 +557,14 @@ export function SettingsApp() {
                   variant="secondary"
                   icon={RefreshCw}
                   onClick={() => {
-                    void initialize(selectedStorage.backend);
-                    toast({ title: "Runtime re-initialised", message: "Mock remount only.", tone: "info" });
+                    void initialize(selectedStorage.backend).then(() => {
+                      const available = runtime.mode === "wasm";
+                      toast({
+                        title: available ? "Runtime ready" : "Runtime unavailable",
+                        message: available ? "ABI-v3 Wasm runtime initialized." : "Guest execution remains disabled until the Wasm artifact initializes.",
+                        tone: available ? "success" : "warning",
+                      });
+                    });
                   }}
                 >
                   Re-initialise
@@ -578,17 +587,15 @@ export function SettingsApp() {
               </div>
             </Section>
 
-            <Section title="Swapping in the real core" description="The shell never imports the emulator directly.">
+            <Section title="Execution boundary" description="Guest execution stays inside the browser's ABI-v3 Wasm runtime.">
               <Card className="flex gap-2.5">
                 <Info size={13} className="mt-0.5 flex-none text-accent" aria-hidden />
                 <p className="text-[10px] leading-relaxed text-ink-faint">
-                  Implement <code className="font-mono text-ink-muted">ExtendedEmulatorRuntime</code>{" "}
-                  over <code className="font-mono text-ink-muted">BrowserX64Emulator</code> in{" "}
-                  <code className="font-mono text-ink-muted">ui/runtime</code>, return it from{" "}
-                  <code className="font-mono text-ink-muted">createRuntimeBundle()</code>, and every
-                  window, dialog and telemetry surface keeps working. Frames must come from{" "}
-                  <code className="font-mono text-ink-muted">guest_frame_rgba()</code> gated on{" "}
-                  <code className="font-mono text-ink-muted">presented_frames()</code>.
+                  Porthole does not create host Windows processes or launch Chocolatey installers.
+                  The Wasm core loads user-imported PE32+ files into a guest environment; if the
+                  runtime artifact is missing, launch is disabled rather than replaced by a simulator.
+                  Guest pixels are drawn only from <code className="font-mono text-ink-muted">guest_frame_rgba()</code>
+                  after <code className="font-mono text-ink-muted">presented_frames()</code> reports a present.
                 </p>
               </Card>
             </Section>
@@ -609,7 +616,7 @@ export function SettingsApp() {
                       <code className="font-mono">ui/runtime/contracts.ts</code> shapes.
                     </p>
                   </div>
-                  <Badge tone="accent">CachyOS-flavoured</Badge>
+                  <Badge tone="accent">Porthole desktop</Badge>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <a
@@ -631,7 +638,7 @@ export function SettingsApp() {
                     Evidence report
                   </a>
                   <a
-                    href="https://github.com/710862-beep/porthole/blob/main/ARCHITECTURE.md"
+                    href="https://github.com/710862-beep/porthole/blob/main/docs/ui-runtime-architecture.md"
                     target="_blank"
                     rel="noreferrer noopener"
                     className="inline-flex h-8 items-center gap-1.5 rounded-control border border-white/10 bg-white/[0.05] px-3 text-[11px] text-ink-muted transition hover:bg-white/[0.09] hover:text-ink"

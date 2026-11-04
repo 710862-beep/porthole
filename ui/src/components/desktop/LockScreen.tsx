@@ -7,7 +7,7 @@ import { PortholeMark } from "@/components/ui/PortholeMark";
 import { Kbd } from "@/components/ui/Kbd";
 import { EASE_KDE } from "@/lib/motion";
 
-const AURORA_URL = `${import.meta.env.BASE_URL}wallpapers/cachy-aurora.png`;
+const AURORA_URL = `${import.meta.env.BASE_URL}wallpapers/aurora.png`;
 
 /** Session lock. Any key / click on the button unlocks — local demo, no auth claimed. */
 export function LockScreen() {

@@ -1,21 +1,22 @@
 //! Basic-block x86-64 -> WebAssembly compiler.
 //!
-//! ABI v2 exports `run_block(ctx:i32)->i64`. The context is 32 i64 slots in the core's
+//! ABI v3 exports `run_block(ctx:i32)->i64`. The context is 64 i64 slots in the core's
 //! exported memory: 0..15 GPRs, 16 status, 17 exit RIP, 18 executed instructions,
-//! 19 RFLAGS, 20 instruction budget, 21 entry RIP. Registers and RFLAGS are Wasm locals
-//! for the whole block; the context is read once and written on exit. A backward branch
-//! to the block entry is lowered to a native Wasm loop so hot loops do not cross JS.
-//! Static forward JMP edges can be linked with `return_call` when the host enables the
-//! tail-call feature and the target artifact already exists. Unsupported instructions,
-//! CALL, and page boundaries terminate the artifact and resume the interpreter at the
-//! exact next RIP. Memory-writing instructions are deliberately not translated yet:
-//! they terminate the block before their side effect, so SMC/page faults stay precise.
+//! 19 RFLAGS, 20 instruction budget, 21 entry RIP, 22..23 FS/GS bases, 25..31 memory
+//! transaction state, and 32..63 XMM registers. GPRs, flags, and XMM values are Wasm locals
+//! for the whole block. A backward branch to the block entry is a native Wasm loop; stores,
+//! stack operations, direct/indirect CALL/RET exits, and covered SSE2 operations are lowered
+//! to Wasm. AOT direct CALLs may link a leaf callee and leaf return continuation so a matching
+//! RET resumes the caller inside Wasm without expanding the transitive link graph. Other calls
+//! and indirect JMPs return to the host dispatcher at the precise guest RIP. LOOP-family
+//! branches and covered rotate operations are lowered directly. Unsupported instructions and
+//! memory traps return to the host; native writes are rolled back before interpreter replay.
 
 use std::collections::{HashMap, HashSet};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
 pub const JIT_ABI_V3: u32 = 3;
-pub const JIT_COMPILER_VERSION: u64 = 11;
+pub const JIT_COMPILER_VERSION: u64 = 16;
 pub const JIT_CONTEXT_SLOTS: usize = 64;
 pub const JIT_TLB_ENTRIES: usize = 16384;
 pub const JIT_UNDO_CAP: usize = 65536;
@@ -25,7 +26,7 @@ pub const JIT_STATUS_OK: u64 = 0;
 pub const JIT_STATUS_BUDGET: u64 = 1;
 pub const JIT_STATUS_INTERPRET: u64 = 2;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JitLink {
     pub target_rip: u64,
     pub page_epoch: u32,
@@ -90,10 +91,25 @@ enum JitOp {
     MovReg { dst: u8, src: u8, width: u8 },
     Alu { kind: AluKind, dst: u8, src: Option<u8>, imm: i64, width: u8 },
     Shift { kind: u8, dst: u8, count: u8, width: u8 },
+    Bswap { dst: u8, width: u8 },
+    /// LOOP/LOOPE/LOOPNE: kind 0/1/2, counter width 4 (ECX) or 8 (RCX).
+    Loop { kind: u8, width: u8 },
     /// reg <- [mem] (MOV / MOVZX / MOVSX). extend: 0=none, 1=zero, 2=sign.
     Load { dst: u8, addr: MemAddr, width: u8, src_width: u8, extend: u8 },
-    /// reg <- reg OP [mem] (read-only ALU; memory destination stores stay interpreted).
+    /// reg <- reg OP [mem] (read-only ALU).
     AluLoad { kind: AluKind, dst: u8, addr: MemAddr, width: u8 },
+    /// [mem] <- [mem] OP reg/imm, or a read-only CMP/TEST with memory on the left.
+    AluMem { kind: AluKind, src: Option<u8>, imm: Option<i64>, addr: MemAddr, width: u8 },
+    /// CMOVcc with a register or memory source. Memory is read regardless of the condition.
+    Cmov { dst: u8, src: Option<u8>, addr: Option<MemAddr>, width: u8, cc: u8 },
+    /// Two- or three-operand signed IMUL; imm is present for the three-operand forms.
+    Imul { dst: u8, src: Option<u8>, addr: Option<MemAddr>, imm: Option<i64>, width: u8 },
+    /// Unary NEG on a register or memory operand.
+    Neg { dst: Option<u8>, addr: Option<MemAddr>, width: u8 },
+    /// DIV/IDIV of DX:AX or EDX:EAX by a 16-/32-bit register or memory operand.
+    Div { src: Option<u8>, addr: Option<MemAddr>, width: u8, signed: bool },
+    /// CWD/CDQ/CQO: sign-extend the accumulator into the high half.
+    SignExtendHigh { width: u8 },
     Lea { dst: u8, addr: MemAddr, width: u8 },
     Pop { dst: u8, width: u8 },
     Setcc { dst: u8, cc: u8 },
@@ -116,6 +132,7 @@ enum JitOp {
 enum BlockExit {
     Fallthrough,
     Jump,
+    IndirectJump,
     Branch { cc: u8 },
     Ret,
     Call { indirect: bool },
@@ -169,24 +186,75 @@ impl HybridWasmJit {
 
     fn link_would_cycle(&self, entry_rip: u64, target_rip: u64) -> bool {
         let mut stack = vec![target_rip];
-        let mut seen = 0usize;
+        let mut seen = HashSet::new();
         while let Some(rip) = stack.pop() {
             if rip == entry_rip { return true; }
-            seen += 1; if seen > 256 { return true; }
+            if !seen.insert(rip) { continue; }
+            if seen.len() > 256 { return true; }
             if let Some(a) = self.artifacts.get(&rip) { stack.extend(a.links.iter().map(|l| l.target_rip)); }
         }
         false
     }
 
-    /// Second-pass AOT relink: once forward targets exist, specialize an unlinked
-    /// JMP/CALL artifact into a native Wasm call/return_call edge.
+    fn append_link(&self, links: &mut Vec<JitLink>, entry_rip: u64, target_rip: u64) {
+        if links.iter().any(|link| link.target_rip == target_rip) || self.link_would_cycle(entry_rip, target_rip) {
+            return;
+        }
+        if let Some(target) = self.artifacts.get(&target_rip) {
+            links.push(JitLink {
+                target_rip,
+                page_epoch: target.page_epoch,
+                import_name: format!("b{:016x}", target_rip),
+            });
+        }
+    }
+
+    /// Compute the acyclic static Wasm edges available for a block. A direct CALL may link
+    /// a leaf RET callee and, when it is also a leaf RET block, the return continuation.
+    /// The CALL block invokes the callee and tail-calls that continuation only if the callee
+    /// returns to the statically known guest return address. A callee that branches, faults,
+    /// or reaches an HLE/unsupported instruction still returns to the normal host dispatcher.
+    fn links_for_block(&self, entry_rip: u64, block: &DecodedBlock) -> Vec<JitLink> {
+        let mut links = Vec::new();
+        if !self.tail_calls { return links; }
+        let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
+        match block.exit {
+            BlockExit::Jump if !self_loop => self.append_link(&mut links, entry_rip, block.target),
+            BlockExit::Call { indirect: false } => {
+                // CALL is still emitted natively when it returns to the host dispatcher. Link
+                // only leaf RET blocks here: linking arbitrary callees and continuations makes
+                // the static call graph grow without bound and can trip the host's link-depth
+                // guard. A leaf cannot acquire further links during AOT's second-pass relink.
+                let callee_is_leaf_ret = self.artifacts.get(&block.target)
+                    .map(|target| target.ends_with_ret && target.links.is_empty())
+                    .unwrap_or(false);
+                if !callee_is_leaf_ret { return links; }
+                self.append_link(&mut links, entry_rip, block.target);
+                if links.iter().any(|link| link.target_rip == block.target) {
+                    let return_rip = entry_rip.wrapping_add(block.byte_len as u64);
+                    let continuation_is_leaf_ret = self.artifacts.get(&return_rip)
+                        .map(|target| target.ends_with_ret && target.links.is_empty())
+                        .unwrap_or(false);
+                    if continuation_is_leaf_ret {
+                        self.append_link(&mut links, entry_rip, return_rip);
+                    }
+                }
+            }
+            _ => {}
+        }
+        links
+    }
+
+    /// Second-pass AOT relink: once forward targets exist, specialize an unlinked or
+    /// partially-linked JMP/CALL artifact into native Wasm call/return_call edges.
     pub fn try_relink_block(&mut self, entry_rip: u64, page_epoch: u32, bytes: &[u8]) -> Option<CompiledJitArtifact> {
         let existing = self.artifacts.get(&entry_rip)?;
-        if !existing.links.is_empty() || existing.self_loop { return None; }
+        if existing.self_loop { return None; }
         let page_remain = 4096 - (entry_rip & 0xFFF) as usize;
         let block = Self::decode_block(entry_rip, &bytes[..bytes.len().min(page_remain)])?;
-        let target = match block.exit { BlockExit::Jump | BlockExit::Call { indirect: false } => block.target, _ => return None };
-        if !self.artifacts.contains_key(&target) || self.link_would_cycle(entry_rip, target) { return None; }
+        if !matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) { return None; }
+        let wanted = self.links_for_block(entry_rip, &block);
+        if wanted.is_empty() || wanted == existing.links { return None; }
         self.try_compile_block(entry_rip, page_epoch, bytes)
     }
 
@@ -196,20 +264,7 @@ impl HybridWasmJit {
         let block = Self::decode_block(entry_rip, window)?;
         if block.insn_count == 0 { return None; }
         let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
-        let mut links = Vec::new();
-        // Link forward JMP edges with return_call and direct CALL edges with a
-        // regular Wasm call. The emitter publishes the caller's GPR/XMM/RFLAGS
-        // *before* invoking a CALL target, then returns the callee's result without
-        // overwriting the callee's final registers with stale caller locals.
-        if self.tail_calls && matches!(block.exit, BlockExit::Jump | BlockExit::Call { indirect: false }) && !self_loop {
-            if let Some(target) = self.artifacts.get(&block.target) {
-                // Do not create cross-module cycles; self-loops are already native loops.
-                let cyclic = self.link_would_cycle(entry_rip, block.target);
-                if !cyclic {
-                    links.push(JitLink { target_rip: block.target, page_epoch: target.page_epoch, import_name: format!("b{:016x}", block.target) });
-                }
-            }
-        }
+        let links = self.links_for_block(entry_rip, &block);
         let has_stores = Self::has_stores(&block);
         let has_simd = block.ops.iter().any(|op| matches!(op, JitOp::XmmLoad { .. } | JitOp::XmmStore { .. } | JitOp::XmmReg { .. } | JitOp::XmmAlu { .. } | JitOp::XmmAluMem { .. } | JitOp::MovdToXmm { .. } | JitOp::MovdFromXmm { .. }));
         let wasm_bytes = Self::emit_wasm_module(entry_rip, &block, &links);
@@ -332,8 +387,16 @@ impl HybridWasmJit {
     }
 
     fn has_stores(block: &DecodedBlock) -> bool {
-        block.ops.iter().any(|op| matches!(op, JitOp::Store { .. } | JitOp::StoreImm { .. } | JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmStore { .. }))
-            || matches!(block.exit, BlockExit::Call { .. })
+        block.ops.iter().any(|op| match *op {
+            JitOp::Store { .. } | JitOp::StoreImm { .. } | JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmStore { .. } => true,
+            JitOp::AluMem { kind, .. } => !matches!(kind, AluKind::Cmp | AluKind::Test),
+            JitOp::Neg { addr: Some(_), .. } => true,
+            _ => false,
+        }) || matches!(block.exit, BlockExit::Call { .. })
+    }
+
+    fn is_high_byte(reg: Register) -> bool {
+        matches!(reg, Register::AH | Register::CH | Register::DH | Register::BH)
     }
 
     fn mem_addr(ins: &Instruction) -> Option<MemAddr> {
@@ -350,6 +413,21 @@ impl HybridWasmJit {
         if ins.memory_base() != Register::None && ins.memory_base().size() != 8 { return None; }
         if ins.memory_index() != Register::None && ins.memory_index().size() != 8 { return None; }
         Some(MemAddr { base, index, scale: ins.memory_index_scale() as u8, disp, rip, seg })
+    }
+
+    /// LOOP uses RCX by default and ECX with an address-size override in 64-bit mode.
+    /// The decoded length bounds this prefix scan, so opcode and displacement bytes are ignored.
+    fn has_address_size_override(bytes: &[u8], offset: usize, len: usize) -> bool {
+        let end = offset.saturating_add(len).min(bytes.len());
+        for &byte in &bytes[offset..end] {
+            match byte {
+                0x67 => return true,
+                0x66 | 0xF0 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65
+                | 0x40..=0x4F => {}
+                _ => break,
+            }
+        }
+        false
     }
 
     fn imm_value(ins: &Instruction, op: u32) -> i64 {
@@ -380,16 +458,18 @@ impl HybridWasmJit {
         Some(match m {
             Jo => 0, Jno => 1, Jb => 2, Jae => 3, Je => 4, Jne => 5, Jbe => 6, Ja => 7,
             Js => 8, Jns => 9, Jp => 10, Jnp => 11, Jl => 12, Jge => 13, Jle => 14, Jg => 15,
-            Seto => 0, Setno => 1, Setb => 2, Setae => 3, Sete => 4, Setne => 5, Setbe => 6, Seta => 7,
-            Sets => 8, Setns => 9, Setp => 10, Setnp => 11, Setl => 12, Setge => 13, Setle => 14, Setg => 15,
+            Seto | Cmovo => 0, Setno | Cmovno => 1, Setb | Cmovb => 2, Setae | Cmovae => 3,
+            Sete | Cmove => 4, Setne | Cmovne => 5, Setbe | Cmovbe => 6, Seta | Cmova => 7,
+            Sets | Cmovs => 8, Setns | Cmovns => 9, Setp | Cmovp => 10, Setnp | Cmovnp => 11,
+            Setl | Cmovl => 12, Setge | Cmovge => 13, Setle | Cmovle => 14, Setg | Cmovg => 15,
             _ => return None,
         })
     }
 
     /// Decode a basic block with iced-x86 (correct ModRM/SIB/RIP-relative/segment parsing)
-    /// and lower the supported integer + memory-load subset. Stores, CALL, indirect jumps
-    /// and SIMD terminate the block *before* their side effect; the interpreter executes
-    /// exactly that RIP. This is the same decoder used by the AOT `.text` scanner.
+    /// and lower the integer, native store/stack, direct and indirect CALL/RET, and covered
+    /// SSE2 subsets. Unsupported forms terminate the block before their side effect so the
+    /// interpreter resumes at the exact RIP. This is the same decoder used by the AOT scanner.
     pub fn decode_block(entry_rip: u64, bytes: &[u8]) -> Option<DecodedBlock> {
         let mut decoder = Decoder::try_new(64, bytes, DecoderOptions::NONE).ok()?;
         decoder.set_ip(entry_rip);
@@ -459,6 +539,111 @@ impl HybridWasmJit {
                         _ => supported = false,
                     }
                 }
+                Mnemonic::Cbw | Mnemonic::Cwde | Mnemonic::Cdqe => {
+                    let (src_width, dst_width) = match m {
+                        Mnemonic::Cbw => (1, 2), Mnemonic::Cwde => (2, 4), _ => (4, 8),
+                    };
+                    ops.push(JitOp::MovExtend { dst: 0, src: 0, src_width, dst_width, signed: true });
+                }
+                Mnemonic::Cwd | Mnemonic::Cdq | Mnemonic::Cqo => {
+                    let width = match m { Mnemonic::Cwd => 2, Mnemonic::Cdq => 4, _ => 8 };
+                    ops.push(JitOp::SignExtendHigh { width });
+                }
+                Mnemonic::Cmovo | Mnemonic::Cmovno | Mnemonic::Cmovb | Mnemonic::Cmovae |
+                Mnemonic::Cmove | Mnemonic::Cmovne | Mnemonic::Cmovbe | Mnemonic::Cmova |
+                Mnemonic::Cmovs | Mnemonic::Cmovns | Mnemonic::Cmovp | Mnemonic::Cmovnp |
+                Mnemonic::Cmovl | Mnemonic::Cmovge | Mnemonic::Cmovle | Mnemonic::Cmovg => {
+                    let dst = Self::gpr_index(ins.op0_register());
+                    let width = Self::reg_width(ins.op0_register());
+                    match (dst, ins.op_kind(1)) {
+                        (Some(dst), OpKind::Register) if !Self::is_high_byte(ins.op1_register()) => {
+                            if let Some(src) = Self::gpr_index(ins.op1_register()) {
+                                ops.push(JitOp::Cmov { dst, src: Some(src), addr: None, width, cc: Self::cc(m).unwrap() });
+                            } else { supported = false; }
+                        }
+                        (Some(dst), OpKind::Memory) => if let Some(addr) = Self::mem_addr(&ins) {
+                            ops.push(JitOp::Cmov { dst, src: None, addr: Some(addr), width, cc: Self::cc(m).unwrap() });
+                        } else { supported = false; },
+                        _ => supported = false,
+                    }
+                }
+                Mnemonic::Imul => {
+                    let dst = Self::gpr_index(ins.op0_register());
+                    let width = Self::reg_width(ins.op0_register());
+                    let is_immediate = ins.op_count() == 3 && matches!(ins.op_kind(2),
+                        OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 |
+                        OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64);
+                    if !matches!(width, 2 | 4 | 8) {
+                        supported = false;
+                    } else if let Some(dst) = dst {
+                        match ins.op_count() {
+                            2 => match ins.op_kind(1) {
+                                OpKind::Register if !Self::is_high_byte(ins.op1_register()) => {
+                                    if let Some(src) = Self::gpr_index(ins.op1_register()) {
+                                        ops.push(JitOp::Imul { dst, src: Some(src), addr: None, imm: None, width });
+                                    } else { supported = false; }
+                                }
+                                OpKind::Memory => if let Some(addr) = Self::mem_addr(&ins) {
+                                    ops.push(JitOp::Imul { dst, src: None, addr: Some(addr), imm: None, width });
+                                } else { supported = false; },
+                                _ => supported = false,
+                            },
+                            3 if is_immediate => match ins.op_kind(1) {
+                                OpKind::Register if !Self::is_high_byte(ins.op1_register()) => {
+                                    if let Some(src) = Self::gpr_index(ins.op1_register()) {
+                                        ops.push(JitOp::Imul { dst, src: Some(src), addr: None, imm: Some(Self::imm_value(&ins, 2)), width });
+                                    } else { supported = false; }
+                                }
+                                OpKind::Memory => if let Some(addr) = Self::mem_addr(&ins) {
+                                    ops.push(JitOp::Imul { dst, src: None, addr: Some(addr), imm: Some(Self::imm_value(&ins, 2)), width });
+                                } else { supported = false; },
+                                _ => supported = false,
+                            },
+                            _ => supported = false,
+                        }
+                    } else { supported = false; }
+                }
+                Mnemonic::Div | Mnemonic::Idiv => {
+                    let width = if ins.op_kind(0) == OpKind::Memory { ins.memory_size().size() as u8 } else { Self::reg_width(ins.op0_register()) };
+                    let signed = m == Mnemonic::Idiv;
+                    // 64-bit DIV/IDIV has tricky quotient-overflow and #DE precision. Keep
+                    // it on the interpreter until that behavior is explicitly lowered. A hot
+                    // compile-boundary histogram may record this site; that is not a dynamic
+                    // fallback count or evidence that the interpreter lacks the instruction.
+                    if !matches!(width, 2 | 4) {
+                        supported = false;
+                    } else {
+                        match ins.op_kind(0) {
+                            OpKind::Register if !Self::is_high_byte(ins.op0_register()) => {
+                                if let Some(src) = Self::gpr_index(ins.op0_register()) {
+                                    ops.push(JitOp::Div { src: Some(src), addr: None, width, signed });
+                                } else { supported = false; }
+                            }
+                            OpKind::Memory => if let Some(addr) = Self::mem_addr(&ins) {
+                                ops.push(JitOp::Div { src: None, addr: Some(addr), width, signed });
+                            } else { supported = false; },
+                            _ => supported = false,
+                        }
+                    }
+                }
+                Mnemonic::Neg => {
+                    let width = if ins.op_kind(0) == OpKind::Memory { ins.memory_size().size() as u8 } else { Self::reg_width(ins.op0_register()) };
+                    if !matches!(width, 1 | 2 | 4 | 8) {
+                        supported = false;
+                    } else {
+                        match ins.op_kind(0) {
+                            OpKind::Register if !Self::is_high_byte(ins.op0_register()) => {
+                                if let Some(dst) = Self::gpr_index(ins.op0_register()) {
+                                    ops.push(JitOp::Neg { dst: Some(dst), addr: None, width });
+                                } else { supported = false; }
+                            }
+                            OpKind::Memory => if let Some(addr) = Self::mem_addr(&ins) {
+                                ops.push(JitOp::Neg { dst: None, addr: Some(addr), width });
+                            } else { supported = false; },
+                            _ => supported = false,
+                        }
+                    }
+                }
                 Mnemonic::Lea => {
                     let d = Self::gpr_index(ins.op0_register());
                     let width = Self::reg_width(ins.op0_register());
@@ -476,38 +661,80 @@ impl HybridWasmJit {
                 }
                 Mnemonic::Add | Mnemonic::Or | Mnemonic::And | Mnemonic::Sub | Mnemonic::Xor | Mnemonic::Cmp | Mnemonic::Test => {
                     let kind = Self::alu_kind(m).unwrap();
-                    if ins.op_kind(0) == OpKind::Memory && !matches!(kind, AluKind::Cmp | AluKind::Test) {
-                        // Memory-destination ALU is a read-modify-write store; leave to interpreter for now.
-                        supported = false;
-                    } else {
-                    let dst = ins.op0_register();
-                    let d = Self::gpr_index(dst);
-                    let width = Self::reg_width(dst);
-                    match ins.op_kind(1) {
-                        OpKind::Register => match (d, Self::gpr_index(ins.op1_register())) {
-                            (Some(d), Some(s)) => ops.push(JitOp::Alu { kind, dst: d, src: Some(s), imm: 0, width }), _ => supported = false,
-                        },
-                        OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 | OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64 => {
-                            if let Some(d) = d { ops.push(JitOp::Alu { kind, dst: d, src: None, imm: Self::imm_value(&ins, 1), width }); } else { supported = false; }
+                    let is_immediate = matches!(ins.op_kind(1),
+                        OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 |
+                        OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64);
+                    if ins.op_kind(0) == OpKind::Memory {
+                        // With a register source, take the architectural operand width from
+                        // the GPR itself. This keeps R8-R15 memory-CMP forms explicit instead
+                        // of depending on memory-size metadata for the ModRM direction.
+                        let width = if ins.op_kind(1) == OpKind::Register {
+                            Self::reg_width(ins.op1_register())
+                        } else { ins.memory_size().size() as u8 };
+                        match (Self::mem_addr(&ins), ins.op_kind(1)) {
+                            (Some(addr), OpKind::Register) if !Self::is_high_byte(ins.op1_register()) => {
+                                if matches!(width, 1 | 2 | 4 | 8) {
+                                    if let Some(src) = Self::gpr_index(ins.op1_register()) {
+                                        ops.push(JitOp::AluMem { kind, src: Some(src), imm: None, addr, width });
+                                    } else { supported = false; }
+                                } else { supported = false; }
+                            }
+                            (Some(addr), op) if is_immediate && matches!(op,
+                                OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 |
+                                OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64) => {
+                                if matches!(width, 1 | 2 | 4 | 8) {
+                                    ops.push(JitOp::AluMem { kind, src: None, imm: Some(Self::imm_value(&ins, 1)), addr, width });
+                                } else { supported = false; }
+                            }
+                            _ => supported = false,
                         }
-                        OpKind::Memory => match (d, Self::mem_addr(&ins)) {
-                            (Some(d), Some(addr)) => ops.push(JitOp::AluLoad { kind, dst: d, addr, width }), _ => supported = false,
-                        },
-                        _ => supported = false,
-                    }
+                    } else {
+                        let dst = ins.op0_register();
+                        // RSP is a normal JIT GPR local (slot 4/local 5); keep the
+                        // common ADD/SUB RSP,imm stack-adjust path explicit.
+                        let d = if dst == Register::RSP { Some(4) } else { Self::gpr_index(dst) };
+                        let width = Self::reg_width(dst);
+                        match ins.op_kind(1) {
+                            OpKind::Register => match (d, Self::gpr_index(ins.op1_register())) {
+                                (Some(d), Some(s)) if !Self::is_high_byte(ins.op1_register()) => ops.push(JitOp::Alu { kind, dst: d, src: Some(s), imm: 0, width }),
+                                _ => supported = false,
+                            },
+                            op if is_immediate && matches!(op,
+                                OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 |
+                                OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64) => {
+                                if let Some(d) = d { ops.push(JitOp::Alu { kind, dst: d, src: None, imm: Self::imm_value(&ins, 1), width }); } else { supported = false; }
+                            }
+                            OpKind::Memory => match (d, Self::mem_addr(&ins)) {
+                                (Some(d), Some(addr)) => ops.push(JitOp::AluLoad { kind, dst: d, addr, width }), _ => supported = false,
+                            },
+                            _ => supported = false,
+                        }
                     }
                 }
-                Mnemonic::Shl | Mnemonic::Shr | Mnemonic::Sar => {
+                Mnemonic::Bswap => {
+                    let width = Self::reg_width(ins.op0_register());
+                    if ins.op_kind(0) == OpKind::Register && matches!(width, 4 | 8) {
+                        if let Some(dst) = Self::gpr_index(ins.op0_register()) {
+                            ops.push(JitOp::Bswap { dst, width });
+                        } else { supported = false; }
+                    } else { supported = false; }
+                }
+                Mnemonic::Shl | Mnemonic::Shr | Mnemonic::Sar | Mnemonic::Rol | Mnemonic::Ror => {
                     let d = Self::gpr_index(ins.op0_register());
                     let width = Self::reg_width(ins.op0_register());
-                    let kind = match m { Mnemonic::Shl => 4, Mnemonic::Shr => 5, _ => 7 };
+                    let kind = match m {
+                        Mnemonic::Shl => 4, Mnemonic::Shr => 5, Mnemonic::Rol => 6,
+                        Mnemonic::Ror => 8, _ => 7,
+                    };
                     let count = match ins.op_kind(1) {
                         OpKind::Immediate8 => ins.immediate8() & if width == 8 { 63 } else { 31 },
                         _ => 255,
                     };
-                    if ins.op_kind(0) == OpKind::Memory { supported = false; }
+                    if ins.op_kind(0) == OpKind::Memory || Self::is_high_byte(ins.op0_register()) { supported = false; }
                     else if let Some(d) = d {
-                        if count == 0 || count == 255 { supported = false; }
+                        // CL-count forms remain interpreted (255 is the internal sentinel).
+                        // Immediate count zero is a real no-op and is safe to lower.
+                        if count == 255 { supported = false; }
                         else { ops.push(JitOp::Shift { kind, dst: d, count, width }); }
                     } else { supported = false; }
                 }
@@ -558,10 +785,37 @@ impl HybridWasmJit {
                         _ => supported = false,
                     }
                 }
+                Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne => {
+                    let kind = match m { Mnemonic::Loop => 0, Mnemonic::Loope => 1, _ => 2 };
+                    let width = if Self::has_address_size_override(bytes, offset, ins.len()) { 4 } else { 8 };
+                    ops.push(JitOp::Loop { kind, width });
+                    insns += 1; byte_len = offset + ins.len();
+                    exit = BlockExit::Branch { cc: 0x10 | kind };
+                    target = ins.near_branch_target();
+                    break;
+                }
                 Mnemonic::Jmp => {
                     if matches!(ins.op_kind(0), OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64) {
                         insns += 1; byte_len = offset + ins.len(); exit = BlockExit::Jump; target = ins.near_branch_target(); break;
-                    } else { supported = false; }
+                    } else {
+                        match ins.op_kind(0) {
+                            OpKind::Register if Self::reg_width(ins.op0_register()) == 8 => {
+                                if let Some(src) = Self::gpr_index(ins.op0_register()) {
+                                    ops.push(JitOp::IndirectTarget { src: Some(src), addr: None });
+                                    insns += 1; byte_len = offset + ins.len();
+                                    exit = BlockExit::IndirectJump; target = 0; break;
+                                } else { supported = false; }
+                            }
+                            OpKind::Memory if ins.memory_size().size() == 8 => {
+                                if let Some(addr) = Self::mem_addr(&ins) {
+                                    ops.push(JitOp::IndirectTarget { src: None, addr: Some(addr) });
+                                    insns += 1; byte_len = offset + ins.len();
+                                    exit = BlockExit::IndirectJump; target = 0; break;
+                                } else { supported = false; }
+                            }
+                            _ => supported = false,
+                        }
+                    }
                 }
                 Mnemonic::Jo | Mnemonic::Jno | Mnemonic::Jb | Mnemonic::Jae | Mnemonic::Je | Mnemonic::Jne | Mnemonic::Jbe | Mnemonic::Ja |
                 Mnemonic::Js | Mnemonic::Jns | Mnemonic::Jp | Mnemonic::Jnp | Mnemonic::Jl | Mnemonic::Jge | Mnemonic::Jle | Mnemonic::Jg => {
@@ -629,9 +883,16 @@ impl HybridWasmJit {
             JitOp::MovImm { dst, .. } => wr |= 1 << dst,
             JitOp::MovReg { dst, src, .. } => { rd |= 1 << src; wr |= 1 << dst; }
             JitOp::Alu { kind, dst, src, .. } => { rd |= 1 << dst; if let Some(s) = src { rd |= 1 << s; } if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
-            JitOp::Shift { dst, .. } => { rd |= 1 << dst; wr |= 1 << dst; }
+            JitOp::Shift { dst, .. } | JitOp::Bswap { dst, .. } => { rd |= 1 << dst; wr |= 1 << dst; }
+            JitOp::Loop { .. } => { rd |= 1 << 1; wr |= 1 << 1; }
             JitOp::Load { dst, addr, .. } => { addr_regs(&addr, &mut rd); wr |= 1 << dst; }
             JitOp::AluLoad { kind, dst, addr, .. } => { addr_regs(&addr, &mut rd); rd |= 1 << dst; if !matches!(kind, AluKind::Cmp | AluKind::Test) { wr |= 1 << dst; } }
+            JitOp::AluMem { src, addr, .. } => { addr_regs(&addr, &mut rd); if let Some(s) = src { rd |= 1 << s; } }
+            JitOp::Cmov { dst, src, addr, .. } => { rd |= 1 << dst; wr |= 1 << dst; if let Some(s) = src { rd |= 1 << s; } if let Some(a) = addr { addr_regs(&a, &mut rd); } }
+            JitOp::Imul { dst, src, addr, .. } => { rd |= 1 << dst; wr |= 1 << dst; if let Some(s) = src { rd |= 1 << s; } if let Some(a) = addr { addr_regs(&a, &mut rd); } }
+            JitOp::Neg { dst, addr, .. } => { if let Some(d) = dst { rd |= 1 << d; wr |= 1 << d; } if let Some(a) = addr { addr_regs(&a, &mut rd); } }
+            JitOp::Div { src, addr, .. } => { rd |= (1 << 0) | (1 << 2); wr |= (1 << 0) | (1 << 2); if let Some(s) = src { rd |= 1 << s; } if let Some(a) = addr { addr_regs(&a, &mut rd); } }
+            JitOp::SignExtendHigh { .. } => { rd |= 1 << 0; wr |= 1 << 2; }
             JitOp::Lea { dst, addr, .. } => { addr_regs(&addr, &mut rd); wr |= 1 << dst; }
             JitOp::Pop { dst, .. } => { rd |= 1 << 4; wr |= (1 << dst) | (1 << 4); }
             JitOp::Setcc { dst, .. } => wr |= 1 << dst,
@@ -668,8 +929,21 @@ impl HybridWasmJit {
     }
 
     fn uses_memory(ops: &[JitOp], exit: BlockExit) -> bool {
-        ops.iter().any(|op| matches!(op, JitOp::Load { .. } | JitOp::AluLoad { .. } | JitOp::Pop { .. } | JitOp::Store { .. } | JitOp::StoreImm { .. } | JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmLoad { .. } | JitOp::XmmStore { .. } | JitOp::XmmAluMem { .. } | JitOp::IndirectTarget { addr: Some(_), .. }))
-            || matches!(exit, BlockExit::Ret | BlockExit::Call { .. })
+        ops.iter().any(|op| matches!(op,
+            JitOp::Load { .. } | JitOp::AluLoad { .. } | JitOp::AluMem { .. } |
+            JitOp::Pop { .. } | JitOp::Store { .. } | JitOp::StoreImm { .. } |
+            JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmLoad { .. } |
+            JitOp::XmmStore { .. } | JitOp::XmmAluMem { .. } |
+            JitOp::Cmov { addr: Some(_), .. } | JitOp::Imul { addr: Some(_), .. } |
+            JitOp::Neg { addr: Some(_), .. } | JitOp::Div { addr: Some(_), .. } |
+            JitOp::IndirectTarget { addr: Some(_), .. }
+        )) || matches!(exit, BlockExit::Ret | BlockExit::Call { .. })
+    }
+
+    fn link_func_index(links: &[JitLink], mem_ops: bool, target_rip: u64) -> Option<u32> {
+        let import_base = if mem_ops { 1 } else { 0 };
+        links.iter().position(|link| link.target_rip == target_rip)
+            .map(|position| import_base + position as u32)
     }
 
     fn or_flag(b: &mut Vec<u8>, mask: i64) {
@@ -688,8 +962,71 @@ impl HybridWasmJit {
         Self::local_get(b, 21); Self::local_get(b, 21); Self::i64_const(b, 1); b.push(0x88); b.push(0x85); Self::i64_const(b, 1); b.push(0x83); b.push(0x50); Self::or_flag(b, 4);
     }
 
+    /// Emit CF/OF for signed 64-bit multiply without relying on a host 128-bit type.
+    /// Each quadrant guards its division so zero divisors and MIN / -1 are impossible.
+    fn emit_imul_overflow64(b: &mut Vec<u8>) {
+        Self::i32_const(b, 0); Self::local_set(b, 26);
+
+        // lhs > 0 && rhs > 0: lhs > MAX / rhs
+        Self::local_get(b, 18); Self::i64_const(b, 0); b.push(0x55);
+        Self::local_get(b, 19); Self::i64_const(b, 0); b.push(0x55); b.push(0x71);
+        b.push(0x04); b.push(0x40);
+        Self::local_get(b, 18); Self::i64_const(b, i64::MAX); Self::local_get(b, 19); b.push(0x7F); b.push(0x55);
+        b.push(0x04); b.push(0x40); Self::i32_const(b, 1); Self::local_set(b, 26); b.push(0x0B);
+        b.push(0x0B);
+
+        // lhs > 0 && rhs < 0: rhs < MIN / lhs
+        Self::local_get(b, 18); Self::i64_const(b, 0); b.push(0x55);
+        Self::local_get(b, 19); Self::i64_const(b, 0); b.push(0x53); b.push(0x71);
+        b.push(0x04); b.push(0x40);
+        Self::local_get(b, 19); Self::i64_const(b, i64::MIN); Self::local_get(b, 18); b.push(0x7F); b.push(0x53);
+        b.push(0x04); b.push(0x40); Self::i32_const(b, 1); Self::local_set(b, 26); b.push(0x0B);
+        b.push(0x0B);
+
+        // lhs < 0 && rhs > 0: lhs < MIN / rhs
+        Self::local_get(b, 18); Self::i64_const(b, 0); b.push(0x53);
+        Self::local_get(b, 19); Self::i64_const(b, 0); b.push(0x55); b.push(0x71);
+        b.push(0x04); b.push(0x40);
+        Self::local_get(b, 18); Self::i64_const(b, i64::MIN); Self::local_get(b, 19); b.push(0x7F); b.push(0x53);
+        b.push(0x04); b.push(0x40); Self::i32_const(b, 1); Self::local_set(b, 26); b.push(0x0B);
+        b.push(0x0B);
+
+        // lhs < 0 && rhs < 0: lhs < MAX / rhs
+        Self::local_get(b, 18); Self::i64_const(b, 0); b.push(0x53);
+        Self::local_get(b, 19); Self::i64_const(b, 0); b.push(0x53); b.push(0x71);
+        b.push(0x04); b.push(0x40);
+        Self::local_get(b, 18); Self::i64_const(b, i64::MAX); Self::local_get(b, 19); b.push(0x7F); b.push(0x53);
+        b.push(0x04); b.push(0x40); Self::i32_const(b, 1); Self::local_set(b, 26); b.push(0x0B);
+        b.push(0x0B);
+    }
+
+    /// local18 * local19 is a signed IMUL. Only CF/OF are defined by x86 IMUL;
+    /// the architectural result is the low `width` bits.
+    fn emit_imul_core(b: &mut Vec<u8>, dst: u8, width: u8, write_dst: bool) {
+        Self::emit_extend(b, 18, width, 8, true);
+        Self::emit_extend(b, 19, width, 8, true);
+        Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7E); Self::local_set(b, 20);
+        if width < 8 {
+            Self::local_get(b, 20); Self::mask_width(b, width); Self::local_set(b, 22);
+            Self::emit_extend(b, 22, width, 8, true);
+            Self::local_get(b, 20); Self::local_get(b, 22); b.push(0x52); Self::local_set(b, 26);
+        } else {
+            Self::emit_imul_overflow64(b);
+        }
+        if write_dst {
+            Self::local_get(b, 20); Self::mask_width(b, width); Self::local_set(b, 22);
+            Self::write_reg(b, dst, width, 22);
+        }
+        Self::local_get(b, 17); Self::i64_const(b, !0x801i64); b.push(0x83); Self::local_set(b, 17);
+        Self::local_get(b, 26); b.push(0x04); b.push(0x40); Self::i32_const(b, 1); Self::or_flag(b, 0x801); b.push(0x0B);
+    }
+
     /// ALU with lhs in local18, rhs in local19, result -> local20, flags updated.
-    fn emit_alu_core(b: &mut Vec<u8>, kind: AluKind, dst: u8, width: u8) {
+    fn emit_alu_core(b: &mut Vec<u8>, kind: AluKind, dst: u8, width: u8, write_dst: bool) {
+        if kind == AluKind::Imul {
+            Self::emit_imul_core(b, dst, width, write_dst);
+            return;
+        }
         match kind {
             AluKind::Add => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7C); }
             AluKind::Sub | AluKind::Cmp => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7D); }
@@ -699,7 +1036,7 @@ impl HybridWasmJit {
             AluKind::Imul => { Self::local_get(b, 18); Self::local_get(b, 19); b.push(0x7E); }
         }
         Self::mask_width(b, width); Self::local_set(b, 20);
-        if !matches!(kind, AluKind::Cmp | AluKind::Test) { Self::write_reg(b, dst, width, 20); }
+        if write_dst && !matches!(kind, AluKind::Cmp | AluKind::Test) { Self::write_reg(b, dst, width, 20); }
         Self::local_get(b, 17); Self::i64_const(b, !0x811i64); b.push(0x83); Self::local_set(b, 17);
         match kind {
             AluKind::Add => {
@@ -723,10 +1060,32 @@ impl HybridWasmJit {
         Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
         if let Some(s) = src { Self::local_get(b, s + 1); } else { Self::i64_const(b, imm); }
         Self::mask_width(b, width); Self::local_set(b, 19);
-        Self::emit_alu_core(b, kind, dst, width);
+        Self::emit_alu_core(b, kind, dst, width, true);
+    }
+
+    fn emit_bswap(b: &mut Vec<u8>, dst: u8, width: u8) {
+        Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+        Self::i64_const(b, 0);
+        for src_byte in 0..width {
+            Self::local_get(b, 18);
+            Self::i64_const(b, 0xFFi64 << (src_byte * 8)); b.push(0x83);
+            let src_shift = src_byte * 8;
+            let dst_shift = (width - 1 - src_byte) * 8;
+            if dst_shift > src_shift {
+                Self::i64_const(b, (dst_shift - src_shift) as i64); b.push(0x86);
+            } else if src_shift > dst_shift {
+                Self::i64_const(b, (src_shift - dst_shift) as i64); b.push(0x88);
+            }
+            b.push(0x84);
+        }
+        Self::local_set(b, 22); Self::write_reg(b, dst, width, 22);
     }
 
     fn emit_shift(b: &mut Vec<u8>, kind: u8, dst: u8, count: u8, width: u8) {
+        if kind == 6 || kind == 8 {
+            Self::emit_rotate(b, kind, dst, count, width);
+            return;
+        }
         let bits = width * 8;
         Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
         Self::i64_const(b, count as i64); Self::local_set(b, 19);
@@ -773,7 +1132,59 @@ impl HybridWasmJit {
         Self::emit_szp(b, width);
     }
 
+    fn emit_rotate(b: &mut Vec<u8>, kind: u8, dst: u8, count: u8, width: u8) {
+        if count == 0 { return; }
+        let bits = width * 8;
+        let rotate = count % bits;
+        Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+        if rotate == 0 {
+            Self::local_get(b, 18);
+        } else if kind == 6 { // ROL
+            Self::local_get(b, 18); Self::i64_const(b, rotate as i64); b.push(0x86);
+            Self::local_get(b, 18); Self::i64_const(b, (bits - rotate) as i64); b.push(0x88);
+            b.push(0x84);
+        } else { // ROR
+            Self::local_get(b, 18); Self::i64_const(b, rotate as i64); b.push(0x88);
+            Self::local_get(b, 18); Self::i64_const(b, (bits - rotate) as i64); b.push(0x86);
+            b.push(0x84);
+        }
+        Self::mask_width(b, width); Self::local_set(b, 20); Self::write_reg(b, dst, width, 20);
+
+        // Match the reference interpreter: ROL/ROR update CF, update OF only for a
+        // one-bit count, and preserve all other flags (including OF for larger counts).
+        let clear = if count == 1 { !0x801i64 } else { !1i64 };
+        Self::local_get(b, 17); Self::i64_const(b, clear); b.push(0x83); Self::local_set(b, 17);
+        let carry_mask = if kind == 6 { 1 } else { 1i64 << (bits - 1) };
+        Self::local_get(b, 20); Self::i64_const(b, carry_mask); b.push(0x83);
+        Self::i64_const(b, 0); b.push(0x52); Self::or_flag(b, 1);
+        if count == 1 {
+            let sign_mask = 1i64 << (bits - 1);
+            let overflow_other_mask = if kind == 6 { 1 } else { sign_mask >> 1 };
+            Self::local_get(b, 20); Self::i64_const(b, sign_mask); b.push(0x83);
+            Self::i64_const(b, 0); b.push(0x52);
+            Self::local_get(b, 20); Self::i64_const(b, overflow_other_mask); b.push(0x83);
+            Self::i64_const(b, 0); b.push(0x52); b.push(0x73);
+            Self::or_flag(b, 0x800);
+        }
+    }
+
+    fn emit_loop(b: &mut Vec<u8>, kind: u8, width: u8) {
+        // ECX writes zero-extend into RCX; RCX decrements modulo 64 bits.
+        Self::local_get(b, 2); Self::mask_width(b, width);
+        Self::i64_const(b, 1); b.push(0x7D); Self::mask_width(b, width); Self::local_set(b, 2);
+        Self::local_get(b, 2); Self::i64_const(b, 0); b.push(0x52);
+        if kind != 0 {
+            Self::emit_cc(b, if kind == 1 { 4 } else { 5 });
+            b.push(0x71);
+        }
+        Self::local_set(b, 26);
+    }
+
     fn emit_cc(b: &mut Vec<u8>, cc: u8) {
+        if cc >= 0x10 {
+            Self::local_get(b, 26);
+            return;
+        }
         let bit = |b: &mut Vec<u8>, mask: i64| { Self::local_get(b, 17); Self::i64_const(b, mask); b.push(0x83); Self::i64_const(b, 0); b.push(0x52); };
         match cc & 15 {
             0 => bit(b, 0x800), 1 => { bit(b, 0x800); b.push(0x45); }
@@ -984,6 +1395,34 @@ impl HybridWasmJit {
         Self::local_set(b, value);
     }
 
+    fn emit_div(b: &mut Vec<u8>, src: Option<u8>, addr: Option<MemAddr>, width: u8, signed: bool, resolve_func: u32, abort_depth: u32) {
+        if let Some(addr) = addr { Self::emit_read(b, &addr, width, resolve_func, abort_depth); }
+        else if let Some(src) = src { Self::local_get(b, src + 1); Self::local_set(b, 22); }
+        Self::local_get(b, 22); Self::mask_width(b, width); Self::local_set(b, 19);
+        if signed { Self::emit_extend(b, 19, width, 8, true); }
+
+        // Form DX:AX or EDX:EAX as a 32-/64-bit dividend.
+        Self::local_get(b, 3); Self::mask_width(b, width);
+        Self::i64_const(b, (width * 8) as i64); b.push(0x86);
+        Self::local_get(b, 1); Self::mask_width(b, width); b.push(0x84); Self::local_set(b, 18);
+        if signed && width == 2 { Self::emit_extend(b, 18, 4, 8, true); }
+
+        Self::local_get(b, 18); Self::local_get(b, 19); b.push(if signed { 0x7F } else { 0x80 }); Self::local_set(b, 20);
+        Self::local_get(b, 18); Self::local_get(b, 19); b.push(if signed { 0x81 } else { 0x82 }); Self::local_set(b, 21);
+        if signed {
+            Self::local_get(b, 20); Self::mask_width(b, width); Self::local_set(b, 22);
+            Self::emit_extend(b, 22, width, 8, true);
+            Self::local_get(b, 20); Self::local_get(b, 22); b.push(0x52); Self::local_set(b, 26);
+        } else {
+            Self::local_get(b, 20); Self::i64_const(b, Self::width_mask(width)); b.push(0x56); Self::local_set(b, 26);
+        }
+        // x86 #DE on a quotient that does not fit the destination; let the host roll
+        // back this JIT transaction and replay the precise faulting instruction.
+        Self::local_get(b, 26); b.push(0x04); b.push(0x40); b.push(0x00); b.push(0x0B);
+        Self::local_get(b, 20); Self::local_set(b, 22); Self::write_reg(b, 0, width, 22);
+        Self::local_get(b, 21); Self::local_set(b, 22); Self::write_reg(b, 2, width, 22);
+    }
+
     fn emit_op(b: &mut Vec<u8>, op: &JitOp, resolve_func: u32, abort_depth: u32) {
         match *op {
             JitOp::Nop => {}
@@ -991,6 +1430,8 @@ impl HybridWasmJit {
             JitOp::MovReg { dst, src, width } => { Self::local_get(b, src + 1); Self::local_set(b, 22); Self::write_reg(b, dst, width, 22); }
             JitOp::Alu { kind, dst, src, imm, width } => Self::emit_alu(b, kind, dst, src, imm, width),
             JitOp::Shift { kind, dst, count, width } => Self::emit_shift(b, kind, dst, count, width),
+            JitOp::Bswap { dst, width } => Self::emit_bswap(b, dst, width),
+            JitOp::Loop { kind, width } => Self::emit_loop(b, kind, width),
             JitOp::Load { dst, addr, width, src_width, extend } => {
                 Self::emit_read(b, &addr, src_width, resolve_func, abort_depth);
                 if extend == 2 { Self::emit_extend(b, 22, src_width, width, true); }
@@ -1001,7 +1442,66 @@ impl HybridWasmJit {
                 Self::emit_read(b, &addr, width, resolve_func, abort_depth);
                 Self::local_get(b, 22); Self::mask_width(b, width); Self::local_set(b, 19);
                 Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
-                Self::emit_alu_core(b, kind, dst, width);
+                Self::emit_alu_core(b, kind, dst, width, true);
+            }
+            JitOp::AluMem { kind, src, imm, addr, width } => {
+                let store = !matches!(kind, AluKind::Cmp | AluKind::Test);
+                Self::emit_ea(b, &addr); Self::emit_translate(b, width, store, resolve_func, abort_depth);
+                Self::emit_load_native(b, width);
+                Self::local_get(b, 22); Self::mask_width(b, width); Self::local_set(b, 18);
+                if let Some(src) = src { Self::local_get(b, src + 1); } else { Self::i64_const(b, imm.unwrap_or(0)); }
+                Self::mask_width(b, width); Self::local_set(b, 19);
+                Self::emit_alu_core(b, kind, 0, width, false);
+                if store { Self::local_get(b, 20); Self::local_set(b, 22); Self::emit_store_native(b, width, false); }
+            }
+            JitOp::Cmov { dst, src, addr, width, cc } => {
+                if let Some(addr) = addr { Self::emit_read(b, &addr, width, resolve_func, abort_depth); }
+                else if let Some(src) = src { Self::local_get(b, src + 1); Self::local_set(b, 22); }
+                Self::local_get(b, 22); Self::mask_width(b, width); Self::local_set(b, 22);
+                Self::emit_cc(b, cc); b.push(0x04); b.push(0x40);
+                Self::write_reg(b, dst, width, 22);
+                b.push(0x05);
+                if width == 4 {
+                    Self::local_get(b, dst + 1); Self::mask_width(b, 4); Self::local_set(b, dst + 1);
+                }
+                b.push(0x0B);
+            }
+            JitOp::Imul { dst, src, addr, imm, width } => {
+                if let Some(imm) = imm {
+                    if let Some(addr) = addr { Self::emit_read(b, &addr, width, resolve_func, abort_depth); Self::local_get(b, 22); }
+                    else if let Some(src) = src { Self::local_get(b, src + 1); }
+                    else { Self::i64_const(b, 0); }
+                    Self::mask_width(b, width); Self::local_set(b, 18);
+                    Self::i64_const(b, imm); Self::mask_width(b, width); Self::local_set(b, 19);
+                } else {
+                    Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 18);
+                    if let Some(addr) = addr { Self::emit_read(b, &addr, width, resolve_func, abort_depth); Self::local_get(b, 22); }
+                    else if let Some(src) = src { Self::local_get(b, src + 1); }
+                    else { Self::i64_const(b, 0); }
+                    Self::mask_width(b, width); Self::local_set(b, 19);
+                }
+                Self::emit_alu_core(b, AluKind::Imul, dst, width, true);
+            }
+            JitOp::Neg { dst, addr, width } => {
+                if let Some(addr) = addr {
+                    Self::emit_ea(b, &addr); Self::emit_translate(b, width, true, resolve_func, abort_depth);
+                    Self::emit_load_native(b, width);
+                    Self::local_get(b, 22); Self::mask_width(b, width); Self::local_set(b, 19);
+                    Self::i64_const(b, 0); Self::local_set(b, 18);
+                    Self::emit_alu_core(b, AluKind::Sub, 0, width, false);
+                    Self::local_get(b, 20); Self::local_set(b, 22); Self::emit_store_native(b, width, false);
+                } else if let Some(dst) = dst {
+                    Self::local_get(b, dst + 1); Self::mask_width(b, width); Self::local_set(b, 19);
+                    Self::i64_const(b, 0); Self::local_set(b, 18);
+                    Self::emit_alu_core(b, AluKind::Sub, dst, width, true);
+                }
+            }
+            JitOp::Div { src, addr, width, signed } => Self::emit_div(b, src, addr, width, signed, resolve_func, abort_depth),
+            JitOp::SignExtendHigh { width } => {
+                Self::local_get(b, 1); Self::mask_width(b, width);
+                Self::i64_const(b, (width * 8 - 1) as i64); b.push(0x88);
+                Self::i64_const(b, 1); b.push(0x83); Self::i64_const(b, -1); b.push(0x7E);
+                Self::local_set(b, 22); Self::write_reg(b, 2, width, 22);
             }
             JitOp::Lea { dst, addr, width } => { Self::emit_ea(b, &addr); Self::local_get(b, 21); Self::local_set(b, 22); Self::write_reg(b, dst, width, 22); }
             JitOp::Pop { dst, width } => {
@@ -1075,7 +1575,7 @@ impl HybridWasmJit {
         if mem_ops { types.extend_from_slice(&[0x60, 2, 0x7E, 0x7F, 1, 0x7F]); }
         Self::push_section(&mut wasm, 1, &types);
         let resolve_func: u32 = 0;
-        let func_imports = if mem_ops { 1 } else { 0 } + links.len() as u32;
+        let func_imports = (if mem_ops { 1 } else { 0 }) + links.len() as u32;
         let mut imp = Vec::new();
         Self::push_u32_leb(&mut imp, 1 + func_imports);
         imp.push(3); imp.extend_from_slice(b"env"); imp.push(3); imp.extend_from_slice(b"mem"); imp.extend_from_slice(&[2, 0, 1]);
@@ -1105,7 +1605,12 @@ impl HybridWasmJit {
         let self_loop = matches!(block.exit, BlockExit::Jump | BlockExit::Branch { .. }) && block.target == entry_rip;
         let block_insns = block.insn_count as i64;
         let has_stores = Self::has_stores(block);
-        let stores_per_iter = block.ops.iter().filter(|op| matches!(op, JitOp::Store { .. } | JitOp::StoreImm { .. } | JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmStore { .. })).count() as i64 + if has_call { 1 } else { 0 };
+        let stores_per_iter = block.ops.iter().filter(|op| match **op {
+            JitOp::Store { .. } | JitOp::StoreImm { .. } | JitOp::Push { .. } | JitOp::PushImm { .. } | JitOp::XmmStore { .. } => true,
+            JitOp::AluMem { kind, .. } => !matches!(kind, AluKind::Cmp | AluKind::Test),
+            JitOp::Neg { addr: Some(_), .. } => true,
+            _ => false,
+        }).count() as i64 + if has_call { 1 } else { 0 };
         b.push(0x02); b.push(0x40); // $abort
         b.push(0x02); b.push(0x40); // $commit
         if self_loop { b.push(0x03); b.push(0x40); }
@@ -1148,6 +1653,7 @@ impl HybridWasmJit {
                 Self::local_get(&mut b, 5); Self::i64_const(&mut b, 8 + block.ret_imm as i64); b.push(0x7C); Self::local_set(&mut b, 5);
                 dynamic_exit = true;
             }
+            BlockExit::IndirectJump => { dynamic_exit = true; }
             _ => {}
         }
         Self::local_get(&mut b, 24); Self::i64_const(&mut b, block_insns); b.push(0x7C); Self::local_set(&mut b, 24);
@@ -1159,7 +1665,7 @@ impl HybridWasmJit {
         }
         if self_loop { b.push(0x0B); }
         let exit_rip = match block.exit {
-            BlockExit::Ret | BlockExit::Call { .. } => 0,
+            BlockExit::Ret | BlockExit::Call { .. } | BlockExit::IndirectJump => 0,
             BlockExit::Branch { .. } if self_loop => entry_rip.wrapping_add(block.byte_len as u64),
             _ => block.target,
         };
@@ -1178,17 +1684,45 @@ impl HybridWasmJit {
         for reg in 0..16u8 { if gpr_wr & (1 << reg) != 0 { Self::ctx_store_local(&mut b, reg as u32, reg + 1); } }
         for x in 0..16u8 { if xmm_wr & (1 << x) != 0 { Self::xmm_store_ctx(&mut b, x); } }
         Self::ctx_store_local(&mut b, 19, 17); Self::ctx_store_local(&mut b, 18, 24); Self::ctx_store_local(&mut b, 20, 23);
-        // All caller state is now published to ctx. A linked CALL may run the callee
-        // to its RET and leave the final architectural state in ctx; return its count
-        // immediately. Writing caller locals again here would clobber callee results
-        // (and restore the pre-RET RSP), which is the null-return fault Doom exposed.
-        if !links.is_empty() && matches!(block.exit, BlockExit::Call { indirect: false }) {
-            Self::local_get(&mut b, 0);
-            b.push(0x10); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
-            b.push(0x0F);
-        } else if !links.is_empty() && matches!(block.exit, BlockExit::Jump) {
-            Self::local_get(&mut b, 0);
-            b.push(0x12); Self::push_u32_leb(&mut b, func_imports - links.len() as u32);
+        // All caller state is now published to ctx. A direct CALL can tail-call its
+        // callee when no static continuation is available. If both edges are linked,
+        // keep a Wasm frame across the callee: after its native RET, check the actual
+        // popped guest RIP and tail-call the fallthrough block only on a successful
+        // return. The context is authoritative; never write stale caller locals back.
+        let direct_call_target = match block.exit {
+            BlockExit::Call { indirect: false } => Self::link_func_index(links, mem_ops, block.target),
+            _ => None,
+        };
+        let direct_call_return_rip = entry_rip.wrapping_add(block.byte_len as u64);
+        let direct_call_continuation = if direct_call_target.is_some() {
+            Self::link_func_index(links, mem_ops, direct_call_return_rip)
+        } else { None };
+        if let Some(target_func) = direct_call_target {
+            if let Some(continuation_func) = direct_call_continuation {
+                Self::local_get(&mut b, 0);
+                b.push(0x10); Self::push_u32_leb(&mut b, target_func);
+                Self::local_set(&mut b, 24);
+                Self::ctx_load(&mut b, 16); Self::i64_const(&mut b, JIT_STATUS_OK as i64); b.push(0x51);
+                Self::ctx_load(&mut b, 17); Self::i64_const(&mut b, direct_call_return_rip as i64); b.push(0x51);
+                b.push(0x71); // status==OK && exitRip==the CALL's return address
+                b.push(0x04); b.push(0x7E); // if (result i64)
+                Self::local_get(&mut b, 0);
+                b.push(0x12); Self::push_u32_leb(&mut b, continuation_func); // return_call continuation
+                b.push(0x05); // else: callee branched, trapped-to-interpreter, or exhausted its budget
+                Self::local_get(&mut b, 24);
+                b.push(0x0B);
+                b.push(0x0F);
+            } else {
+                Self::local_get(&mut b, 0);
+                b.push(0x12); Self::push_u32_leb(&mut b, target_func);
+            }
+        } else if let BlockExit::Jump = block.exit {
+            if let Some(target_func) = Self::link_func_index(links, mem_ops, block.target) {
+                Self::local_get(&mut b, 0);
+                b.push(0x12); Self::push_u32_leb(&mut b, target_func);
+            } else {
+                Self::local_get(&mut b, 24); b.push(0x0F);
+            }
         } else {
             Self::local_get(&mut b, 24); b.push(0x0F);
         }

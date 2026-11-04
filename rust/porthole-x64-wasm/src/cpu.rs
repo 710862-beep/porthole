@@ -49,6 +49,19 @@ pub struct CachedBasicBlock {
     pub jit_checked: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct ControlFlowEvent {
+    pub rip: u64,
+    pub is_call: bool,
+    pub rsp_before: u64,
+    pub stack_slot: u64,
+    pub stack_value: u64,
+    pub rsp_after: u64,
+    pub target: u64,
+}
+
+const CONTROL_HISTORY_CAP: usize = 8;
+
 #[derive(Clone)]
 pub struct CpuState {
     pub gpr: [u64; 16], // RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15
@@ -70,9 +83,15 @@ pub struct CpuState {
     pub tsc_offset: u64,
     pub icache_hits: u64,
     pub icache_misses: u64,
-    /// Last executed RIPs, used to explain guest faults without an interactive debugger.
+    /// Last executed RIPs and their pre-instruction RSP values, used to explain guest faults
+    /// without an interactive debugger. Pairing RSP with RIP isolates stack movement across a
+    /// call/return sequence without recording a full instruction trace.
     pub rip_history: [u64; 16],
+    pub rip_rsp_history: [u64; 16],
     pub rip_history_len: usize,
+    /// Last guest CALL/RET transitions with their exact stack slot and value.
+    pub control_history: [ControlFlowEvent; CONTROL_HISTORY_CAP],
+    pub control_history_len: usize,
 }
 
 impl CpuState {
@@ -98,7 +117,10 @@ impl CpuState {
             icache_hits: self.icache_hits,
             icache_misses: self.icache_misses,
             rip_history: self.rip_history,
+            rip_rsp_history: self.rip_rsp_history,
             rip_history_len: self.rip_history_len,
+            control_history: self.control_history,
+            control_history_len: self.control_history_len,
         }
     }
 
@@ -121,7 +143,10 @@ impl CpuState {
             icache_hits: 0,
             icache_misses: 0,
             rip_history: [0; 16],
+            rip_rsp_history: [0; 16],
             rip_history_len: 0,
+            control_history: [ControlFlowEvent::default(); CONTROL_HISTORY_CAP],
+            control_history_len: 0,
         }
     }
 
@@ -770,17 +795,80 @@ impl CpuState {
     pub fn note_rip(&mut self, rip: u64) {
         let slot = self.rip_history_len % self.rip_history.len();
         self.rip_history[slot] = rip;
+        self.rip_rsp_history[slot] = self.gpr[4];
         self.rip_history_len = self.rip_history_len.wrapping_add(1);
     }
 
-    pub fn render_rip_history(&self) -> String {
-        let len = self.rip_history_len.min(self.rip_history.len());
+    pub fn render_rip_history_with_rsp(&self) -> String {
+        let count = self.rip_history_len.min(self.rip_history.len());
+        let first = self.rip_history_len.wrapping_sub(count);
         let mut out = String::new();
-        for i in (0..len).rev().take(8) {
-            let idx = (self.rip_history_len + self.rip_history.len() - 1 - i) % self.rip_history.len();
+        for offset in 0..count {
+            let idx = first.wrapping_add(offset) % self.rip_history.len();
+            out.push_str(&format!("0x{:x}@rsp=0x{:x} ", self.rip_history[idx], self.rip_rsp_history[idx]));
+        }
+        out.trim_end().to_string()
+    }
+
+    pub fn render_rip_history(&self) -> String {
+        let count = self.rip_history_len.min(self.rip_history.len());
+        let first = self.rip_history_len.wrapping_sub(count);
+        let mut out = String::new();
+        for offset in 0..count {
+            let idx = first.wrapping_add(offset) % self.rip_history.len();
             out.push_str(&format!("0x{:x} ", self.rip_history[idx]));
         }
         out.trim_end().to_string()
+    }
+
+    fn note_control_flow(
+        &mut self,
+        rip: u64,
+        is_call: bool,
+        rsp_before: u64,
+        stack_slot: u64,
+        stack_value: u64,
+        rsp_after: u64,
+        target: u64,
+    ) {
+        let slot = self.control_history_len % CONTROL_HISTORY_CAP;
+        self.control_history[slot] = ControlFlowEvent {
+            rip, is_call, rsp_before, stack_slot, stack_value, rsp_after, target,
+        };
+        self.control_history_len = self.control_history_len.wrapping_add(1);
+    }
+
+    pub fn render_control_history(&self) -> String {
+        let count = self.control_history_len.min(CONTROL_HISTORY_CAP);
+        let first = self.control_history_len.wrapping_sub(count);
+        let mut out = String::new();
+        for offset in 0..count {
+            let event = self.control_history[
+                first.wrapping_add(offset) % CONTROL_HISTORY_CAP
+            ];
+            let kind = if event.is_call { "CALL" } else { "RET" };
+            out.push_str(&format!(
+                "{kind} rip=0x{:x} rsp=0x{:x}->0x{:x} slot[0x{:x}]=0x{:x} target=0x{:x} | ",
+                event.rip, event.rsp_before, event.rsp_after, event.stack_slot,
+                event.stack_value, event.target
+            ));
+        }
+        out.trim_end_matches(" | ").to_string()
+    }
+
+    pub fn render_control_targets(&self) -> String {
+        let count = self.control_history_len.min(CONTROL_HISTORY_CAP);
+        let first = self.control_history_len.wrapping_sub(count);
+        let mut targets = Vec::new();
+        for offset in 0..count {
+            let target = self.control_history[
+                first.wrapping_add(offset) % CONTROL_HISTORY_CAP
+            ].target;
+            if target != 0 && !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        targets.iter().map(|target| format!("0x{target:x}")).collect::<Vec<_>>().join(" ")
     }
 
     pub fn step_one(&mut self, vmm: &mut VirtualMemoryManager) -> Result<ExecOutcome, MemoryTrap> {
@@ -1335,13 +1423,21 @@ impl CpuState {
             0xC2 => {
                 let pop_bytes = u16::from_le_bytes(code[cursor..cursor + 2].try_into().unwrap()) as u64;
                 cursor += 2;
-                let ret_rip = vmm.read_u64(self.gpr[4])?;
-                self.gpr[4] = self.gpr[4].wrapping_add(8 + pop_bytes);
+                let rsp_before = self.gpr[4];
+                let ret_rip = vmm.read_u64(rsp_before)?;
+                self.gpr[4] = rsp_before.wrapping_add(8 + pop_bytes);
+                self.note_control_flow(
+                    insn_rip, false, rsp_before, rsp_before, ret_rip, self.gpr[4], ret_rip,
+                );
                 ExecOutcome::Branch(ret_rip)
             }
             0xC3 => {
-                let ret_rip = vmm.read_u64(self.gpr[4])?;
-                self.gpr[4] = self.gpr[4].wrapping_add(8);
+                let rsp_before = self.gpr[4];
+                let ret_rip = vmm.read_u64(rsp_before)?;
+                self.gpr[4] = rsp_before.wrapping_add(8);
+                self.note_control_flow(
+                    insn_rip, false, rsp_before, rsp_before, ret_rip, self.gpr[4], ret_rip,
+                );
                 ExecOutcome::Branch(ret_rip)
             }
 
@@ -1379,10 +1475,35 @@ impl CpuState {
                 cursor += 4;
                 let next_rip = insn_rip + cursor as u64;
                 let target = next_rip.wrapping_add(rel as u64);
-                let new_rsp = self.gpr[4].wrapping_sub(8);
+                let rsp_before = self.gpr[4];
+                let new_rsp = rsp_before.wrapping_sub(8);
                 vmm.write_u64(new_rsp, next_rip)?;
                 self.gpr[4] = new_rsp;
+                self.note_control_flow(
+                    insn_rip, true, rsp_before, new_rsp, next_rip, new_rsp, target,
+                );
                 ExecOutcome::Branch(target)
+            }
+
+            // LOOPNE (E0), LOOPE (E1), LOOP (E2), with rel8 targets.
+            // The address-size override selects ECX instead of RCX in 64-bit mode.
+            0xE0..=0xE2 => {
+                let rel = code[cursor] as i8 as i64;
+                cursor += 1;
+                let next_rip = insn_rip.wrapping_add(cursor as u64);
+                if pfx.asz_67 {
+                    self.gpr[1] = (self.gpr[1] as u32).wrapping_sub(1) as u64;
+                } else {
+                    self.gpr[1] = self.gpr[1].wrapping_sub(1);
+                }
+                let count_nonzero = if pfx.asz_67 { self.gpr[1] as u32 != 0 } else { self.gpr[1] != 0 };
+                let zf = (self.rflags & ZF) != 0;
+                let take = count_nonzero && match op {
+                    0xE0 => !zf, // LOOPNE
+                    0xE1 => zf,   // LOOPE
+                    _ => true,    // LOOP
+                };
+                if take { ExecOutcome::Branch(next_rip.wrapping_add(rel as u64)) } else { ExecOutcome::Next }
             }
 
             // JMP rel32 (E9) / JMP rel8 (EB)
@@ -1601,9 +1722,13 @@ impl CpuState {
                     2 if !byte_op => {
                         // CALL r/m64
                         let target = self.read_rm(vmm, addr, next_rip, 8, pfx.has_rex)?;
-                        let new_rsp = self.gpr[4].wrapping_sub(8);
+                        let rsp_before = self.gpr[4];
+                        let new_rsp = rsp_before.wrapping_sub(8);
                         vmm.write_u64(new_rsp, next_rip)?;
                         self.gpr[4] = new_rsp;
+                        self.note_control_flow(
+                            insn_rip, true, rsp_before, new_rsp, next_rip, new_rsp, target,
+                        );
                         ExecOutcome::Branch(target)
                     }
                     4 if !byte_op => {

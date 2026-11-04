@@ -1,62 +1,36 @@
-# ui/ — Porthole shell (for the UI agent)
+# Porthole desktop UI
 
-You own everything the user sees. The emulator core is done being your problem:
-it lives in `rust/porthole-x64-wasm` and is driven through one boring, stable protocol.
+The `ui/` project is a React 19 + Vite browser desktop with a dark Linux-desktop visual language. It includes a launcher, taskbar, workspaces, resizable windows, settings, a curated metadata-only App Store, a browser-based x86-64 emulator surface, System Monitor, and an in-OS Developer Console. It is Porthole, not a CachyOS distribution or installation image, and it does not ship a mock browser or simulated production guest runtime.
 
-## The 60-second mental model
-
-* **Runtime today**: `../x64.html` + `../js/x64-app.js` — mounts storage (FSA → OPFS),
-  instantiates the Wasm core (`BrowserX64Emulator`), runs a tick loop that pumps
-  `drain_evicted_pages`/`supply_page`, paints `guest_frame_rgba()` to a canvas, shows
-  telemetry. This shell (`ui/index.html`) wraps it in an iframe inside a desktop window.
-  **Do not fork that logic into ui/.** When you're ready, lift it into
-  `ui/runtime/` behind `EmulatorRuntime` (contracts.ts) and delete the iframe.
-* **Frames**: the ONLY pixels you may display as "the game" come from
-  `guest_frame_rgba()` gated on `presented_frames()`. Host-composed pixels are how a
-  previous build faked a frame for 2,703 presents; the post-mortem is in
-  `../docs/x64-emulator-status.md` ("fake-frame incident"). Respect the scar tissue.
-* **State**: shell state is tiny and explicit (`state` object in `app.js`, persisted to
-  `localStorage["porthole.ui.v1"]`). Emulator state is NOT mirrored — read it from
-  `telemetry_json()` / `presented_frames()` when you integrate directly.
-* **Events**: no pub/sub framework. Shell → direct function calls; runtime → poll in the
-  tick (that's how `js/x64-app.js` works). `onFrameReady` in the contracts is your seam
-  to add a callback in the runtime wrapper; keep it allocation-free in the hot loop.
-
-## Run it
+## Run and verify
 
 ```bash
-npm run dev:ui        # static server for the repo root (python http.server)
-# open http://localhost:8080/ui/
+cd ui
+npm install
+npm run dev          # Vite on 0.0.0.0:5173 (Arena preview compatible)
+npm run typecheck
+npm run check:no-any
+npm run check:boundaries
+npm run smoke
+npm run build
 ```
 
-Needs no build step. `vendor/porthole-x64-wasm/` (the compiled core) is a CI artifact —
-without it the shell still loads and the emulator window reports the missing artifact in
-its log. To produce it: GitHub Actions `x64-emulator` workflow artifact, or locally with a
-Rust toolchain: `npm run build:wasm`.
+The build copies an already-present Wasm artifact if available, typechecks, then builds the UI. It does not compile Rust or download an artifact. If the ABI-v3 module is absent or fails to initialize, the desktop remains usable for diagnostics but reports the runtime as unavailable and disables guest import/launch. No simulated runtime or mock browser is shipped.
 
-## Adding a component
+## Runtime and artifact
 
-1. Markup in `index.html` (hidden templates) or built in `app.js` — match existing style.
-2. Styling: tokens in `styles.css` (`--bg/--panel/--line/--text/--muted/--accent`). These
-   are shared with `x64.html`; change them in both places or extract a shared sheet.
-3. Behaviour: plain functions in `app.js`, exposed for debugging under
-   `window.PortholeUI` (DesktopMode/GameStoreMode/Dialogs/StorageSel) — keep those
-   handles working; they're the contract test surface.
-4. Dialogs: always `Dialogs.confirm(...)` (Promise<boolean>, Esc = No). Never
-   `window.confirm`.
+`runtime/contracts.ts` mirrors the wasm-bindgen boundary. `RuntimeRouter` uses `WasmEmulatorRuntime`, which adapts ABI-v3 `BrowserX64Emulator`, `js/x64-jit-host.js`, and `js/x64-nvme-vfs.js`. The adapter connects AOT compilation, JIT slices/cache, guest page-fault resolution, and frame/telemetry channels.
 
-## Design language (current, minimal)
+Porthole runs in the browser; it cannot create native host Windows processes. When the CI-produced Wasm artifact is available, imported PE32+ files may be executed as guest processes inside that runtime. This does not imply general Windows or game compatibility. The Wasm-bindgen files belong in `vendor/porthole-x64-wasm/` (or `ui/public/wasm/`); `scripts/copy-wasm-artifacts.mjs` copies already-present files into ignored `ui/public/wasm/`. No generated Wasm is committed. User-selected storage can be OPFS, File System Access, or volatile memory. Guest executables and assets must be imported or already mounted locally.
 
-Dark navy panels on near-black, one teal accent (`#5eead4`), mono for metrics/hashes,
-evidence strings visible on every game card (a product decision: this project's users
-have been burned by fake progress — show receipts by default, polish later).
+**Frames and input:** only guest buffers returned after a core present are rendered as guest output. No placeholder pixels are synthesized. Keyboard delivery and mouse-button state remain pending in the core (KI-04); mouse position has a separate limited injection path.
 
-## Known shell limitations (honest)
+## Catalog safety
 
-* Emulator window is an iframe (input focus goes to the iframe; hotkeys don't reach the
-  shell while it's focused). Direct integration removes this.
-* "Install" = library registration only; bytes arrive via the emulator window's folder
-  mount (or CI fetch scripts in dev).
-* Input forwarding to the guest doesn't exist in the core (KI-04) — the biggest unlock
-  for actual playability, and mostly a runtime task (`sdl_hle.rs` event queue), not CSS.
-* No window resizing handles yet; windows drag + minimize + close only.
+The App Store contains 24 curated entries, not a full live Chocolatey search index. Chocolatey Community Repository integration requests public OData package metadata only (version, summary/description, tags, project link and related fields), with a 12-hour local cache. No `.nupkg`, installer, native executable, package scripts or package contents are downloaded or executed. “Add to library” saves a browser-local bookmark; it is not an installation. User-imported files are separate from the Chocolatey feed.
+
+## Diagnostics
+
+System Monitor probes browser capabilities and displays runtime telemetry when the Wasm core is available. The Developer Console captures UI events, runtime state/logs, aggregate core HLE/SHIM counters and unimplemented-import diagnostics. SHIM histogram entries are aggregate counters, not per-call traces; per-call trace fidelity is not verified.
+
+For runtime and security boundaries, see [`../docs/ui-runtime-architecture.md`](../docs/ui-runtime-architecture.md). For the visual system and desktop scaffold, see [`DESIGN.md`](DESIGN.md).

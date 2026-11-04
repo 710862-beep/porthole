@@ -10,9 +10,21 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
 const { X64JitHost } = require(path.join(root, 'js/x64-jit-host.js'));
-const dir = path.join(root, 'vendor/porthole-x64-wasm');
+const explicit = process.env.PORTHOLE_X64_WASM_DIR;
+const candidates = explicit
+  ? [path.resolve(root, explicit)]
+  : [path.join(root, 'artifacts/porthole-x64-wasm')];
+const dir = candidates.find(candidate =>
+  fs.existsSync(path.join(candidate, 'porthole_x64_wasm.js')) &&
+  fs.existsSync(path.join(candidate, 'porthole_x64_wasm_bg.wasm')),
+);
+if (!dir) throw new Error('Build the ABI-v3 x64 Wasm core into artifacts/porthole-x64-wasm or set PORTHOLE_X64_WASM_DIR.');
 const mod = await import(pathToFileURL(path.join(dir, 'porthole_x64_wasm.js')).href);
 const core = await mod.default(fs.readFileSync(path.join(dir, 'porthole_x64_wasm_bg.wasm')));
+const probe = new mod.BrowserX64Emulator(8192);
+if (probe.jit_context_slots?.() !== 64 || probe.jit_compiler_version?.() !== 16) {
+  throw new Error(`Expected ABI-v3 x64 Wasm core with 64 context slots and compiler version 16 at ${dir}.`);
+}
 
 function pe(code) {
   const b = Buffer.alloc(0x400);

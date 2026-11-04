@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useUiStore } from "@/store/uiStore";
+import { recordDevEvent } from "@/store/devConsoleStore";
 import { useHotCorner } from "@/hooks/useHotCorner";
 import { AppLauncher } from "@/components/launcher/AppLauncher";
 import { OverviewMode } from "@/components/launcher/OverviewMode";
@@ -11,7 +13,6 @@ import { LockScreen } from "./LockScreen";
 import { RuntimeStatusWidget } from "./RuntimeStatusWidget";
 import { Taskbar } from "./Taskbar";
 import { Wallpaper } from "./Wallpaper";
-import { WelcomeWidget } from "./WelcomeWidget";
 
 /**
  * Desktop composition. Global shortcuts and the hot corner are armed here; every
@@ -25,6 +26,24 @@ export function Desktop() {
   const locked = useUiStore((state) => state.locked);
 
   useHotCorner();
+
+  useEffect(() => {
+    const captureClick = (event: MouseEvent): void => {
+      if (!(event.target instanceof Element)) return;
+      const control = event.target.closest<HTMLElement>("button, [role='button'], a, input, select");
+      if (!control || control.dataset.devIgnore === "true") return;
+      const label =
+        control.getAttribute("aria-label") ??
+        control.getAttribute("title") ??
+        control.textContent?.replace(/\s+/g, " ").trim().slice(0, 96) ??
+        control.getAttribute("placeholder") ??
+        control.tagName.toLowerCase();
+      if (!label) return;
+      recordDevEvent("ui", "info", control.tagName.toLowerCase(), `click · ${label}`);
+    };
+    document.addEventListener("click", captureClick, true);
+    return () => document.removeEventListener("click", captureClick, true);
+  }, []);
 
   return (
     <motion.main
@@ -44,7 +63,6 @@ export function Desktop() {
           overviewOpen && "pointer-events-none scale-[0.94] opacity-60 blur-[2px]",
         )}
       >
-        <WelcomeWidget />
         <WindowLayer />
         <RuntimeStatusWidget />
       </div>

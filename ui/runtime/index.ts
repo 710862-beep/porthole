@@ -1,13 +1,11 @@
 /*
- * Runtime bundle factory.
- *
- * The desktop never imports implementations directly: App builds the bundle once and
- * hands it to React context. Swapping the mock for the real BrowserX64Emulator adapter
- * is a one-line change here — every component only knows the types in ./types.
+ * Runtime bundle factory. All React components consume one stable contract;
+ * RuntimeRouter selects the ABI-v3 Wasm adapter and reports unavailable when its
+ * artifact cannot initialize; production never substitutes synthetic execution.
  */
 
-import { MockEmulatorRuntime } from "./mockRuntime";
-import { LocalGameStore } from "./mockGameStore";
+import { RuntimeRouter } from "./runtimeRouter";
+import { LocalCatalogStore } from "./localCatalogStore";
 import { BrowserStorageService } from "./storage";
 import type { ExtendedEmulatorRuntime, GameStoreService, PortholeStorageService } from "./types";
 
@@ -18,9 +16,10 @@ export interface RuntimeBundle {
 }
 
 export function createRuntimeBundle(): RuntimeBundle {
+  const storage = new BrowserStorageService();
   return {
-    runtime: new MockEmulatorRuntime(),
-    store: new LocalGameStore(),
-    storage: new BrowserStorageService(),
+    runtime: new RuntimeRouter(storage),
+    store: new LocalCatalogStore(),
+    storage,
   };
 }

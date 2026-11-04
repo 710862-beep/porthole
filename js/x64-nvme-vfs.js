@@ -253,6 +253,24 @@
 
     // ------------------------------------------------------------- game tree
 
+    /** Lists mounted guest file paths without allocating file contents. */
+    async listGameFiles() {
+      const paths = [];
+      if (!this.gameDir) return paths;
+      const walk = async (dir, prefix) => {
+        for await (const [name, handle] of dir.entries()) {
+          const relative = prefix ? `${prefix}\\${name}` : name;
+          if (handle.kind === 'directory') {
+            await walk(handle, relative);
+          } else {
+            paths.push(`C:\\Game\\${relative}`);
+          }
+        }
+      };
+      await walk(this.gameDir, '');
+      return paths;
+    }
+
     /** Recursively loads `Game/**` into the guest VFS so `CreateFileW("C:\\Game\\...")` works. */
     async readGameTree(limitBytes) {
       const max = limitBytes || 512 * 1024 * 1024;

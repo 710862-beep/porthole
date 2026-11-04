@@ -21,9 +21,13 @@ npm ci
 npm run dev:ui        # http://localhost:8080/ui/  (shell)   /x64.html (runtime)
 ```
 
-For the compiled core: grab the `porthole-x64-wasm` artifact from the latest green
-`x64-emulator` Actions run into `vendor/porthole-x64-wasm/`, or `npm run build:wasm`
-with a local Rust toolchain. Smoke tests: `node scripts/check-boundaries.mjs`,
+The `x64-emulator` Actions workflow builds the ABI-v3 core and, on Arena branches,
+verifies and publishes its wasm-bindgen JS/Wasm files to `ui/public/wasm/` in a follow-up
+commit. A checkout that includes that CI publish commit can initialize the real browser
+runtime without a local Rust toolchain. For a one-off local override, place a trusted
+`porthole-x64-wasm` build in `vendor/porthole-x64-wasm/` and run `npm run copy:wasm` from
+`ui/`; if neither source is present, the desktop reports the runtime unavailable. Smoke
+tests: `node scripts/check-boundaries.mjs`,
 `npm run check:syntax`, `node tests/third-party/run-7za.mjs` (fast) — full gate matrix
 in `docs/FINAL-STATUS-REPORT.md`.
 

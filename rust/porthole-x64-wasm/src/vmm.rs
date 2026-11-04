@@ -95,6 +95,7 @@ pub struct VirtualMemoryManager {
     pub current_rip: u64,
     watch_ranges: Vec<(u64, u64)>,
     watch_len: usize,
+    watch_value: Option<u64>,
     pub watch_log: Vec<WatchEvent>,
     /// MEM_WRITE_WATCH allocations and the page-granular dirty set returned by GetWriteWatch.
     ww_regions: Vec<(u64, u64)>,
@@ -120,6 +121,7 @@ impl VirtualMemoryManager {
             current_rip: 0,
             watch_ranges: Vec::new(),
             watch_len: 0,
+            watch_value: None,
             watch_log: Vec::new(),
             ww_regions: Vec::new(),
             ww_hits: BTreeSet::new(),
@@ -133,8 +135,17 @@ impl VirtualMemoryManager {
         self.watch_ranges.clear();
         self.watch_ranges.push((lo, hi));
         self.watch_len = capacity;
+        self.watch_value = None;
         self.watch_log.clear();
         self.watch_log.reserve(capacity.min(4096));
+    }
+
+    /// Watches only stores containing one little-endian qword value. Unlike the general watch,
+    /// retain the latest matching writes so repeated stack-slot reuse cannot evict the faulting
+    /// write from the end of a long run.
+    pub fn set_write_watch_value(&mut self, lo: u64, hi: u64, value: u64, capacity: usize) {
+        self.set_write_watch(lo, hi, capacity);
+        self.watch_value = Some(value);
     }
 
     /// Adds another watched window without disturbing the existing ones (stack + globals + heap).
@@ -146,6 +157,7 @@ impl VirtualMemoryManager {
     pub fn clear_write_watch(&mut self) {
         self.watch_ranges.clear();
         self.watch_len = 0;
+        self.watch_value = None;
         self.watch_log.clear();
     }
 
@@ -194,7 +206,7 @@ impl VirtualMemoryManager {
                 page = page.saturating_add(PAGE_SIZE as u64);
             }
         }
-        if self.watch_len == 0 || self.watch_log.len() >= self.watch_len {
+        if self.watch_len == 0 {
             return;
         }
         let end = addr.wrapping_add(data.len() as u64);
@@ -205,14 +217,31 @@ impl VirtualMemoryManager {
         if !hit {
             return;
         }
-        let mut head = [0u8; 8];
-        let n = data.len().min(8);
-        head[..n].copy_from_slice(&data[..n]);
+        let (event_addr, event_value) = if let Some(wanted) = self.watch_value {
+            let Some(offset) = data.windows(8).position(|bytes| {
+                u64::from_le_bytes(bytes.try_into().unwrap()) == wanted
+            }) else {
+                return;
+            };
+            (addr.wrapping_add(offset as u64), wanted)
+        } else {
+            let mut head = [0u8; 8];
+            let n = data.len().min(8);
+            head[..n].copy_from_slice(&data[..n]);
+            (addr, u64::from_le_bytes(head))
+        };
+        if self.watch_log.len() >= self.watch_len {
+            if self.watch_value.is_some() {
+                self.watch_log.remove(0);
+            } else {
+                return;
+            }
+        }
         self.watch_log.push(WatchEvent {
             rip: self.current_rip,
-            addr,
+            addr: event_addr,
             len: data.len() as u64,
-            value: u64::from_le_bytes(head),
+            value: event_value,
             host,
         });
     }

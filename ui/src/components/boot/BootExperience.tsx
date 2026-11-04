@@ -15,7 +15,7 @@ interface BootExperienceProps {
   onMemory: () => void;
 }
 
-const AURORA_URL = `${import.meta.env.BASE_URL}wallpapers/cachy-aurora.png`;
+const AURORA_URL = `${import.meta.env.BASE_URL}wallpapers/aurora.png`;
 
 /**
  * Cold-start surface: aurora backdrop + either the boot/starting screen or the

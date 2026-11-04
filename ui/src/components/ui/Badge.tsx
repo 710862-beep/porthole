@@ -11,6 +11,7 @@ interface BadgeProps {
   dot?: boolean;
   mono?: boolean;
   className?: string;
+  title?: string;
 }
 
 const TONE: Record<BadgeTone, string> = {
@@ -31,9 +32,10 @@ const DOT_TONE: Record<BadgeTone, string> = {
   danger: "bg-danger shadow-[0_0_6px_rgba(243,139,168,0.7)]",
 };
 
-export function Badge({ children, tone = "neutral", icon: Icon, dot, mono, className }: BadgeProps) {
+export function Badge({ children, tone = "neutral", icon: Icon, dot, mono, className, title }: BadgeProps) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-[10.5px] font-medium tracking-[0.01em]",
         TONE[tone],

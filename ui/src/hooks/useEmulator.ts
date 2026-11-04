@@ -33,10 +33,12 @@ export function useEmulator() {
       store.setError(null);
       try {
         await runtime.initialize(backend);
+        store.setMode(runtime.mode);
         store.setStatus("ready");
         store.setStorage(storage.describeSelected());
       } catch (cause) {
         const message = errorMessage(cause);
+        store.setMode(runtime.mode);
         store.setStatus("error");
         store.setError(message);
         await reportError({
@@ -50,9 +52,9 @@ export function useEmulator() {
   );
 
   const loadAndLaunch = useCallback(
-    async (path: string): Promise<void> => {
+    async (path: string, argumentsLine = ""): Promise<void> => {
       try {
-        const handle = await runtime.loadExecutable(path);
+        const handle = await runtime.loadExecutable(path, argumentsLine);
         useEmulatorStore.getState().setProcessHandle(handle);
         await runtime.launch(handle);
       } catch (cause) {
@@ -101,7 +103,7 @@ export function useEmulator() {
     if (!handle) return;
     try {
       await runtime.terminate(handle);
-      toast({ title: "Guest terminated", tone: "info", message: "The mock process was stopped." });
+      toast({ title: "Guest terminated", tone: "info", message: "The active guest process was stopped." });
     } catch (cause) {
       useEmulatorStore.getState().setError(errorMessage(cause));
     } finally {

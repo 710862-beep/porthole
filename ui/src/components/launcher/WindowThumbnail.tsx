@@ -59,26 +59,6 @@ export function WindowThumbnail({ appId, tint }: WindowThumbnailProps) {
     );
   }
 
-  if (appId === "terminal") {
-    const widths = ["46%", "72%", "28%", "84%", "36%", "58%", "22%"];
-    return (
-      <div className="absolute inset-0 p-[9%]">
-        <div className="flex h-full flex-col justify-center gap-1.5 rounded-[4px] border border-white/[0.06] bg-black/30 p-2.5">
-          {widths.map((width, index) => (
-            <span
-              key={index}
-              className="block h-[3px] rounded-full"
-              style={{
-                width,
-                backgroundColor: index === 0 ? tint : "rgba(166,173,200,0.28)",
-              }}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
   if (appId === "system") {
     return (
       <div className="absolute inset-0 p-[9%]">

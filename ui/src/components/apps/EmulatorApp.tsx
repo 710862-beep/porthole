@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent as ReactChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -16,8 +17,8 @@ import {
   Play,
   RotateCcw,
   ScrollText,
-  ShieldAlert,
   Store,
+  Upload,
 } from "lucide-react";
 import type { StoreGame } from "@runtime/types";
 import { useRuntime } from "@/hooks/useRuntime";
@@ -25,10 +26,11 @@ import { useEmulator } from "@/hooks/useEmulator";
 import { useFramebuffer } from "@/hooks/useFramebuffer";
 import { useWindowManager } from "@/hooks/useWindowManager";
 import { useWindowChrome } from "@/components/windows/WindowChromeContext";
-import { useEmulatorStore } from "@/store/emulatorStore";
 import { useWindowStore } from "@/store/windowStore";
 import { useLibraryStore } from "@/store/libraryStore";
+import { useEmulatorStore } from "@/store/emulatorStore";
 import { toast } from "@/store/uiStore";
+import { reportError } from "@/store/dialogStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { LogConsole } from "@/components/ui/LogConsole";
@@ -62,11 +64,32 @@ function Metric({ label, value, tone = "default" }: MetricProps) {
   );
 }
 
+function normalizeGuestPath(value: string): string {
+  return value.replaceAll("/", "\\").replace(/\\+/g, "\\").toLowerCase();
+}
+
+function mergeGuestPaths(current: readonly string[], incoming: readonly string[]): string[] {
+  const paths = new Map(current.map((path) => [normalizeGuestPath(path), path]));
+  for (const path of incoming) paths.set(normalizeGuestPath(path), path);
+  return [...paths.values()];
+}
+
+function requiredFilesFor(game: StoreGame): string[] {
+  if (game.requiredFiles?.length) return game.requiredFiles;
+  return game.exePath ? [game.exePath] : [];
+}
+
+function missingFilesFor(game: StoreGame | null, guestFiles: readonly string[]): string[] {
+  if (!game) return [];
+  const imported = new Set(guestFiles.map(normalizeGuestPath));
+  return requiredFilesFor(game).filter((path) => !imported.has(normalizeGuestPath(path)));
+}
+
 /**
  * Emulator surface: guest scanout, controls, telemetry and the runtime console.
  *
- * Frame honesty: the canvas only receives `runtime.getFramebuffer()` output and the
- * mock mode is labelled in the chrome and in the log stream.
+ * Frame honesty: the canvas only receives `runtime.getFramebuffer()` output from
+ * the ABI-v3 runtime; when that runtime is unavailable, guest launch stays disabled.
  */
 export function EmulatorApp() {
   const chrome = useWindowChrome();
@@ -90,36 +113,69 @@ export function EmulatorApp() {
   } = useEmulator();
   const { openApp } = useWindowManager();
   const games = useLibraryStore((state) => state.games);
+  const profileRequest = useEmulatorStore((state) => state.selectedProfileId);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const autoLaunched = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputNotice = useRef(false);
+  const guestFileScanVersion = useRef(0);
 
   const [armed, setArmed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  /** Workload chosen from the in-window picker when no Store payload exists. */
+  const [importing, setImporting] = useState(false);
+  const [guestFiles, setGuestFiles] = useState<string[]>([]);
+  const [guestFilesLoading, setGuestFilesLoading] = useState(false);
+  /** Launch profile chosen from the browser-local library list. */
   const [pickedAppId, setPickedAppId] = useState<string | null>(null);
 
-  const payloadGame = useMemo<StoreGame | null>(() => {
-    const appId = chrome.payload?.kind === "game" ? chrome.payload.appId : undefined;
-    return appId ? gameStore.getGame(appId) : null;
-  }, [chrome.payload, gameStore]);
-
-  const installedGames = useMemo(
-    () => games.filter((entry) => entry.status === "installed" && entry.exePath),
+  const libraryEntries = useMemo(
+    () => games.filter((entry) => entry.status === "in-library" && /\.exe$/i.test(entry.exePath)),
     [games],
   );
 
-  /**
-   * Payload wins (opened from the Store), then an explicit pick, then the first
-   * installed workload — so the window is never a dead surface that needs a menu
-   * detour before Launch becomes usable.
-   */
+  /** A catalog entry is only a launch profile; its executable must be imported locally. */
   const game = useMemo<StoreGame | null>(() => {
     if (pickedAppId) return gameStore.getGame(pickedAppId);
-    return payloadGame ?? installedGames[0] ?? null;
-  }, [gameStore, installedGames, payloadGame, pickedAppId]);
+    return libraryEntries[0] ?? null;
+  }, [gameStore, libraryEntries, pickedAppId]);
+  const missingRequiredFiles = useMemo(
+    () => missingFilesFor(game, guestFiles),
+    [game, guestFiles],
+  );
+
+  useEffect(() => {
+    if (!profileRequest || games.length === 0) return;
+    const requested = libraryEntries.find((entry) => entry.appId === profileRequest);
+    if (requested) setPickedAppId(requested.appId);
+    useEmulatorStore.getState().setSelectedProfileId(null);
+  }, [games.length, libraryEntries, profileRequest]);
+
+  useEffect(() => {
+    if (mode !== "wasm" || status !== "ready") {
+      setGuestFilesLoading(false);
+      return;
+    }
+    let active = true;
+    const scanVersion = guestFileScanVersion.current;
+    setGuestFilesLoading(true);
+    void runtime.listGameFiles()
+      .then((paths) => {
+        if (active && scanVersion === guestFileScanVersion.current) setGuestFiles(paths);
+      })
+      .catch((error: unknown) => {
+        if (active && scanVersion === guestFileScanVersion.current) {
+          const message = error instanceof Error ? error.message : String(error);
+          toast({ title: "Could not inspect C:\\Game", message, tone: "warning" });
+        }
+      })
+      .finally(() => {
+        if (active) setGuestFilesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode, runtime, status]);
 
   useFramebuffer(canvasRef, chrome.visible);
 
@@ -129,16 +185,6 @@ export function EmulatorApp() {
       .setTitle(chrome.id, game ? `${game.title} — Emulator` : "Porthole Emulator");
   }, [chrome.id, game]);
 
-  // Opening the window from the Store payload starts that workload once. A
-  // default selection never auto-launches: that would run a binary on window open.
-  useEffect(() => {
-    if (!chrome.visible || !payloadGame) return;
-    if (useEmulatorStore.getState().status === "cold") return;
-    if (processHandle || autoLaunched.current === payloadGame.appId) return;
-    autoLaunched.current = payloadGame.appId;
-    void loadAndLaunch(payloadGame.exePath);
-  }, [chrome.visible, loadAndLaunch, payloadGame, processHandle]);
-
   const running = guestState === "running";
   const paused = guestState === "paused";
   const hasFrames = (telemetry?.presentedFrames ?? 0) > 0;
@@ -147,11 +193,62 @@ export function EmulatorApp() {
     (entry: StoreGame): void => {
       setPickerOpen(false);
       setPickedAppId(entry.appId);
-      autoLaunched.current = entry.appId;
-      void loadAndLaunch(entry.exePath);
+      if (guestFilesLoading) {
+        toast({ title: "Checking mounted files", message: "The Emulator is scanning C:\\Game. Try again in a moment.", tone: "info" });
+        return;
+      }
+      const missing = missingFilesFor(entry, guestFiles);
+      if (missing.length > 0) {
+        const names = missing.map((path) => path.split("\\").at(-1) ?? path);
+        toast({
+          title: "Import files before launching",
+          message: `Choose ${names.join(", ")} from your device. Files are copied into C:\\Game; the Store does not download them.`,
+          tone: "warning",
+        });
+        fileInputRef.current?.click();
+        return;
+      }
+      void loadAndLaunch(entry.exePath, entry.launchArguments ?? "");
     },
-    [loadAndLaunch],
+    [guestFiles, guestFilesLoading, loadAndLaunch],
   );
+
+  const handleImportSelection = async (event: ReactChangeEvent<HTMLInputElement>): Promise<void> => {
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    if (files.length === 0) return;
+    setImporting(true);
+    const importVersion = ++guestFileScanVersion.current;
+    try {
+      if (!runtime.importFiles) {
+        throw new Error("Local guest-file import requires an initialized ABI-v3 Wasm runtime. Chocolatey packages are not used.");
+      }
+      const paths = await runtime.importFiles(files);
+      const updatedFiles = await runtime.listGameFiles().catch(() => mergeGuestPaths(guestFiles, paths));
+      if (importVersion === guestFileScanVersion.current) setGuestFiles(updatedFiles);
+      const missing = game ? missingFilesFor(game, updatedFiles) : [];
+      const detail = paths.length === 0
+        ? "No supported filenames were selected."
+        : missing.length > 0
+          ? `Still needed for ${game?.title ?? "this profile"}: ${missing.map((path) => path.split("\\").at(-1) ?? path).join(", ")}.`
+          : `${paths.slice(0, 3).join(" · ")}${paths.length > 3 ? ` · +${paths.length - 3} more` : ""}. Click Launch when ready.`;
+      toast({
+        title: `${paths.length} guest file${paths.length === 1 ? "" : "s"} imported`,
+        message: detail,
+        tone: paths.length > 0 && missing.length === 0 ? "success" : paths.length > 0 ? "warning" : "info",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await reportError({
+        title: "Guest file import failed",
+        body: "Files are copied only into the locally mounted C:\\Game folder. The store and Chocolatey feed are not involved.",
+        details: message,
+      });
+    } finally {
+      input.value = "";
+      setImporting(false);
+    }
+  };
 
   const armInput = (): void => {
     setArmed(true);
@@ -160,7 +257,7 @@ export function EmulatorApp() {
       inputNotice.current = true;
       toast({
         title: "Input capture armed (KI-04)",
-        message: "Keystrokes are counted by the shell; the core does not deliver them yet.",
+        message: "Keyboard and mouse-button state are not delivered yet (KI-04). Mouse coordinates use a separate core injection path.",
         tone: "warning",
       });
     }
@@ -205,7 +302,13 @@ export function EmulatorApp() {
             {game?.title ?? "No workload loaded"}
           </p>
           <p className="truncate font-mono text-[9.5px] text-ink-faint">
-            {game?.exePath || "select an installed workload to load its entry point"}
+            {game
+              ? guestFilesLoading
+                ? "checking files in C:\\Game…"
+                : missingRequiredFiles.length > 0
+                  ? `needs ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")} · import from device`
+                  : game.exePath
+              : "choose a catalog profile and import its local files first"}
           </p>
         </div>
 
@@ -218,14 +321,31 @@ export function EmulatorApp() {
           >
             {status === "initializing" ? "initializing" : guestState}
           </Badge>
-          {mode === "mock" && (
-            <Badge tone="warning" icon={ShieldAlert}>
-              synthetic
-            </Badge>
-          )}
+          <Badge tone={mode === "wasm" ? "success" : "warning"} dot>
+            {mode} runtime
+          </Badge>
         </div>
 
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".exe,.dll,.wad,.lmp,.cfg,.dat,.pk3,.zip"
+          aria-label="Choose files to copy into C:\\Game"
+          className="sr-only"
+          onChange={(event) => { void handleImportSelection(event); }}
+        />
         <div className="ml-auto flex items-center gap-1.5">
+          <Button
+            size="icon"
+            variant="ghost"
+            icon={Upload}
+            aria-label="Import guest files into C:\\Game"
+            title={mode === "wasm" ? "Import user-selected files into the mounted C:\\Game folder" : "Import requires an initialized ABI-v3 Wasm runtime"}
+            loading={importing}
+            disabled={mode !== "wasm" || running || importing}
+            onClick={() => fileInputRef.current?.click()}
+          />
           <div className="relative">
             <Button
               size="sm"
@@ -235,23 +355,23 @@ export function EmulatorApp() {
               aria-haspopup="listbox"
               aria-expanded={pickerOpen}
               onClick={() => setPickerOpen((value) => !value)}
-              disabled={installedGames.length === 0}
+              disabled={libraryEntries.length === 0}
             >
-              Workload
+              Profile
             </Button>
             {pickerOpen && (
               <div
                 role="listbox"
-                aria-label="Installed workloads"
+                aria-label="Catalog launch profiles"
                 className="absolute right-0 top-[34px] z-20 w-[260px] overflow-hidden rounded-[10px] border border-white/10 bg-[rgba(17,17,27,0.97)] p-1 shadow-dialog backdrop-blur-xl"
               >
-                {installedGames.map((entry) => (
+                {libraryEntries.map((entry) => (
                   <button
                     key={entry.appId}
                     type="button"
                     role="option"
                     aria-selected={game?.appId === entry.appId}
-                    onClick={() => launchGame(entry)}
+                    onClick={() => { setPickedAppId(entry.appId); setPickerOpen(false); }}
                     className="flex w-full flex-col items-start gap-0.5 rounded-[7px] px-2.5 py-1.5 text-left transition hover:bg-white/[0.06]"
                   >
                     <span className="text-[11px] text-ink">{entry.title}</span>
@@ -260,9 +380,9 @@ export function EmulatorApp() {
                     </span>
                   </button>
                 ))}
-                {installedGames.length === 0 && (
+                {libraryEntries.length === 0 && (
                   <p className="px-2.5 py-2 text-[10.5px] text-ink-faint">
-                    No installed workloads with an entry point.
+                    No library profiles. Add a catalog bookmark; it will not install files.
                   </p>
                 )}
               </div>
@@ -282,12 +402,12 @@ export function EmulatorApp() {
               size="sm"
               variant="primary"
               icon={Play}
-              disabled={!game || status !== "ready"}
+              disabled={!game || mode !== "wasm" || status !== "ready" || guestFilesLoading || importing}
               onClick={() => {
                 if (game) launchGame(game);
               }}
             >
-              Launch
+              {guestFilesLoading ? "Checking files…" : mode === "wasm" && missingRequiredFiles.length > 0 ? "Import files" : "Launch"}
             </Button>
           )}
 
@@ -355,30 +475,44 @@ export function EmulatorApp() {
                 <div>
                   <p className="text-[12.5px] font-medium text-ink">
                     {status === "initializing"
-                      ? "Seating the runtime…"
-                      : processHandle
-                        ? "Waiting for the first present…"
-                        : "No guest frames yet"}
+                      ? "Starting the runtime…"
+                      : mode !== "wasm"
+                        ? "ABI-v3 runtime unavailable"
+                        : processHandle
+                          ? "Waiting for the first present…"
+                          : "No guest frames yet"}
                   </p>
                   <p className="mt-1 max-w-[46ch] text-[10.5px] leading-relaxed text-ink-faint">
-                    Pixels only ever come from the runtime framebuffer. In mock mode they
-                    are labelled synthetic; with the Wasm core this is real scanout.
+                    {missingRequiredFiles.length > 0
+                      ? `Required in C:\\Game: ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")}. Select Import files; the Store does not download executables or game data.`
+                      : "The canvas draws only frames reported by the ABI-v3 core. No demo image or synthetic guest frame is substituted."}
                   </p>
                 </div>
                 <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
                   {game ? (
-                    <Button size="sm" variant="primary" icon={Play} onClick={() => launchGame(game)}>
-                      Launch {game.title}
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      icon={missingRequiredFiles.length > 0 ? Upload : Play}
+                      disabled={mode !== "wasm" || status !== "ready" || guestFilesLoading || importing}
+                      onClick={() => launchGame(game)}
+                    >
+                      {guestFilesLoading
+                        ? "Checking files…"
+                        : missingRequiredFiles.length > 0
+                          ? `Import files for ${game.title}`
+                          : `Launch ${game.title}`}
                     </Button>
                   ) : (
-                    installedGames[0] && (
+                    libraryEntries[0] && (
                       <Button
                         size="sm"
                         variant="primary"
                         icon={Play}
-                        onClick={() => launchGame(installedGames[0] as StoreGame)}
+                        disabled={mode !== "wasm" || status !== "ready"}
+                        onClick={() => launchGame(libraryEntries[0] as StoreGame)}
                       >
-                        Launch {installedGames[0].title}
+                        Launch {libraryEntries[0].title}
                       </Button>
                     )
                   )}
@@ -390,8 +524,8 @@ export function EmulatorApp() {
             )}
 
             <div className="pointer-events-none absolute left-2.5 top-2.5 flex items-center gap-1.5">
-              <Badge tone={mode === "mock" ? "warning" : "success"} dot>
-                {mode === "mock" ? "synthetic scanout" : "guest scanout"}
+              <Badge tone={hasFrames ? "success" : "neutral"} dot>
+                {hasFrames ? "guest frames reported" : "no guest frames"}
               </Badge>
               {armed && running && (
                 <Badge tone="accent" icon={MousePointerClick}>
@@ -444,11 +578,10 @@ export function EmulatorApp() {
               variant="ghost"
               icon={RotateCcw}
               aria-label="Reload the selected workload"
-              disabled={!game}
+              disabled={!game || mode !== "wasm" || status !== "ready"}
               onClick={() => {
                 if (!game) return;
-                autoLaunched.current = null;
-                void loadAndLaunch(game.exePath);
+                launchGame(game);
               }}
             />
           </div>

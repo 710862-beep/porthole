@@ -62,7 +62,9 @@ test('JIT trap invalidates the active artifact and counts only fallback instruct
   assert.equal(status, 'next');
   assert.equal(emu.aborted, true);
   assert.equal(host.stats.traps, 1);
-  assert.equal(host.stats.fallbackInstructions, 1);
+  // One instruction is replayed immediately, then the fake core advances one more
+  // interpreter instruction before this host slice returns `next`.
+  assert.equal(host.stats.fallbackInstructions, 2);
   assert.match(host.stats.lastTrap, /Wasm memory export unavailable|CompileError|missing/);
 });
 
@@ -83,7 +85,7 @@ test('core JIT validation fault replays the block in the interpreter', async () 
   assert.equal(status, 'next');
   assert.equal(emu.aborted, true);
   assert.equal(host.stats.traps, 1);
-  assert.equal(host.stats.fallbackInstructions, 1);
+  assert.equal(host.stats.fallbackInstructions, 2);
   assert.match(host.stats.lastTrap, /jit-validation/);
 });
 

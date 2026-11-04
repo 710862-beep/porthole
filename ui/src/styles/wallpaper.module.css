@@ -20,6 +20,33 @@
   transition: opacity 600ms var(--ease-kde);
 }
 
+.aurora {
+  background:
+    radial-gradient(ellipse 52% 72% at 50% 104%, rgba(255, 112, 151, 0.94), transparent 72%),
+    radial-gradient(ellipse 60% 90% at 88% 40%, rgba(127, 37, 157, 0.84), transparent 72%),
+    linear-gradient(132deg, #552d98 0%, #7b31aa 44%, #3b1057 100%);
+  filter: saturate(1.05) contrast(1.02);
+}
+
+.aurora::before,
+.aurora::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+}
+
+.aurora::before {
+  background:
+    linear-gradient(153deg, transparent 0 54%, rgba(57, 17, 91, 0.46) 54.2% 68%, transparent 68.2%),
+    linear-gradient(28deg, transparent 0 73%, rgba(125, 40, 159, 0.36) 73.2% 82%, transparent 82.2%),
+    linear-gradient(148deg, transparent 0 80%, rgba(39, 11, 61, 0.4) 80.2% 100%);
+}
+
+.aurora::after {
+  background: linear-gradient(180deg, rgba(31, 10, 52, 0.12), transparent 34%, rgba(40, 10, 57, 0.08));
+}
+
 /* Procedural fallbacks used by Settings → Wallpaper, so no extra downloads. */
 .nebula {
   background:
