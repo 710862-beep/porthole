@@ -8,10 +8,13 @@ npm ci                     # JS deps (jsdom/playwright for legacy suites)
 npm run dev:ui             # serve repo root; open http://localhost:8080/ui/
 ```
 
-Building the emulator core needs Rust + wasm-bindgen (`npm run build:wasm`), but the
-normal path is CI: the `x64-emulator` workflow builds `porthole-x64-wasm` and uploads it
-as an artifact; drop it in `vendor/porthole-x64-wasm/`. No local Rust? You can still do
-all UI work — the shell degrades gracefully and says what's missing.
+Building the emulator core needs Rust + wasm-bindgen, so the normal path is CI: the
+`x64-emulator` workflow builds `porthole-x64-wasm`, uploads it as an artifact, verifies
+its checksums and publishes the wasm-bindgen files to `ui/public/wasm/` on Arena branches.
+Once that publish commit is included, a clean checkout starts the real browser runtime
+without local Rust. For an optional local override, place a trusted artifact in
+`vendor/porthole-x64-wasm/` and run `npm run copy:wasm` from `ui/`. If neither copy is
+present, the UI remains usable for diagnostics and reports guest execution unavailable.
 
 Tests you'll actually run:
 

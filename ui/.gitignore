@@ -1,4 +1,5 @@
 node_modules/
 dist/
-public/wasm/
+# Verified ABI-v3 JS/Wasm runtime is published by x64-emulator CI and checked in
+# so clean preview builds can start the real browser runtime.
 *.log

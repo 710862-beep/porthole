@@ -8,8 +8,8 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * Keep the legacy runtime bridge single-sourced: the runtime layer imports the
- * existing JIT host and NVMe VFS through virtual modules, and dev serves the
- * CI-produced Wasm artifact from vendor/ when one is present.
+ * existing JIT host and NVMe VFS through virtual modules. Dev serves the CI-published
+ * browser artifact from ui/public/wasm, preferring a local vendor copy when supplied.
  */
 function portholePlatformBridge(): Plugin {
   const virtualFiles = new Map<string, string>([
@@ -19,7 +19,10 @@ function portholePlatformBridge(): Plugin {
   const virtualIds = new Map(
     [...virtualFiles.keys()].map((specifier) => [specifier, `\0porthole:${specifier}`]),
   );
-  const wasmRoot = path.resolve(repositoryRoot, "vendor", "porthole-x64-wasm");
+  const wasmRoots = [
+    path.resolve(repositoryRoot, "vendor", "porthole-x64-wasm"),
+    fileURLToPath(new URL("./public/wasm", import.meta.url)),
+  ];
 
   return {
     name: "porthole-platform-bridge",
@@ -43,8 +46,11 @@ function portholePlatformBridge(): Plugin {
           return;
         }
         const relative = decodeURIComponent(pathname.slice("/wasm/".length));
-        const filePath = path.resolve(wasmRoot, relative);
-        if (!filePath.startsWith(`${wasmRoot}${path.sep}`) || !fs.existsSync(filePath)) {
+        const filePath = wasmRoots
+          .map((root) => ({ root, filePath: path.resolve(root, relative) }))
+          .find(({ root, filePath }) => filePath.startsWith(`${root}${path.sep}`) && fs.existsSync(filePath))
+          ?.filePath;
+        if (!filePath) {
           next();
           return;
         }

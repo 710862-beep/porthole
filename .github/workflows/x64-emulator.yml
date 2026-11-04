@@ -74,7 +74,7 @@ jobs:
           wasm-bindgen --target web --out-dir artifacts/porthole-x64-wasm \
             rust/porthole-x64-wasm/target/wasm32-unknown-unknown/release/porthole_x64_wasm.wasm
           ls -lh artifacts/porthole-x64-wasm
-          sha256sum artifacts/porthole-x64-wasm/* > artifacts/porthole-x64-wasm/SHA256SUMS
+          (cd artifacts/porthole-x64-wasm && sha256sum * > SHA256SUMS)
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -100,6 +100,58 @@ jobs:
           path: rust/porthole-x64-wasm/cargo-build.log
           if-no-files-found: warn
           retention-days: 14
+
+  publish-wasm-runtime:
+    name: Publish ABI-v3 Wasm runtime for the browser UI
+    needs: wasm-build
+    if: startsWith(github.ref, 'refs/heads/arena/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: porthole-x64-wasm
+          path: artifacts/porthole-x64-wasm
+      - name: Verify the generated runtime
+        working-directory: artifacts/porthole-x64-wasm
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS
+          test -s porthole_x64_wasm.js
+          test -s porthole_x64_wasm_bg.wasm
+      - name: Publish the verified runtime to the browser app
+        run: |
+          set -euo pipefail
+          mkdir -p ui/public/wasm
+          find ui/public/wasm -maxdepth 1 -type f -delete
+          cp artifacts/porthole-x64-wasm/* ui/public/wasm/
+          (cd ui/public/wasm && sha256sum --check SHA256SUMS)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the browser app against the verified runtime
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+          test -s dist/wasm/porthole_x64_wasm.js
+          test -s dist/wasm/porthole_x64_wasm_bg.wasm
+      - name: Commit runtime when the generated artifact changes
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ui/public/wasm
+          if git diff --cached --quiet; then
+            echo 'The published ABI-v3 runtime is already current.'
+            exit 0
+          fi
+          git commit -m 'Publish CI-built ABI-v3 Wasm runtime'
+          git push origin "HEAD:${GITHUB_REF}"
 
   tier-a-independent-7zip:
     name: GATE 1 Tier A — unmodified 7-Zip x64 PE archive round-trip

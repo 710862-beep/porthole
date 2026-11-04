@@ -5,7 +5,7 @@
  *
  * Mounts the real App inside jsdom through Vite's module graph, walks boot →
  * setup → desktop, then drives the window manager, metadata-only catalog,
- * Developer Console, settings, overview, hot corner, dialogs and the unavailable
+ * Developer Console, settings, overview, hot corner, dialogs and the browser-only
  * production-runtime boundary. Canvas 2D is stubbed because jsdom cannot rasterise.
  */
 import { JSDOM } from "jsdom";
@@ -443,12 +443,12 @@ try {
   const emulatorFrame = document.querySelector(`[data-window-id="${ids.emulator}"]`);
   check("emulator frame renders", Boolean(emulatorFrame));
   const launch = buttonByText(/^Launch$/, emulatorFrame ?? document);
-  check("missing ABI-v3 runtime is reported unavailable", emu().mode === "unavailable", emu().mode);
-  check("guest launch stays disabled without the Wasm artifact", Boolean(launch) && launch.disabled);
+  check("headless smoke does not initialize the browser-only runtime", emu().mode === "unavailable", emu().mode);
+  check("guest launch stays disabled in the SSR smoke harness", Boolean(launch) && launch.disabled);
   const importButton = [...(emulatorFrame?.querySelectorAll("button") ?? [])].find((button) =>
     (button.getAttribute("aria-label") ?? "").startsWith("Import guest files into"),
   );
-  check("file import stays disabled without the Wasm artifact", Boolean(importButton) && importButton.disabled);
+  check("file import stays disabled in the SSR smoke harness", Boolean(importButton) && importButton.disabled);
   check("no guest frames are synthesized", (emu().telemetry?.presentedFrames ?? 0) === 0);
 
   /* ====================================================================== *
