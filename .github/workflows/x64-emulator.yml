@@ -239,6 +239,17 @@ jobs:
             cp artifacts/chocolate-doom-jit-report.json artifacts/chocolate-doom-tier-b-report.json
             cp artifacts/chocolate-doom-jit-report.txt artifacts/chocolate-doom-tier-b-report.txt
 
+            # Isolate WebAssembly tail-call-linked CALL/RET edges without turning JIT off.
+            # This is the same pinned real Doom workload, not a synthetic emulator fixture.
+            PORTHOLE_JIT=1 PORTHOLE_JIT_TAIL_CALLS=0 PORTHOLE_JIT_TELEMETRY=1 \
+              PORTHOLE_JIT_VALIDATE_MODE=1 PORTHOLE_DOOM_WATCH_BAD_RETURN=1 \
+              PORTHOLE_DOOM_TIMEOUT_S=1800 PORTHOLE_DOOM_RESIDENT=65536 \
+              PORTHOLE_DOOM_REPORT_PREFIX=chocolate-doom-no-tailcalls \
+              PORTHOLE_DOOM_ARTIFACT_PREFIX=chocolate-doom-no-tailcalls \
+              node tests/third-party/run-chocolate-doom.mjs 2>&1 | tee artifacts/chocolate-doom-no-tailcalls-run.log
+            no_tailcalls_rc=${PIPESTATUS[0]}
+            echo "Hybrid JIT with Wasm tail-call links disabled exit=$no_tailcalls_rc (does not change Tier B result)"
+
             PORTHOLE_JIT=0 PORTHOLE_JIT_TELEMETRY=1 PORTHOLE_DOOM_TIMEOUT_S=1800 \
               PORTHOLE_DOOM_RESIDENT=65536 PORTHOLE_DOOM_REPORT_PREFIX=chocolate-doom-interpreter-control \
               PORTHOLE_DOOM_ARTIFACT_PREFIX=chocolate-doom-interpreter-control \
@@ -265,6 +276,14 @@ jobs:
           if [ -f artifacts/chocolate-doom-jit-validate-report.txt ]; then
             python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-jit-validate-report.txt porthole-x64-tier-b-jit-write-watch-diagnostic
           fi
+      - name: Publish JIT tail-call-disabled Doom diagnostic through the Checks API
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f artifacts/chocolate-doom-no-tailcalls-report.txt ]; then
+            python3 scripts/ci-publish-trace.py artifacts/chocolate-doom-no-tailcalls-report.txt porthole-x64-tier-b-jit-no-tailcalls
+          fi
       - name: Publish current-core interpreter-only Doom control through the Checks API
         if: always()
         env:
@@ -287,6 +306,12 @@ jobs:
             artifacts/chocolate-doom-jit-validate-report.json
             artifacts/chocolate-doom-jit-validate-report.txt
             artifacts/chocolate-doom-jit-validate-run.log
+            artifacts/chocolate-doom-no-tailcalls-report.json
+            artifacts/chocolate-doom-no-tailcalls-report.txt
+            artifacts/chocolate-doom-no-tailcalls-run.log
+            artifacts/chocolate-doom-no-tailcalls-frame-first.ppm
+            artifacts/chocolate-doom-no-tailcalls-frame-mid.ppm
+            artifacts/chocolate-doom-no-tailcalls-frame-final.ppm
             artifacts/chocolate-doom-interpreter-control-report.json
             artifacts/chocolate-doom-interpreter-control-report.txt
             artifacts/chocolate-doom-interpreter-control-run.log
