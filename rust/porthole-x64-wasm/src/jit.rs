@@ -657,7 +657,14 @@ impl HybridWasmJit {
                     }
                 }
                 Mnemonic::Pop => {
-                    if let Some(d) = Self::gpr_index(ins.op0_register()) { ops.push(JitOp::Pop { dst: d, width: Self::reg_width(ins.op0_register()) }); } else { supported = false; }
+                    match Self::gpr_index(ins.op0_register()) {
+                        // The generic emitter writes the destination before incrementing RSP.
+                        // For POP RSP/SP that increments the popped value instead of applying
+                        // x86's increment-old-RSP-then-write-destination ordering.
+                        Some(4) => supported = false,
+                        Some(d) => ops.push(JitOp::Pop { dst: d, width: Self::reg_width(ins.op0_register()) }),
+                        None => supported = false,
+                    }
                 }
                 Mnemonic::Add | Mnemonic::Or | Mnemonic::And | Mnemonic::Sub | Mnemonic::Xor | Mnemonic::Cmp | Mnemonic::Test => {
                     let kind = Self::alu_kind(m).unwrap();
