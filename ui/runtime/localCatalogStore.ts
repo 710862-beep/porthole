@@ -1,7 +1,7 @@
 /*
  * Local App Store catalog service. Chocolatey contributes public feed metadata;
- * this service never downloads package archives, installers or executables.
- * Library membership is a browser-local bookmark, not an installation claim.
+ * explicit archive downloads are handled by the UI and written through the selected
+ * Porthole storage service. Library membership is a browser-local bookmark, not an installation claim.
  */
 
 import { DEFAULT_IN_LIBRARY_IDS, STORE_CATALOG } from "./catalog";

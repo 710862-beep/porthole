@@ -125,7 +125,7 @@ ui/
 | **Panel** | icon-only Porthole launcher · left-aligned pinned apps with running indicators (click = focus/minimize/restore) · overview · tray flyouts, clock and session menu |
 | **Launcher** | Kickoff layout, categories with counts, live search, workspace/session actions, keyboard navigation |
 | **Overview** | hot corner or Super, window cards, workspace rail with mini-map and add-workspace, window/app search |
-| **App Store** | 24 curated entries, public Chocolatey OData metadata refresh/cache, evidence details and browser-local library bookmarks; no package downloads |
+| **App Store** | 24 curated entries, public Chocolatey OData metadata refresh/cache, versioned `.nupkg` downloads into the selected `PortholePackages/` storage directory, and browser-local library bookmarks; package scripts/installers are not executed |
 | **Emulator** | user-local file import, launch profiles, ABI-v3 runtime, AOT/JIT hookup, core-reported guest frames, telemetry and runtime console; launch is disabled if Wasm is unavailable |
 | **Developer Console** | bounded stream of captured UI events, runtime state/logs, aggregate core SHIM/HLE counters and unimplemented-import diagnostics |
 | **System Monitor** | telemetry when the core is available, browser storage probes, browser capability probes and a copyable JSON report |
@@ -140,7 +140,7 @@ ui/
 - The runtime mode is visible in the desktop and emulator UI. If the ABI-v3 artifact is missing, the production runtime reports unavailable and guest launch stays disabled; no synthetic process or frame fallback is shown.
 - This browser app does not create native Windows processes. With the Wasm runtime available, user-imported PE32+ files execute only inside the guest; this is not a general Windows-compatibility claim.
 - Compatibility claims point at repository evidence; the UI invents none. The Doom timedemo remains unresolved in the current hybrid-JIT path.
-- Chocolatey refreshes package metadata only. “Add to library” stores a browser-local bookmark; no `.nupkg`, package scripts, installer or native executable is fetched or run by the store.
+- Chocolatey metadata refreshes are metadata-only; an explicit download action saves a versioned `.nupkg` archive under `PortholePackages/` in the selected storage root, outside the guest file tree. The Store does not extract archives, execute package scripts or run installers. “Add to library” remains a browser-local bookmark, separate from downloaded files.
 - Storage downgrades (File System Access → OPFS → memory) are reported, not hidden.
 - Keyboard and mouse-button delivery remain core limitations (KI-04); pointer coordinates may be injected, but the UI does not claim gameplay input is complete.
 

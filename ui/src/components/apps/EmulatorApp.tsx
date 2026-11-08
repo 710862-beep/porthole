@@ -202,7 +202,7 @@ export function EmulatorApp() {
         const names = missing.map((path) => path.split("\\").at(-1) ?? path);
         toast({
           title: "Import files before launching",
-          message: `Choose ${names.join(", ")} from your device. Files are copied into C:\\Game; the Store does not download them.`,
+          message: `Choose ${names.join(", ")} from your device. Files are copied into C:\\Game; package archives downloaded by the Store stay separate and are not installed.`,
           tone: "warning",
         });
         fileInputRef.current?.click();
@@ -484,7 +484,7 @@ export function EmulatorApp() {
                   </p>
                   <p className="mt-1 max-w-[46ch] text-[10.5px] leading-relaxed text-ink-faint">
                     {missingRequiredFiles.length > 0
-                      ? `Required in C:\\Game: ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")}. Select Import files; the Store does not download executables or game data.`
+                      ? `Required in C:\\Game: ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")}. Select Import files; the Store saves .nupkg archives separately and does not install guest executables or game data.`
                       : "The canvas draws only frames reported by the ABI-v3 core. No demo image or synthetic guest frame is substituted."}
                   </p>
                 </div>

@@ -41,6 +41,7 @@ export function useEmulator() {
         store.setMode(runtime.mode);
         store.setStatus("error");
         store.setError(message);
+        store.setStorage(storage.describeSelected());
         await reportError({
           title: "Runtime failed to initialize",
           body: "The desktop is running, but the emulator surface could not start.",

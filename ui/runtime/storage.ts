@@ -19,7 +19,9 @@ import type {
   StorageCapability,
   StorageProbe,
   StorageState,
+  StoredPackageArchive,
 } from "./types";
+import { PackageArchiveStorage } from "./packageArchiveStorage";
 
 const PREF_KEY = "porthole.ui.storage.v2";
 const PROBE_FILE = ".porthole-probe";
@@ -55,6 +57,7 @@ export class BrowserStorageService implements PortholeStorageService {
   private backend: StorageBackendId = "opfs";
   private directory: FileSystemDirectoryHandle | null = null;
   private detail = "";
+  private readonly packageArchives = new PackageArchiveStorage();
 
   constructor() {
     const preference = readPreference();
@@ -84,6 +87,16 @@ export class BrowserStorageService implements PortholeStorageService {
     return this.backend === "file-system-access" ? this.directory : null;
   }
 
+  async storePackageArchive(file: File): Promise<StoredPackageArchive> {
+    if (this.backend === "memory") return this.packageArchives.storeInMemory(file);
+    return this.packageArchives.storeInDirectory(await this.persistentRoot(), file);
+  }
+
+  async listStoredPackageArchives(): Promise<StoredPackageArchive[]> {
+    if (this.backend === "memory") return this.packageArchives.listInMemory();
+    return this.packageArchives.listInDirectory(await this.persistentRoot());
+  }
+
   describeSelected(): StorageState {
     return {
       backend: this.backend,
@@ -91,10 +104,10 @@ export class BrowserStorageService implements PortholeStorageService {
       detail:
         this.detail ||
         (this.backend === "file-system-access"
-          ? "Guest RAM overflow and VFS shards are written to the selected folder."
+          ? "Guest RAM overflow and VFS shards use the selected folder; Store archives are saved under PortholePackages/."
           : this.backend === "opfs"
-            ? "Guest RAM overflow and VFS shards are stored in this origin's OPFS."
-            : "Volatile: everything is lost when the tab closes."),
+            ? "Guest RAM overflow and VFS shards use this origin's OPFS; Store archives are saved under PortholePackages/."
+            : "Volatile: guest files and Store archives are lost when the tab closes."),
     };
   }
 
@@ -222,6 +235,18 @@ export class BrowserStorageService implements PortholeStorageService {
       probes.find((probe) => probe.backend === "file-system-access" && probe.available);
     if (preferred) preferred.recommended = true;
     return probes;
+  }
+
+  private async persistentRoot(): Promise<FileSystemDirectoryHandle> {
+    if (this.backend === "file-system-access") {
+      if (!this.directory) throw new Error("The selected external storage folder is not mounted.");
+      return this.directory;
+    }
+    const manager = typeof navigator !== "undefined" ? navigator.storage : undefined;
+    if (!manager || typeof manager.getDirectory !== "function") {
+      throw new Error("OPFS is unavailable in this browser context.");
+    }
+    return manager.getDirectory();
   }
 
   private async probeOpfs(): Promise<string> {

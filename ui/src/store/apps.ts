@@ -46,7 +46,7 @@ export const APPS: Record<AppId, AppDefinition> = {
     category: "games",
     icon: Store,
     tint: "#00e5ff",
-    description: "Catalog entries with Chocolatey metadata and browser-local library bookmarks; packages are never downloaded.",
+    description: "Browse Chocolatey metadata and download versioned package archives into selected Porthole storage.",
     keywords: ["store", "games", "library", "catalog", "shop"],
     pinned: true,
     singleton: true,

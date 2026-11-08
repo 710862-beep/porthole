@@ -24,7 +24,13 @@ import type {
   RuntimeLogLevel,
   StoreCategoryId,
   StoreGame,
+  StoredPackageArchive,
 } from "@runtime/types";
+import {
+  chocolateyPackageFileName,
+  downloadChocolateyPackage,
+  type ChocolateyPackageDownloadProgress,
+} from "@runtime/chocolateyMetadata";
 import { useRuntime } from "@/hooks/useRuntime";
 import { useWindowManager } from "@/hooks/useWindowManager";
 import { useLibraryStore } from "@/store/libraryStore";
@@ -38,7 +44,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { LogConsole } from "@/components/ui/LogConsole";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { GameGrid } from "./GameGrid";
-import { GameDetails } from "./GameDetails";
+import { GameDetails, type PackageDownloadStatus } from "./GameDetails";
 import { cn } from "@/lib/cn";
 
 type LibraryFilter = "all" | StoreCategoryId;
@@ -66,27 +72,63 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function packageArchivesFor(game: StoreGame, archives: StoredPackageArchive[]): StoredPackageArchive[] {
+  if (!game.chocolateyPackageId) return [];
+  const prefix = `chocolatey-${game.chocolateyPackageId.toLowerCase()}-`;
+  return archives.filter((archive) => {
+    const name = archive.name.toLowerCase();
+    return name.startsWith(prefix) && name.endsWith(".nupkg");
+  });
+}
+
+function currentPackagePath(game: StoreGame, archives: StoredPackageArchive[]): string | null {
+  if (!game.chocolateyPackageId) return null;
+  try {
+    const expectedName = chocolateyPackageFileName(
+      game.chocolateyPackageId,
+      game.chocolatey?.version ?? "latest",
+    ).toLowerCase();
+    return archives.find((archive) => archive.name.toLowerCase() === expectedName)?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * App Store window: curated catalog, Chocolatey metadata detail and runtime console.
- * Library membership is a browser-local bookmark, never an installation.
+ * App Store window: Chocolatey metadata and package downloads into
+ * the selected Porthole storage backend. Archives are not extracted and package scripts/installers
+ * are never run by the Store; the browser-local library remains separate.
  */
 export function GameStoreApp() {
-  const { store: gameStore } = useRuntime();
+  const { store: gameStore, storage } = useRuntime();
   const { openApp } = useWindowManager();
   const games = useLibraryStore((state) => state.games);
   const runtimeLogs = useEmulatorStore((state) => state.logs);
   const logsOpen = useEmulatorStore((state) => state.logsOpen);
+  const mountedStorageLabel = useEmulatorStore((state) => state.storage?.label ?? "");
+  const storageBackend = useEmulatorStore((state) => state.storage?.backend ?? storage.selected());
+  const storageLabel = mountedStorageLabel || storage.describeSelected().label;
 
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState<string>("chocolate-doom");
+  const [selectedId, setSelectedId] = useState<string>("7zip");
   const [localLogs, setLocalLogs] = useState<RuntimeLogEntry[]>([]);
   const [metadataBusy, setMetadataBusy] = useState(false);
   const [metadataResult, setMetadataResult] = useState<ChocolateyRefreshResult | null>(null);
+  const [storedPackages, setStoredPackages] = useState<StoredPackageArchive[]>([]);
+  const [storedPackagesLoading, setStoredPackagesLoading] = useState(false);
+  const [packageDownloadStatus, setPackageDownloadStatus] = useState<PackageDownloadStatus | null>(null);
 
   const logSequence = useRef(-1);
   const seeded = useRef(false);
   const metadataStarted = useRef(false);
+  const packageDownloadController = useRef<AbortController | null>(null);
 
   const appendLog = useCallback((level: RuntimeLogLevel, message: string): void => {
     const entry: RuntimeLogEntry = {
@@ -99,10 +141,33 @@ export function GameStoreApp() {
     setLocalLogs((previous) => [...previous, entry].slice(-80));
   }, []);
 
+  const refreshStoredPackages = useCallback(async (): Promise<StoredPackageArchive[] | null> => {
+    setStoredPackagesLoading(true);
+    try {
+      const archives = await storage.listStoredPackageArchives();
+      if (storage.selected() !== storageBackend) return null;
+      setStoredPackages(archives);
+      return archives;
+    } catch (error) {
+      appendLog("warn", `could not inspect Porthole package storage: ${errorMessage(error)}`);
+      return null;
+    } finally {
+      setStoredPackagesLoading(false);
+    }
+  }, [appendLog, storage, storageBackend]);
+
+  useEffect(() => {
+    void refreshStoredPackages();
+  }, [refreshStoredPackages]);
+
+  useEffect(() => () => {
+    packageDownloadController.current?.abort();
+  }, []);
+
   const refreshMetadata = useCallback(async (): Promise<void> => {
     if (metadataBusy) return;
     setMetadataBusy(true);
-    appendLog("info", "Refreshing package metadata from Chocolatey's public OData feed (metadata only)");
+    appendLog("info", "Refreshing Chocolatey package metadata; package bytes are fetched only after an explicit download action");
     try {
       const result = await gameStore.refreshChocolateyMetadata();
       setMetadataResult(result);
@@ -131,8 +196,8 @@ export function GameStoreApp() {
   useEffect(() => {
     if (seeded.current) return;
     seeded.current = true;
-    appendLog("info", "App Store ready · catalog bookmarks are local to this browser profile");
-    appendLog("info", "Chocolatey queries are metadata-only; no package bytes are fetched or executed");
+    appendLog("info", "App Store ready · package archives can be saved into selected Porthole storage");
+    appendLog("info", "Only explicit .nupkg downloads fetch package bytes; package scripts and installers are not run");
   }, [appendLog]);
 
   useEffect(() => {
@@ -180,15 +245,35 @@ export function GameStoreApp() {
   );
 
   const inLibraryCount = games.filter((game) => game.status === "in-library").length;
+  const selectedDownloadedPackagePaths = selected
+    ? packageArchivesFor(selected, storedPackages).map((archive) => `${storageLabel}/${archive.path}`)
+    : [];
+  const selectedCurrentPackagePath = selected ? currentPackagePath(selected, storedPackages) : null;
+  const downloadedPackageIds = useMemo(
+    () => new Set(games.filter((game) => packageArchivesFor(game, storedPackages).length > 0).map((game) => game.appId)),
+    [games, storedPackages],
+  );
+  const packageDownloadDisabledReason = !selected?.chocolateyPackageId
+    ? null
+    : storedPackagesLoading
+      ? "Checking stored package archives…"
+      : packageDownloadStatus && packageDownloadStatus.appId !== selected.appId
+        ? `Another download is in progress: ${packageDownloadStatus.title}.`
+        : null;
+  const packageDownloadEnabled = Boolean(
+    selected?.chocolateyPackageId &&
+    !storedPackagesLoading &&
+    (!packageDownloadStatus || packageDownloadStatus.appId === selected.appId),
+  );
 
   const handleAddToLibrary = useCallback(
     async (game: StoreGame): Promise<void> => {
       try {
         await gameStore.addToLibrary(game.appId);
-        appendLog("info", `added ${game.appId} to this browser's library · no package bytes fetched`);
+        appendLog("info", `added ${game.appId} to this browser's library`);
         toast({
           title: "Added to library",
-          message: `${game.title} is a catalog bookmark. It is not a downloaded or installed binary.`,
+          message: `${game.title} is saved to this browser profile. Download its Chocolatey package separately if available.`,
           tone: "success",
         });
       } catch (error) {
@@ -224,6 +309,91 @@ export function GameStoreApp() {
     },
     [appendLog, gameStore],
   );
+
+  const handleDownloadPackage = useCallback(
+    async (game: StoreGame): Promise<void> => {
+      const packageId = game.chocolateyPackageId;
+      const version = game.chocolatey?.version ?? null;
+      if (!packageId) {
+        toast({
+          title: "No Chocolatey package",
+          message: "This catalog entry does not have a Chocolatey package ID.",
+          tone: "warning",
+        });
+        return;
+      }
+      const displayVersion = version ?? "latest";
+      if (packageDownloadController.current) return;
+
+      const controller = new AbortController();
+      packageDownloadController.current = controller;
+      setPackageDownloadStatus({
+        appId: game.appId,
+        title: game.title,
+        phase: "downloading",
+        receivedBytes: 0,
+        totalBytes: null,
+      });
+      appendLog("info", `starting ${packageId}@${displayVersion} .nupkg download from Chocolatey`);
+      try {
+        const onProgress = (progress: ChocolateyPackageDownloadProgress): void => {
+          setPackageDownloadStatus({
+            appId: game.appId,
+            title: game.title,
+            phase: "downloading",
+            receivedBytes: progress.receivedBytes,
+            totalBytes: progress.totalBytes,
+          });
+        };
+        const { file, url } = await downloadChocolateyPackage(packageId, version, controller.signal, onProgress);
+        if (controller.signal.aborted) throw new DOMException("Package download cancelled.", "AbortError");
+        setPackageDownloadStatus({
+          appId: game.appId,
+          title: game.title,
+          phase: "saving",
+          receivedBytes: file.size,
+          totalBytes: file.size,
+        });
+        appendLog("info", `${file.name} downloaded (${formatBytes(file.size)}); saving to Porthole package storage`);
+        const archive = await storage.storePackageArchive(file);
+        const refreshedArchives = await refreshStoredPackages();
+        if (!refreshedArchives) {
+          setStoredPackages((previous) => [archive, ...previous.filter((item) => item.name !== archive.name)]);
+        }
+        const storageKind = storage.selected();
+        appendLog("info", `saved ${file.name} to ${archive.path} · source ${url}`);
+        toast({
+          title: "Package saved to Porthole storage",
+          message: `${file.name} (${formatBytes(file.size)}) → ${storageLabel ? `${storageLabel}/` : ""}${archive.path}${storageKind === "memory" ? " (temporary; lost when the tab closes)" : ""}`,
+          tone: "success",
+          duration: 6500,
+        });
+      } catch (error) {
+        if (controller.signal.aborted) {
+          appendLog("info", `cancelled package download ${packageId}@${displayVersion}`);
+          toast({ title: "Package download cancelled", tone: "info" });
+        } else {
+          const message = errorMessage(error);
+          appendLog("error", `package download failed for ${packageId}@${displayVersion}: ${message}`);
+          await reportError({
+            title: "Package download failed",
+            body: "The Chocolatey archive was not saved to Porthole storage. Check the network/CORS response and selected storage backend, then retry.",
+            details: message,
+          });
+        }
+      } finally {
+        if (packageDownloadController.current === controller) {
+          packageDownloadController.current = null;
+          setPackageDownloadStatus(null);
+        }
+      }
+    },
+    [appendLog, refreshStoredPackages, storage, storageLabel],
+  );
+
+  const handleCancelPackageDownload = useCallback((): void => {
+    packageDownloadController.current?.abort();
+  }, []);
 
   const handleOpenEmulator = useCallback(
     (game: StoreGame): void => {
@@ -273,7 +443,7 @@ export function GameStoreApp() {
             </Badge>
           </div>
           <p className="truncate text-[10px] text-ink-faint">
-            {games.length} categorized apps · Chocolatey metadata only, no package downloads.
+            {games.length} categorized apps · download Chocolatey package archives into Porthole storage.
           </p>
         </div>
 
@@ -284,7 +454,7 @@ export function GameStoreApp() {
             icon={RefreshCw}
             loading={metadataBusy}
             aria-label="Refresh Chocolatey metadata"
-            title={metadataResult?.error ?? "Fetch package IDs, versions and descriptions only; no .nupkg or installer downloads"}
+            title={metadataResult?.error ?? "Refresh package IDs, versions and descriptions; downloads happen only when you choose a package"}
             onClick={() => { void refreshMetadata(); }}
           >
             Metadata
@@ -298,8 +468,8 @@ export function GameStoreApp() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search library…"
-              aria-label="Search library"
+              placeholder="Search apps…"
+              aria-label="Search apps"
               className="h-8 w-[188px] rounded-control border border-white/[0.08] bg-black/30 pl-8 pr-7 text-[11.5px] text-ink placeholder:text-ink-ghost focus:border-accent/40 focus:outline-none focus:ring-1 focus:ring-accent/20"
             />
             {query && (
@@ -365,14 +535,14 @@ export function GameStoreApp() {
         })}
         <span className="ml-auto flex items-center gap-1.5 pr-1 text-[9.5px] text-ink-ghost">
           <ShieldCheck size={10} aria-hidden className="text-accent/70" />
-          Chocolatey OData fields only · no .nupkg / .exe
+          Explicit .nupkg downloads · no install scripts run
         </span>
       </div>
 
       <div className="flex min-h-0 flex-1">
         <section
           className="min-w-0 flex-1 overflow-y-auto p-4"
-          aria-label="Game library"
+          aria-label="Store catalog"
         >
           {games.length === 0 ? (
             <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(178px, 1fr))" }}>
@@ -384,7 +554,7 @@ export function GameStoreApp() {
             <EmptyState
               icon={FileQuestion}
               title="Nothing in this shelf"
-              body={`No library entries match ${query ? `“${query}”` : "this filter"}.`}
+              body={`No apps match ${query ? `“${query}”` : "this filter"}.`}
               action={
                 <Button
                   size="sm"
@@ -403,14 +573,15 @@ export function GameStoreApp() {
             <GameGrid
               games={filtered}
               selectedId={selected?.appId ?? null}
+              downloadedPackageIds={downloadedPackageIds}
               onSelect={setSelectedId}
             />
           )}
 
           <p className="mt-4 flex items-center gap-1.5 text-[9.5px] leading-relaxed text-ink-ghost">
             <ShieldCheck size={10} aria-hidden />
-            Metadata is sourced from Chocolatey's public feed; library membership never
-            downloads or executes packages.
+            Chocolatey metadata is refreshed from its public feed. Explicit downloads save the versioned .nupkg
+            archive to selected Porthole storage; package scripts and installers are not executed.
           </p>
         </section>
 
@@ -418,7 +589,15 @@ export function GameStoreApp() {
           <GameDetails
             game={selected}
             logsOpen={logsOpen}
+            storageLabel={storageLabel}
+            currentPackagePath={selectedCurrentPackagePath}
+            downloadedPackagePaths={selectedDownloadedPackagePaths}
+            packageDownloadEnabled={packageDownloadEnabled}
+            packageDownloadDisabledReason={packageDownloadDisabledReason}
+            packageDownloadStatus={packageDownloadStatus}
             onAdd={() => { void handleAddToLibrary(selected); }}
+            onDownloadPackage={() => { void handleDownloadPackage(selected); }}
+            onCancelDownload={handleCancelPackageDownload}
             onLaunch={() => handleOpenEmulator(selected)}
             onRemove={() => { void handleRemoveFromLibrary(selected); }}
             onToggleLogs={toggleLogs}

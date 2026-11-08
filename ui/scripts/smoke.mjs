@@ -4,7 +4,7 @@
  *   npm run smoke
  *
  * Mounts the real App inside jsdom through Vite's module graph, walks boot →
- * setup → desktop, then drives the window manager, metadata-only catalog,
+ * setup → desktop, then drives the window manager, catalog/download UI,
  * Developer Console, settings, overview, hot corner, dialogs and the browser-only
  * production-runtime boundary. Canvas 2D is stubbed because jsdom cannot rasterise.
  */

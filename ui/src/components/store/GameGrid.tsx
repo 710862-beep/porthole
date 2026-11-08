@@ -1,4 +1,4 @@
-import { BookmarkCheck, BookmarkPlus } from "lucide-react";
+import { BookmarkCheck, BookmarkPlus, HardDrive } from "lucide-react";
 import type { StoreGame } from "@runtime/types";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
@@ -7,17 +7,19 @@ import { coverStyle } from "./cover";
 interface GameGridProps {
   games: StoreGame[];
   selectedId: string | null;
+  downloadedPackageIds: ReadonlySet<string>;
   onSelect: (appId: string) => void;
 }
 
 /** Catalog card grid; membership badges never imply that a binary is installed. */
-export function GameGrid({ games, selectedId, onSelect }: GameGridProps) {
+export function GameGrid({ games, selectedId, downloadedPackageIds, onSelect }: GameGridProps) {
   return (
     <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(178px, 1fr))" }}>
       {games.map((game) => {
         const cover = coverStyle(game.appId);
         const Icon = cover.icon;
         const inLibrary = game.status === "in-library";
+        const downloaded = downloadedPackageIds.has(game.appId);
         const selected = selectedId === game.appId;
 
         return (
@@ -60,12 +62,18 @@ export function GameGrid({ games, selectedId, onSelect }: GameGridProps) {
               </div>
             </div>
             <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-              <span className="flex items-center gap-1.5 text-[9.5px] text-ink-faint">
-                {inLibrary ? <BookmarkCheck size={10} className="text-success" aria-hidden /> : <BookmarkPlus size={10} aria-hidden />}
-                {inLibrary ? "in library" : "not in library"}
+              <span className="flex min-w-0 items-center gap-1.5 text-[9.5px] text-ink-faint">
+                {downloaded ? (
+                  <HardDrive size={10} className="flex-none text-success" aria-hidden />
+                ) : inLibrary ? (
+                  <BookmarkCheck size={10} className="flex-none text-success" aria-hidden />
+                ) : (
+                  <BookmarkPlus size={10} className="flex-none" aria-hidden />
+                )}
+                <span className="truncate">{downloaded ? "package saved" : inLibrary ? "in library" : "not in library"}</span>
               </span>
               <span className="font-mono text-[9px] text-ink-ghost">
-                {game.chocolateyPackageId ? "feed metadata" : game.exePath ? "local files" : "runtime record"}
+                {game.chocolateyPackageId ? downloaded ? "package saved" : "download" : game.exePath ? "local files" : "runtime record"}
               </span>
             </div>
           </button>

@@ -106,7 +106,7 @@ export type MouseButton = 0 | 1 | 2;
 
 export interface EmulatorRuntime {
   loadExecutable(path: string, argumentsLine?: string): Promise<ProcessHandle>;
-  /** Imports user-selected files into the mounted C:\\Game folder; it never fetches packages. */
+  /** Imports user-selected files into the mounted C:\\Game folder. */
   importFiles?(files: readonly File[]): Promise<string[]>;
   launch(handle: ProcessHandle): Promise<void>;
   pause(handle: ProcessHandle): Promise<void>;

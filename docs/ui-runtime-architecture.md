@@ -41,7 +41,7 @@ The desktop is a web application. It cannot create native host Windows processes
 
 ### Storage and user imports
 
-The runtime supports OPFS, a user-selected File System Access directory, and volatile memory. Guest binaries/data must already be present in the selected local `C:\\Game` folder or explicitly imported by the user. Imports are filename-sanitized and capped at 256 MiB per operation. The App Store and Chocolatey client never supply executable or package payloads. A local IWAD `DEMO1` lump may be exposed as `C:\\Game\\demo1.lmp` for the existing `-timedemo demo1` argument; no Doom assets are fetched by this UI.
+The runtime supports OPFS, a user-selected File System Access directory, and volatile memory. Guest binaries/data must already be present in the selected local `C:\\Game` folder or explicitly imported by the user. Imports are filename-sanitized and capped at 256 MiB per operation. An explicit App Store action saves a versioned Chocolatey `.nupkg` archive under `PortholePackages/` at the selected storage root, outside `C:\\Game`; this works independently of the Wasm guest runtime. The Store does not extract it or run package scripts/installers. A local IWAD `DEMO1` lump may be exposed as `C:\\Game\\demo1.lmp` for the existing `-timedemo demo1` argument; no Doom assets are fetched by this UI.
 
 ### Runtime limitations
 
@@ -51,11 +51,11 @@ The runtime supports OPFS, a user-selected File System Access directory, and vol
 - The ABI-v3 binary is a CI artifact. If it is absent, the runtime is unavailable; this UI does not build Rust or fetch the artifact locally.
 - The unmodified Chocolate Doom timedemo remains under investigation. The historical interpreter-only pass is not evidence that the current hybrid-JIT path succeeds; see `docs/x64-emulator-status.md` and the Doom CI telemetry.
 
-## 2. Chocolatey catalog — metadata only
+## 2. Chocolatey catalog and downloads
 
 `runtime/catalog.ts` contains 24 curated entries. Chocolatey's public NuGet/OData `Packages()` feed supplies metadata for the known package IDs (version, title, summary/description, project link, tags, publish date and download count). The catalog is not a full live Chocolatey search index. `runtime/chocolateyMetadata.ts` filters the feed request by those IDs, caches metadata in local storage for 12 hours, times out after seven seconds, and can show cached metadata if the feed fails.
 
-The App Store refreshes metadata when opened and provides a manual refresh control. “Add to library” stores a browser-local bookmark only. No `.nupkg`, native `.exe`, installer link, package scripts or package contents are requested or executed by the store path. User-imported files are separate from Chocolatey and can be passed to the guest runtime manually.
+A user-triggered download fetches that version's `.nupkg` from Chocolatey's package endpoint, checks the size cap and ZIP signature, then writes the archive under `PortholePackages/` at the selected storage root. Downloads work independently of the Wasm guest runtime; the UI reports progress, supports cancellation, and rescans storage so saved packages remain visible after reload when storage is persistent. It never extracts packages or runs PowerShell scripts/installers. The archive is downloaded content, not an installed-app or compatibility claim. “Add to library” remains a separate browser-local bookmark; native executables and game assets are not fetched by this flow.
 
 ## 3. In-OS developer console
 

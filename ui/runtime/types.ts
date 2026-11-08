@@ -47,6 +47,15 @@ export interface RuntimeTelemetry {
   inputEvents: number;
 }
 
+/** A downloaded Store archive stored separately from the guest C:\\Game file tree. */
+export interface StoredPackageArchive {
+  name: string;
+  /** Path relative to the selected Porthole storage root. */
+  path: string;
+  sizeBytes: number;
+  lastModified: number;
+}
+
 export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface RuntimeLogEntry {
@@ -109,6 +118,8 @@ export interface PortholeStorageService extends StorageSelector {
   detectProbes(): Promise<StorageProbe[]>;
   requestNvme(): Promise<NvmeSelection>;
   getDirectoryHandle(): FileSystemDirectoryHandle | null;
+  storePackageArchive(file: File): Promise<StoredPackageArchive>;
+  listStoredPackageArchives(): Promise<StoredPackageArchive[]>;
   describeSelected(): StorageState;
   setSelected(backend: StorageBackendId, detail?: string): StorageState;
   clearSelection(): void;

@@ -1,9 +1,10 @@
 import type { StoreGame } from "./types";
 
 /*
- * Twenty-four curated catalog entries. Chocolatey contributes public-feed
- * metadata for the listed package IDs; it does not supply package bytes to this
- * UI. Library membership is a local bookmark, never an installation receipt.
+ * Twenty-four curated catalog entries. Chocolatey contributes public-feed metadata
+ * and explicit, versioned .nupkg downloads saved under PortholePackages in the selected storage root, outside the guest file tree. The
+ * Store does not extract package archives or run package scripts/installers. Library
+ * membership remains a browser-local bookmark, separate from downloaded files.
  */
 export const STORE_CATALOG: readonly StoreGame[] = [
   {
@@ -59,7 +60,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
       "The 7za console workload used to exercise PE loading and Win32 file HLE. Chocolatey metadata is shown separately from the pinned CI binary receipt.",
     evidence:
       "Gate 1 Tier A PASS in CI: real .7z create + extract round-trip, byte-identical.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. The pinned CI fixture is a separate artifact; user-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata and explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not run package scripts/installers; the pinned CI fixture is separate, and downloading an archive is not an installed-app claim.",
   },
   {
     appId: "porthole-engine",
@@ -107,7 +108,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Text editor",
     summary: "A lightweight source-code and text editor. Version and project metadata are queried from Chocolatey's public feed.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "vscode",
@@ -121,7 +122,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Code editor",
     summary: "A cross-platform source editor with extensions and debugging tools. Package details come from Chocolatey metadata only.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "git",
@@ -135,7 +136,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Developer tools",
     summary: "Distributed version control and command-line tools for Windows. Chocolatey supplies package metadata, not package bytes.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "python3",
@@ -149,7 +150,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Programming language",
     summary: "Python interpreter package listing with version, summary and project link refreshed from Chocolatey's public repository.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "nodejs-lts",
@@ -163,7 +164,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "JavaScript runtime",
     summary: "Long-term-support Node.js package listing. Package versions and descriptions are fetched as metadata only.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "firefox",
@@ -177,7 +178,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Web browser",
     summary: "Firefox package listing with Chocolatey version, summary and upstream project URL when available.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "googlechrome",
@@ -191,7 +192,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Web browser",
     summary: "Chrome package-index record. Version and descriptive metadata are refreshed from Chocolatey's OData feed.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "vlc",
@@ -205,7 +206,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Media player",
     summary: "VLC package listing for audio and video playback. Chocolatey metadata is distinct from package content.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "audacity",
@@ -219,7 +220,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Audio editor",
     summary: "Audio recording and editing package listing, with upstream metadata refreshed from Chocolatey.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "obs-studio",
@@ -233,7 +234,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Streaming and capture",
     summary: "OBS Studio package listing for recording and live streaming. Only public feed metadata is requested.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "gimp",
@@ -247,7 +248,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Image editor",
     summary: "GIMP package listing with Chocolatey version, project URL and descriptive metadata.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "inkscape",
@@ -261,7 +262,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Vector graphics",
     summary: "Vector graphics editor package metadata sourced from the Chocolatey Community Repository.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "blender",
@@ -275,7 +276,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "3D creation",
     summary: "Blender package listing for 3D modelling and rendering. Chocolatey fields are fetched separately from binaries.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "libreoffice-still",
@@ -289,7 +290,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Office suite",
     summary: "LibreOffice Still package metadata, including current feed version and upstream project details when published.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "putty",
@@ -303,7 +304,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Remote access",
     summary: "SSH and terminal client package listing. Version and public project metadata are retrieved from Chocolatey's feed.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "winscp",
@@ -317,7 +318,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "File transfer",
     summary: "WinSCP package listing with version and project metadata from the Chocolatey Community Repository.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "filezilla",
@@ -331,7 +332,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "File transfer",
     summary: "FileZilla package metadata for the FTP/SFTP client. No binary package is included in the catalog.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "sumatrapdf",
@@ -345,7 +346,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "PDF reader",
     summary: "Lightweight document reader package metadata from Chocolatey's public repository.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
   {
     appId: "discord",
@@ -359,7 +360,7 @@ export const STORE_CATALOG: readonly StoreGame[] = [
     sizeMb: 0,
     genre: "Communication",
     summary: "Discord package listing with version and description from Chocolatey's public feed; package content remains untouched.",
-    provenance: "Chocolatey public-feed metadata only. No .nupkg, package script, installer or native executable is fetched or executed. User-imported files are separate and can only be passed to the Wasm runtime manually.",
+    provenance: "Chocolatey public-feed metadata plus explicit, versioned .nupkg downloads under PortholePackages in the selected storage root, outside the guest file tree. The Store does not extract packages or run install scripts/installers; an archive download is not an installed-app claim.",
   },
 ];
 

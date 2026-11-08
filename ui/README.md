@@ -1,6 +1,6 @@
 # Porthole desktop UI
 
-The `ui/` project is a React 19 + Vite browser desktop with a dark Linux-desktop visual language. It includes a launcher, taskbar, workspaces, resizable windows, settings, a curated metadata-only App Store, a browser-based x86-64 emulator surface, System Monitor, and an in-OS Developer Console. It is Porthole, not a CachyOS distribution or installation image, and it does not ship a mock browser or simulated production guest runtime.
+The `ui/` project is a React 19 + Vite browser desktop with a dark Linux-desktop visual language. It includes a launcher, taskbar, workspaces, resizable windows, settings, a curated App Store with explicit Chocolatey package downloads into Porthole storage, a browser-based x86-64 emulator surface, System Monitor, and an in-OS Developer Console. It is Porthole, not a CachyOS distribution or installation image, and it does not ship a mock browser or simulated production guest runtime.
 
 ## Run and verify
 
@@ -27,7 +27,7 @@ Porthole runs in the browser; it cannot create native host Windows processes. Wh
 
 ## Catalog safety
 
-The App Store contains 24 curated entries, not a full live Chocolatey search index. Chocolatey Community Repository integration requests public OData package metadata only (version, summary/description, tags, project link and related fields), with a 12-hour local cache. No `.nupkg`, installer, native executable, package scripts or package contents are downloaded or executed. “Add to library” saves a browser-local bookmark; it is not an installation. User-imported files are separate from the Chocolatey feed.
+The App Store contains 24 curated entries, not a full live Chocolatey search index. Chocolatey Community Repository integration refreshes public OData metadata (version, summary/description, tags, project link and related fields) with a 12-hour local cache. A user-triggered action downloads the selected versioned `.nupkg` archive and saves it under `PortholePackages/` in the selected storage root (OPFS, a user-selected directory, or volatile memory), separate from the guest `C:\\Game` tree. Transfers are size-limited and progress/cancellation are shown. The Store does not extract archives, execute package scripts, run installers, or claim an archive is an installed app. “Add to library” remains a separate browser-local bookmark; local game files are not fetched from Chocolatey.
 
 ## Diagnostics
 

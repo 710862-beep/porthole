@@ -3,12 +3,15 @@ import {
   BookmarkCheck,
   BookmarkPlus,
   Copy,
+  Download,
   ExternalLink,
+  HardDrive,
   Info,
   Play,
   ScrollText,
   ShieldCheck,
   Trash2,
+  X,
 } from "lucide-react";
 import type { StoreGame } from "@runtime/types";
 import { AppIcon } from "@/components/ui/AppIcon";
@@ -20,10 +23,26 @@ import { toast } from "@/store/uiStore";
 import { cn } from "@/lib/cn";
 import { coverStyle } from "./cover";
 
+export interface PackageDownloadStatus {
+  appId: string;
+  title: string;
+  phase: "downloading" | "saving";
+  receivedBytes: number;
+  totalBytes: number | null;
+}
+
 interface GameDetailsProps {
   game: StoreGame;
   logsOpen: boolean;
+  storageLabel: string;
+  currentPackagePath: string | null;
+  downloadedPackagePaths: string[];
+  packageDownloadEnabled: boolean;
+  packageDownloadDisabledReason: string | null;
+  packageDownloadStatus: PackageDownloadStatus | null;
   onAdd: () => void;
+  onDownloadPackage: () => void;
+  onCancelDownload: () => void;
   onLaunch: () => void;
   onRemove: () => void;
   onToggleLogs: () => void;
@@ -38,11 +57,25 @@ function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** Right-hand detail pane: feed metadata, evidence and local-library actions. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Right-hand detail pane: Chocolatey downloads, metadata, evidence and library actions. */
 export function GameDetails({
   game,
   logsOpen,
+  storageLabel,
+  currentPackagePath,
+  downloadedPackagePaths,
+  packageDownloadEnabled,
+  packageDownloadDisabledReason,
+  packageDownloadStatus,
   onAdd,
+  onDownloadPackage,
+  onCancelDownload,
   onLaunch,
   onRemove,
   onToggleLogs,
@@ -151,7 +184,7 @@ export function GameDetails({
           <section className="mt-3 rounded-[9px] border border-violet/15 bg-violet/[0.045] p-3" aria-label="Chocolatey public package metadata">
             <div className="flex items-center justify-between gap-2">
               <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-violet">Chocolatey metadata</p>
-              <span className="text-[9px] text-ink-ghost">metadata only</span>
+              <span className="text-[9px] text-ink-ghost">package ID · version · description</span>
             </div>
             {(game.chocolatey.summary || game.chocolatey.description) && (
               <p className="mt-2 line-clamp-4 text-[10px] leading-relaxed text-ink-muted">
@@ -178,6 +211,28 @@ export function GameDetails({
           </section>
         )}
 
+        {game.chocolateyPackageId && (
+          <section className="mt-3 rounded-[9px] border border-white/[0.07] bg-black/20 p-3" aria-label="Package download destination">
+            <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-muted">
+              <HardDrive size={11} aria-hidden />
+              Porthole storage
+            </p>
+            <p className="mt-1.5 text-[10px] leading-relaxed text-ink-faint">
+              Chocolatey .nupkg archives are saved under PortholePackages/ in {storageLabel || "selected storage"}, outside the guest C:\\Game files. Package scripts and installers are not run.
+            </p>
+            {currentPackagePath && (
+              <p className="mt-2 break-all font-mono text-[9px] text-success" title={currentPackagePath}>
+                Latest version saved: {currentPackagePath}
+              </p>
+            )}
+            {!currentPackagePath && downloadedPackagePaths.length > 0 && (
+              <p className="mt-2 break-all font-mono text-[9px] text-ink-muted">
+                Saved archive: {downloadedPackagePaths[0]}
+              </p>
+            )}
+          </section>
+        )}
+
         <div className="mt-3 rounded-[9px] border border-accent/15 bg-accent/[0.05] p-3">
           <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
             <ShieldCheck size={12} aria-hidden />
@@ -195,47 +250,109 @@ export function GameDetails({
       </div>
 
       <footer className="flex-none border-t border-white/[0.07] bg-black/20 p-3">
-        {inLibrary ? (
-          <div className="flex flex-col gap-2">
-            <Button
-              variant="primary"
-              size="md"
-              fullWidth
-              icon={Play}
-              onClick={onLaunch}
-              title="Select this Emulator profile; missing guest files will be requested before launch."
-            >
-              {game.appId === "freedoom"
-                ? "Import game data"
-                : /\.exe$/i.test(game.exePath)
-                  ? "Prepare to launch"
-                  : "Open Emulator"}
-            </Button>
-            <div className="flex gap-2">
-              <Button variant="danger" size="sm" icon={Trash2} onClick={onRemove} className="flex-1">
-                Remove from library
+        <div className="flex flex-col gap-2">
+          {game.chocolateyPackageId && (
+            <div className="flex flex-col gap-1.5">
+              <Button
+                variant="primary"
+                size="md"
+                fullWidth
+                icon={Download}
+                loading={packageDownloadStatus?.appId === game.appId}
+                disabled={!packageDownloadEnabled || Boolean(packageDownloadStatus && packageDownloadStatus.appId !== game.appId)}
+                onClick={onDownloadPackage}
+                title={packageDownloadDisabledReason ?? "Download the Chocolatey .nupkg into PortholePackages on the selected storage backend. Package scripts and installers are not run."}
+              >
+                {packageDownloadStatus?.appId === game.appId
+                  ? packageDownloadStatus.phase === "saving" ? "Saving to Porthole storage…" : "Downloading package…"
+                  : currentPackagePath ? "Download latest again" : "Download package to storage"}
               </Button>
-              <Button variant="ghost" size="sm" icon={ScrollText} onClick={onToggleLogs} aria-pressed={logsOpen} className="flex-1">
+              {packageDownloadStatus && (
+                <div className="rounded-[7px] border border-white/[0.06] bg-black/20 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-[9.5px] text-ink-faint">
+                      {packageDownloadStatus.phase === "saving"
+                        ? "Writing archive to Porthole storage"
+                        : `Downloading ${packageDownloadStatus.title}`}
+                    </span>
+                    <div className="flex flex-none items-center gap-2">
+                      <span className="font-mono text-[9px] text-ink-ghost">
+                        {formatBytes(packageDownloadStatus.receivedBytes)}
+                        {packageDownloadStatus.totalBytes !== null ? ` / ${formatBytes(packageDownloadStatus.totalBytes)}` : ""}
+                      </span>
+                      {packageDownloadStatus.phase === "downloading" && (
+                        <Button variant="ghost" size="xs" icon={X} aria-label="Cancel package download" onClick={onCancelDownload} />
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.08]">
+                    <div
+                      className="h-full rounded-full bg-accent transition-[width]"
+                      style={{
+                        width: packageDownloadStatus.phase === "saving"
+                          ? "100%"
+                          : packageDownloadStatus.totalBytes
+                            ? `${Math.min(100, (packageDownloadStatus.receivedBytes / packageDownloadStatus.totalBytes) * 100)}%`
+                            : "35%",
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {packageDownloadDisabledReason && !packageDownloadStatus && (
+                <p className="text-[9px] leading-relaxed text-ink-ghost">{packageDownloadDisabledReason}</p>
+              )}
+            </div>
+          )}
+
+          {inLibrary ? (
+            <>
+              <Button
+                variant={game.chocolateyPackageId ? "secondary" : "primary"}
+                size="md"
+                fullWidth
+                icon={Play}
+                onClick={onLaunch}
+                title="Select this Emulator profile. Missing executable/data files will be identified before launch."
+              >
+                {game.appId === "freedoom"
+                  ? "Open game data profile"
+                  : /\.exe$/i.test(game.exePath)
+                    ? "Open Emulator profile"
+                    : "Open Emulator"}
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="danger" size="sm" icon={Trash2} onClick={onRemove} className="flex-1">
+                  Remove from library
+                </Button>
+                <Button variant="ghost" size="sm" icon={ScrollText} onClick={onToggleLogs} aria-pressed={logsOpen} className="flex-1">
+                  Console
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button
+                variant={game.chocolateyPackageId ? "secondary" : "primary"}
+                size="sm"
+                icon={BookmarkPlus}
+                onClick={onAdd}
+                className="flex-1"
+              >
+                Add to library
+              </Button>
+              <Button variant="ghost" size="sm" icon={ScrollText} onClick={onToggleLogs}>
                 Console
               </Button>
             </div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <Button variant="primary" size="md" fullWidth icon={BookmarkPlus} onClick={onAdd}>
-              Add to library
-            </Button>
-            <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[9.5px] text-ink-ghost">
-                <BookmarkCheck size={10} aria-hidden />
-                Catalog membership only · no package download
-              </span>
-              <Button variant="ghost" size="xs" icon={ScrollText} onClick={onToggleLogs}>
-                Console
-              </Button>
-            </div>
-          </div>
-        )}
+          )}
+          {!inLibrary && (
+            <span className="flex items-center gap-1.5 text-[9px] text-ink-ghost">
+              <BookmarkCheck size={10} aria-hidden />
+              Library membership is separate from package downloads.
+            </span>
+          )}
+        </div>
       </footer>
     </aside>
   );
