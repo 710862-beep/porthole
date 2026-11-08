@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const PAGE_SIZE: usize = 4096;
+pub const JIT_SHADOW_PAGE_CAP: usize = 4096;
 pub const PAGE_MASK: u64 = 0xFFF;
 pub const PAGE_SHIFT: u32 = 12;
 
@@ -72,6 +73,17 @@ pub struct WatchEvent {
     pub host: bool,
 }
 
+/// Before/after page images captured while the interpreter shadow-replays a JIT block.
+///
+/// The native JIT store log is rolled back before replay, so these images let the validator
+/// compare the native transaction with the interpreter's final bytes and restore shadow writes
+/// if the block is rejected.
+#[derive(Clone)]
+pub struct ShadowWritePage {
+    pub before: Box<[u8; PAGE_SIZE]>,
+    pub after: Box<[u8; PAGE_SIZE]>,
+}
+
 /// Phase 2: NVMe-backed VirtualMemoryManager.
 ///
 /// Manages a 64-bit sparse virtual address space (supporting 16 GB–64 GB+ guest VA ranges)
@@ -100,6 +112,8 @@ pub struct VirtualMemoryManager {
     /// MEM_WRITE_WATCH allocations and the page-granular dirty set returned by GetWriteWatch.
     ww_regions: Vec<(u64, u64)>,
     ww_hits: BTreeSet<u64>,
+    /// Active only while the JIT validator replays a native block in the interpreter.
+    shadow_write_pages: Option<HashMap<u64, ShadowWritePage>>,
 }
 
 impl VirtualMemoryManager {
@@ -125,7 +139,18 @@ impl VirtualMemoryManager {
             watch_log: Vec::new(),
             ww_regions: Vec::new(),
             ww_hits: BTreeSet::new(),
+            shadow_write_pages: None,
         }
+    }
+
+    /// Arms page before/after capture for interpreter writes during JIT validation.
+    pub fn begin_shadow_write_capture(&mut self) {
+        self.shadow_write_pages = Some(HashMap::new());
+    }
+
+    /// Ends the current JIT shadow-write capture and returns its touched pages.
+    pub fn take_shadow_write_capture(&mut self) -> HashMap<u64, ShadowWritePage> {
+        self.shadow_write_pages.take().unwrap_or_default()
     }
 
     /// Arms a data breakpoint over `[lo, hi)`. Every overlapping store is appended to
@@ -883,17 +908,96 @@ impl VirtualMemoryManager {
         Ok(())
     }
 
+    fn capture_shadow_write_before(&mut self, addr: u64, len: usize) -> Result<(), MemoryTrap> {
+        if len == 0 || self.shadow_write_pages.is_none() {
+            return Ok(());
+        }
+        let first_page = Self::align_down(addr);
+        let last_page = Self::align_down(addr.wrapping_add((len - 1) as u64));
+        if last_page < first_page {
+            return Err(MemoryTrap::AccessViolation(addr));
+        }
+        let mut page = first_page;
+        loop {
+            let needs_snapshot = self.shadow_write_pages.as_ref()
+                .map(|pages| !pages.contains_key(&page)).unwrap_or(false);
+            if needs_snapshot {
+                // Let write_bytes deliver/consume a one-shot guard on the normal path rather
+                // than consuming it during this read-only snapshot attempt.
+                if self.has_guard(page) {
+                    return Err(MemoryTrap::GuardPage(page));
+                }
+                if self.shadow_write_pages.as_ref()
+                    .map(|pages| pages.len() >= JIT_SHADOW_PAGE_CAP).unwrap_or(false) {
+                    // Shadow validation is an optimization guard, never a guest fault. Stop the
+                    // replay before this write; the host will restore captured pages and run the
+                    // original block in the interpreter.
+                    return Err(MemoryTrap::AccessViolation(addr));
+                }
+                let before = Box::new(self.read_page(page)?);
+                let after = before.clone();
+                if let Some(pages) = self.shadow_write_pages.as_mut() {
+                    pages.insert(page, ShadowWritePage { before, after });
+                }
+            }
+            if page == last_page {
+                break;
+            }
+            page = page.saturating_add(PAGE_SIZE as u64);
+            if page > last_page {
+                return Err(MemoryTrap::AccessViolation(addr));
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_shadow_write_after(&mut self, addr: u64, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let Some(pages) = self.shadow_write_pages.as_mut() else { return; };
+        let first_page = Self::align_down(addr);
+        let last_page = Self::align_down(addr.wrapping_add((data.len() - 1) as u64));
+        if last_page < first_page {
+            return;
+        }
+        let end = addr.saturating_add(data.len() as u64);
+        let mut page = first_page;
+        loop {
+            let copy_start = addr.max(page);
+            let copy_end = end.min(page.saturating_add(PAGE_SIZE as u64));
+            if copy_end > copy_start {
+                let data_start = (copy_start - addr) as usize;
+                let page_start = (copy_start - page) as usize;
+                let count = (copy_end - copy_start) as usize;
+                if let Some(snapshot) = pages.get_mut(&page) {
+                    snapshot.after[page_start..page_start + count]
+                        .copy_from_slice(&data[data_start..data_start + count]);
+                }
+            }
+            if page == last_page {
+                break;
+            }
+            page = page.saturating_add(PAGE_SIZE as u64);
+            if page > last_page {
+                break;
+            }
+        }
+    }
+
     pub fn write_bytes(&mut self, addr: u64, data: &[u8]) -> Result<(), MemoryTrap> {
         if data.is_empty() {
             return Ok(());
         }
         self.note_write(addr, data, false);
+        self.capture_shadow_write_before(addr, data.len())?;
         let first_page = Self::align_down(addr);
         let last_page = Self::align_down(addr.wrapping_add((data.len() - 1) as u64));
         if first_page == last_page {
             let off = (addr & PAGE_MASK) as usize;
             let page = self.ensure_page_mut(first_page, true, true, None)?;
             page[off..off + data.len()].copy_from_slice(data);
+            self.capture_shadow_write_after(addr, data);
             return Ok(());
         }
         self.preflight_range(addr, data.len(), true)?;
@@ -907,6 +1011,7 @@ impl VirtualMemoryManager {
             page[off..off + chunk].copy_from_slice(&data[cursor..cursor + chunk]);
             cursor += chunk;
         }
+        self.capture_shadow_write_after(addr, data);
         Ok(())
     }
 

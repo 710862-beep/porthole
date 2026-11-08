@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{Decoder, DecoderOptions, OpKind};
 use wasm_bindgen::prelude::*;
@@ -55,6 +55,8 @@ struct JitShadowBoundary {
     gpr_ok: bool,
     flags_ok: bool,
     rip_ok: bool,
+    memory_ok: bool,
+    memory_mismatch_pages: u8,
 }
 
 fn format_instruction_operand(ins: &iced_x86::Instruction, operand: u32) -> String {
@@ -990,6 +992,8 @@ impl BrowserX64Emulator {
         gpr_ok: bool,
         flags_ok: bool,
         rip_ok: bool,
+        memory_ok: bool,
+        memory_mismatch_pages: usize,
     ) {
         let slot = self.jit_shadow_history_len % JIT_SHADOW_HISTORY_CAP;
         let mut links = [0; 2];
@@ -1016,6 +1020,8 @@ impl BrowserX64Emulator {
             gpr_ok,
             flags_ok,
             rip_ok,
+            memory_ok,
+            memory_mismatch_pages: memory_mismatch_pages.min(u8::MAX as usize) as u8,
         };
         self.jit_shadow_history_len = self.jit_shadow_history_len.wrapping_add(1);
     }
@@ -1032,12 +1038,13 @@ impl BrowserX64Emulator {
                 .map(|rip| format!("0x{rip:x}"))
                 .collect::<Vec<_>>().join(",");
             out.push_str(&format!(
-                "block=0x{:x}/{} dyn={} ret={} input=0x{:x}@rsp=0x{:x} executed={} status={} exit=0x{:x} shadow=0x{:x}@rsp=0x{:x} links=[{}] checks=step:{},xmm:{},gpr:{},flags:{},rip:{} | ",
+                "block=0x{:x}/{} dyn={} ret={} input=0x{:x}@rsp=0x{:x} executed={} status={} exit=0x{:x} shadow=0x{:x}@rsp=0x{:x} links=[{}] checks=step:{},xmm:{},gpr:{},flags:{},rip:{},mem:{}(mismatch_pages={}) | ",
                 event.artifact_rip, event.artifact_insns,
                 event.dynamic_count, event.ends_with_ret,
                 event.input_rip, event.input_rsp, event.executed, event.status,
                 event.exit_rip, event.shadow_rip, event.shadow_rsp, links,
-                event.step_ok, event.xmm_ok, event.gpr_ok, event.flags_ok, event.rip_ok
+                event.step_ok, event.xmm_ok, event.gpr_ok, event.flags_ok, event.rip_ok,
+                event.memory_ok, event.memory_mismatch_pages
             ));
         }
         out.trim_end_matches(" | ").to_string()
@@ -1728,30 +1735,64 @@ impl BrowserX64Emulator {
             self.jit_active.take(); self.jit.invalidate_entry(art.entry_rip); return "fault:jit-loop-count".into();
         }
         // Correctness lanes shadow-validate the first execution of each artifact/epoch. Native
-        // store blocks are rolled back to pre-block memory, then the interpreter re-executes and
-        // its memory becomes the committed truth. On mismatch we restore the pre-block pages.
+        // store blocks are captured and rolled back, then the interpreter re-executes; only equal
+        // architectural state and touched-page bytes can mark the artifact proven.
         if self.jit_validate && (self.jit_validate_always || !self.jit.is_proven(art.entry_rip)) {
             // Linked successors may store even when the entry block does not. The undo log is
-            // the authoritative transaction boundary for the whole native chain.
-            let native_stores = self.jit_ctx[28] != 0;
-            let touched: Vec<u64> = if native_stores {
-                let n = self.jit_ctx[31] as usize;
-                let v = self.jit_touched[..n.min(jit::JIT_TOUCHED_CAP)].to_vec();
-                self.jit_rollback_memory();
-                v
+            // the authoritative transaction boundary for the whole native chain. Capture the
+            // native final bytes before rollback, then compare them with interpreter replay.
+            let undo_count = self.jit_ctx[28].min(jit::JIT_UNDO_CAP as u64) as usize;
+            let touched_count = self.jit_ctx[31].min(jit::JIT_TOUCHED_CAP as u64) as usize;
+            let mut memory_ok = self.jit_ctx[28] == self.jit_ctx[31]
+                && self.jit_ctx[28] <= jit::JIT_UNDO_CAP as u64
+                && self.jit_ctx[31] <= jit::JIT_TOUCHED_CAP as u64;
+            let mut touched = if touched_count != 0 {
+                self.jit_touched[..touched_count.min(jit::JIT_TOUCHED_CAP)].to_vec()
             } else { Vec::new() };
-            let snapshots: Vec<(u64, Vec<u8>)> = touched.iter().filter_map(|&p| {
-                self.vmm.read_page(p).ok().map(|d| (p, d.to_vec()))
-            }).collect();
+            touched.sort_unstable();
+            touched.dedup();
+            if touched.len() > vmm::JIT_SHADOW_PAGE_CAP { memory_ok = false; }
+            let pages_to_capture = touched.iter().take(vmm::JIT_SHADOW_PAGE_CAP);
+            let mut native_after: BTreeMap<u64, Box<[u8; vmm::PAGE_SIZE]>> = BTreeMap::new();
+            for &page in pages_to_capture {
+                match self.vmm.read_page(page) {
+                    Ok(bytes) => { native_after.insert(page, Box::new(bytes)); }
+                    Err(_) => { memory_ok = false; }
+                }
+            }
+            if undo_count != 0 { self.jit_rollback_memory(); }
+            let mut snapshots: BTreeMap<u64, Box<[u8; vmm::PAGE_SIZE]>> = BTreeMap::new();
+            for &page in touched.iter().take(vmm::JIT_SHADOW_PAGE_CAP) {
+                match self.vmm.read_page(page) {
+                    Ok(bytes) => { snapshots.insert(page, Box::new(bytes)); }
+                    Err(_) => { memory_ok = false; }
+                }
+            }
             let mut shadow = self.jit_shadow.take().unwrap_or_else(|| self.cpu.clone());
             let input_rip = shadow.rip;
             let input_rsp = shadow.gpr[4];
+            self.vmm.begin_shadow_write_capture();
             let mut ok = true;
             for _ in 0..executed {
                 self.vmm.current_rip = shadow.rip;
                 match shadow.step_one(&mut self.vmm) {
                     Ok(cpu::ExecOutcome::Next) | Ok(cpu::ExecOutcome::Branch(_)) => {}
                     _ => { ok = false; break; }
+                }
+            }
+            let shadow_writes = self.vmm.take_shadow_write_capture();
+            let mut pages_to_compare = BTreeSet::new();
+            pages_to_compare.extend(native_after.keys().copied());
+            pages_to_compare.extend(shadow_writes.keys().copied());
+            let mut memory_mismatch_pages = Vec::new();
+            for page in pages_to_compare {
+                let native = native_after.get(&page).map(|bytes| bytes.as_ref())
+                    .or_else(|| shadow_writes.get(&page).map(|writes| writes.before.as_ref()));
+                let interpreted = shadow_writes.get(&page).map(|writes| writes.after.as_ref())
+                    .or_else(|| snapshots.get(&page).map(|bytes| bytes.as_ref()));
+                if !matches!((native, interpreted), (Some(a), Some(b)) if a == b) {
+                    memory_ok = false;
+                    memory_mismatch_pages.push(page);
                 }
             }
             let mut xmm_ok = true;
@@ -1766,16 +1807,28 @@ impl BrowserX64Emulator {
             self.record_jit_shadow_boundary(
                 &art, input_rip, input_rsp, executed, status, exit_rip,
                 shadow.rip, shadow.gpr[4], ok, xmm_ok, gpr_ok, flags_ok, rip_ok,
+                memory_ok, memory_mismatch_pages.len(),
             );
-            if !ok || !xmm_ok || !gpr_ok || !flags_ok || !rip_ok {
+            if !ok || !xmm_ok || !gpr_ok || !flags_ok || !rip_ok || !memory_ok {
                 let actual: Vec<String> = self.jit_ctx[..16].iter().map(|v| format!("\"{}\"", v)).collect();
                 let expected: Vec<String> = shadow.gpr.iter().map(|v| format!("\"{}\"", v)).collect();
+                let mismatched_pages: Vec<String> = memory_mismatch_pages.iter().take(16)
+                    .map(|page| format!("\"0x{page:x}\""))
+                    .collect();
                 let mut code = [0u8; 16]; let _ = self.vmm.host_read_bytes(art.entry_rip, &mut code);
                 let hex: String = code.iter().map(|b| format!("{:02x}", b)).collect();
                 self.jit_last_failure = format!(
-                    "{{\"entryRip\":\"{}\",\"executed\":{},\"bytes\":\"{}\",\"stepOk\":{},\"xmmOk\":{},\"expectedRip\":\"{}\",\"actualRip\":\"{}\",\"expectedFlags\":\"{}\",\"actualFlags\":\"{}\",\"expectedGpr\":[{}],\"actualGpr\":[{}]}}",
-                    art.entry_rip, executed, hex, ok, xmm_ok, shadow.rip, exit_rip, shadow.rflags, self.jit_ctx[19], expected.join(","), actual.join(","));
-                for (p, d) in snapshots { let _ = self.vmm.host_write_bytes(p, &d); }
+                    "{{\"entryRip\":\"{}\",\"executed\":{},\"bytes\":\"{}\",\"stepOk\":{},\"xmmOk\":{},\"memoryOk\":{},\"memoryMismatchPages\":[{}],\"expectedRip\":\"{}\",\"actualRip\":\"{}\",\"expectedFlags\":\"{}\",\"actualFlags\":\"{}\",\"expectedGpr\":[{}],\"actualGpr\":[{}]}}",
+                    art.entry_rip, executed, hex, ok, xmm_ok, memory_ok, mismatched_pages.join(","),
+                    shadow.rip, exit_rip, shadow.rflags, self.jit_ctx[19], expected.join(","), actual.join(","));
+                for (&page, bytes) in &snapshots {
+                    let _ = self.vmm.write_page(page, *bytes.as_ref());
+                }
+                for (&page, writes) in &shadow_writes {
+                    if !snapshots.contains_key(&page) {
+                        let _ = self.vmm.write_page(page, *writes.before.as_ref());
+                    }
+                }
                 self.jit_active.take(); self.jit_shadow.take(); self.jit.invalidate_entry(art.entry_rip);
                 return format!("fault:jit-validation:0x{:x}", art.entry_rip);
             }

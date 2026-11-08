@@ -200,12 +200,16 @@ function writeReport(report) {
   const run = report.run || {};
   const jit = report.jit || {};
   const diagnostics = jit.diagnostics || {};
+  const fallbackSamples = (diagnostics.samples || []).slice(0, 4).map(({ reason, commit, entryRip, opcode, bytes, detail }) => ({
+    reason, commit, entryRip, opcode, bytes, detail,
+  }));
   const diagnosticsSummary = {
     validation: diagnostics.validation ?? 0,
     traps: diagnostics.traps ?? 0,
     runtimeUnsupportedFallbacks: diagnostics.unsupported ?? 0,
     fallbackByReason: diagnostics.byReason || {},
     fallbackByOpcode: diagnostics.byOpcode || {},
+    fallbackSamples,
     compileBoundaryObservations: diagnostics.compileBoundaries?.observations ?? 0,
     compileBoundaryByOpcode: diagnostics.compileBoundaries?.byOpcode || {},
   };
