@@ -217,6 +217,36 @@ export class BrowserX64Emulator {
         }
     }
     /**
+    * Returns NUL-delimited paths for regular files in the guest VFS. NUL is not legal in a Windows filename.
+    * @returns {string}
+    */
+    vfs_list_paths() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.browserx64emulator_vfs_list_paths(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+    * @param {string} path
+    * @returns {number}
+    */
+    vfs_file_size(path) {
+        const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserx64emulator_vfs_file_size(this.__wbg_ptr, ptr0, len0);
+        return ret >>> 0;
+    }
+    /**
     * Sets the guest command line (`GetCommandLineA/W`, `argc`/`argv`), e.g.
     * `"kernel32_test.exe atom"` so a winetest binary runs a single subtest.
     * @param {string} line

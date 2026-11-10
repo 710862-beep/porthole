@@ -6,6 +6,8 @@ export function browserx64emulator_new(a: number): number;
 export function browserx64emulator_vfs_insert(a: number, b: number, c: number, d: number, e: number): void;
 export function browserx64emulator_vfs_mkdir(a: number, b: number, c: number): void;
 export function browserx64emulator_vfs_read(a: number, b: number, c: number, d: number): void;
+export function browserx64emulator_vfs_list_paths(a: number, b: number): void;
+export function browserx64emulator_vfs_file_size(a: number, b: number, c: number): number;
 export function browserx64emulator_set_command_line(a: number, b: number, c: number): void;
 export function browserx64emulator_set_exe_path(a: number, b: number, c: number): void;
 export function browserx64emulator_set_environment_variable(a: number, b: number, c: number, d: number, e: number): number;

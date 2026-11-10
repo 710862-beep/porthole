@@ -25,6 +25,16 @@ export class BrowserX64Emulator {
 */
   vfs_read(path: string): Uint8Array | undefined;
 /**
+* Returns NUL-delimited paths for regular files in the guest VFS. NUL is not legal in a Windows filename.
+* @returns {string}
+*/
+  vfs_list_paths(): string;
+/**
+* @param {string} path
+* @returns {number}
+*/
+  vfs_file_size(path: string): number;
+/**
 * Sets the guest command line (`GetCommandLineA/W`, `argc`/`argv`), e.g.
 * `"kernel32_test.exe atom"` so a winetest binary runs a single subtest.
 * @param {string} line
@@ -486,6 +496,8 @@ export interface InitOutput {
   readonly browserx64emulator_vfs_insert: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly browserx64emulator_vfs_mkdir: (a: number, b: number, c: number) => void;
   readonly browserx64emulator_vfs_read: (a: number, b: number, c: number, d: number) => void;
+  readonly browserx64emulator_vfs_list_paths: (a: number, b: number) => void;
+  readonly browserx64emulator_vfs_file_size: (a: number, b: number, c: number) => number;
   readonly browserx64emulator_set_command_line: (a: number, b: number, c: number) => void;
   readonly browserx64emulator_set_exe_path: (a: number, b: number, c: number) => void;
   readonly browserx64emulator_set_environment_variable: (a: number, b: number, c: number, d: number, e: number) => number;
