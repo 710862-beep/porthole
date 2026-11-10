@@ -329,35 +329,48 @@ try {
    * 6. Store catalog bookmark flow
    * ====================================================================== */
   console.log("\nstore");
-  wm().openWindow("store");
+  ids.store = wm().openWindow("store");
   await sleep(200);
-  const shelf = document.querySelector('[aria-label="Game library"]');
-  const cards = [...(shelf?.querySelectorAll("button") ?? [])];
-  check("catalog renders covers", cards.length >= 5, String(cards.length));
-  let addToLibrary = null;
-  for (const card of cards) {
-    click(card);
-    await sleep(60);
-    const add = buttonByText(/^Add to library$/, document);
-    if (add && !add.disabled) {
-      addToLibrary = add;
-      break;
-    }
-  }
-  check("bookmark action available", Boolean(addToLibrary));
-  if (addToLibrary) click(addToLibrary);
+  const storeElement = document.querySelector(`[data-window-id="${ids.store}"]`);
+  const cards = [...(storeElement?.querySelectorAll("article") ?? [])];
+  check("app-center grid renders curated entries", cards.length >= 5, String(cards.length));
+  check("store has Explore, Chocolatey and Downloads sections", /Explore/.test(storeElement?.textContent ?? "") && /Chocolatey/.test(storeElement?.textContent ?? "") && /Downloads/.test(storeElement?.textContent ?? ""));
+  check("store explains package-only downloads", /(?:downloads|saved archives) are not installations/i.test(storeElement?.textContent ?? ""));
+  const packageCard = [...(storeElement?.querySelectorAll('button[aria-label^="View "]') ?? [])]
+    .find((button) => button.getAttribute("aria-label")?.includes("7-Zip"));
+  check("curated Chocolatey app has a direct Get action", Boolean(packageCard) && Boolean(buttonByText(/^Get$/, packageCard?.parentElement ?? storeElement)));
+  click(packageCard);
+  await sleep(80);
+  check("package detail page has a one-click Download package action", Boolean(buttonByText(/^Download package$/, storeElement)));
+  check("detail page distinguishes download from install", /Downloading is not installing/i.test(storeElement?.textContent ?? ""));
+  check("package detail exposes a guest-only embedded EXE path", /Guest installer runner/i.test(storeElement?.textContent ?? "") && /not on the host|never runs on the host/i.test(storeElement?.textContent ?? ""));
+  const inspectPackage = buttonByText(/^Inspect package$/i, storeElement);
+  check("archive inspection stays disabled until a package is saved", Boolean(inspectPackage?.disabled));
+  click(buttonByText(/^Back to store$/i, storeElement));
+  await sleep(60);
+
+  const listingCard = [...(storeElement?.querySelectorAll('button[aria-label^="View "]') ?? [])]
+    .find((button) => button.getAttribute("aria-label")?.includes("Visual Studio Code"));
+  click(listingCard);
+  await sleep(60);
+  const saveListing = buttonByText(/^Save listing$/);
+  check("curated profile exposes a separate browser-bookmark action", Boolean(saveListing));
+  if (saveListing) click(saveListing);
   check(
-    "catalog bookmark saved without install progress",
+    "listing bookmark saves without claiming installation",
     await until(() => useLibraryStore.getState().games.filter((game) => game.status === "in-library").length > DEFAULT_IN_LIBRARY_IDS.length, 2000),
   );
-  check("store labels membership as library-only", /Added to library|catalog bookmark/i.test(text()));
-  check("Chocolatey package-download control absent", !/Install progress/.test(text()));
+  check("store keeps browser bookmarks separate from installation", /Remove from library|Save listing|does not install/i.test(storeElement?.textContent ?? ""));
+  check("no fake install-progress panel", !/Install progress/.test(text()));
+  click(buttonByText(/^Back to store$/i, storeElement));
+  await sleep(60);
 
-  const doomCard = cards.find((card) => (card.textContent ?? "").includes("Chocolate Doom 3.1.1"));
+  const doomCard = [...(storeElement?.querySelectorAll('button[aria-label^="View "]') ?? [])]
+    .find((button) => button.getAttribute("aria-label")?.includes("Chocolate Doom 3.1.1"));
   click(doomCard);
   await sleep(60);
-  const prepareDoom = buttonByText(/^Prepare to launch$/);
-  check("Chocolate Doom exposes an Emulator setup action", Boolean(prepareDoom));
+  const prepareDoom = buttonByText(/^Open Emulator profile$/);
+  check("Chocolate Doom exposes a profile-selection action", Boolean(prepareDoom));
   click(prepareDoom);
   check(
     "Store opens the selected Chocolate Doom profile",

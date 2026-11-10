@@ -57,6 +57,49 @@ async function writeDirectoryArchive(
   };
 }
 
+function safeStoredArchiveName(name: string): string {
+  if (
+    !name ||
+    name !== name.trim() ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    /[\u0000-\u001f<>:"|?*]/.test(name) ||
+    name === "." ||
+    name === ".." ||
+    !name.toLowerCase().endsWith(".nupkg")
+  ) {
+    throw new Error("The stored package archive name is invalid.");
+  }
+  return name;
+}
+
+async function readDirectoryArchive(root: FileSystemDirectoryHandle, name: string): Promise<File | null> {
+  const safeName = safeStoredArchiveName(name);
+  let directory: FileSystemDirectoryHandle;
+  try {
+    directory = await root.getDirectoryHandle(STORE_PACKAGE_DIRECTORY);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return null;
+    throw error;
+  }
+  let file: File;
+  try {
+    const handle = await directory.getFileHandle(safeName);
+    file = await handle.getFile();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return null;
+    throw error;
+  }
+  if (file.size < 4 || file.size > MAX_PACKAGE_ARCHIVE_BYTES) {
+    throw new Error("The stored package archive no longer meets the Store size limit.");
+  }
+  const signature = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (signature[0] !== 0x50 || signature[1] !== 0x4b || ![0x03, 0x05, 0x07].includes(signature[2] ?? -1)) {
+    throw new Error("The stored package archive is not a ZIP-formatted .nupkg file.");
+  }
+  return file;
+}
+
 async function listDirectoryArchives(root: FileSystemDirectoryHandle): Promise<StoredPackageArchive[]> {
   let directory: FileSystemDirectoryHandle;
   try {
@@ -92,6 +135,10 @@ export class PackageArchiveStorage {
     return listDirectoryArchives(root);
   }
 
+  readInDirectory(root: FileSystemDirectoryHandle, name: string): Promise<File | null> {
+    return readDirectoryArchive(root, name);
+  }
+
   async storeInMemory(file: File): Promise<StoredPackageArchive> {
     const name = await validatedName(file);
     const key = name.toLowerCase();
@@ -115,5 +162,17 @@ export class PackageArchiveStorage {
     return [...this.memory.values()]
       .map(({ archive }) => ({ ...archive }))
       .sort((a, b) => b.lastModified - a.lastModified);
+  }
+
+  readInMemory(name: string): File | null {
+    const safeName = safeStoredArchiveName(name);
+    const stored = this.memory.get(safeName.toLowerCase());
+    if (!stored) return null;
+    const copy = new ArrayBuffer(stored.bytes.byteLength);
+    new Uint8Array(copy).set(stored.bytes);
+    return new File([copy], stored.archive.name, {
+      type: "application/octet-stream",
+      lastModified: stored.archive.lastModified,
+    });
   }
 }

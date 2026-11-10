@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import {
+  ArrowLeft,
   BookmarkCheck,
   BookmarkPlus,
   Copy,
@@ -14,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import type { StoreGame } from "@runtime/types";
+import type { EmbeddedGuestExecutable } from "@runtime/chocolateyInstaller";
 import { AppIcon } from "@/components/ui/AppIcon";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -40,9 +42,24 @@ interface GameDetailsProps {
   packageDownloadEnabled: boolean;
   packageDownloadDisabledReason: string | null;
   packageDownloadStatus: PackageDownloadStatus | null;
+  installerArchiveName: string | null;
+  installerInspected: boolean;
+  installerExecutables: EmbeddedGuestExecutable[];
+  unsupportedExecutables: string[];
+  installerInspectionError: string | null;
+  skippedInstallerScripts: number;
+  inspectingArchive: boolean;
+  installerRunDisabledReason: string | null;
+  installerRunBusy: boolean;
+  installerArguments: string;
+  canAddToLibrary: boolean;
+  onBack: () => void;
   onAdd: () => void;
   onDownloadPackage: () => void;
   onCancelDownload: () => void;
+  onInspectSavedArchive: () => void;
+  onInstallerArgumentsChange: (value: string) => void;
+  onRunEmbeddedInstaller: (executable: EmbeddedGuestExecutable, argumentsLine: string) => void;
   onLaunch: () => void;
   onRemove: () => void;
   onToggleLogs: () => void;
@@ -73,9 +90,24 @@ export function GameDetails({
   packageDownloadEnabled,
   packageDownloadDisabledReason,
   packageDownloadStatus,
+  installerArchiveName,
+  installerInspected,
+  installerExecutables,
+  unsupportedExecutables,
+  installerInspectionError,
+  skippedInstallerScripts,
+  inspectingArchive,
+  installerRunDisabledReason,
+  installerRunBusy,
+  installerArguments,
+  canAddToLibrary,
+  onBack,
   onAdd,
   onDownloadPackage,
   onCancelDownload,
+  onInspectSavedArchive,
+  onInstallerArgumentsChange,
+  onRunEmbeddedInstaller,
   onLaunch,
   onRemove,
   onToggleLogs,
@@ -94,70 +126,84 @@ export function GameDetails({
   };
 
   return (
-    <aside className="flex h-full w-[352px] flex-none flex-col border-l border-white/[0.07] bg-black/15">
+    <section className="flex h-full min-h-0 w-full flex-col bg-[#171720]" aria-label={`${game.title} details`}>
       <div
-        className="relative h-[124px] flex-none overflow-hidden"
+        className="relative min-h-[220px] flex-none overflow-hidden border-b border-white/[0.07]"
         style={{ backgroundImage: cover.gradient }}
       >
         <div
-          className="absolute inset-0 opacity-35"
+          className="absolute inset-0 opacity-30"
           style={{
             backgroundImage:
               "linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)",
-            backgroundSize: "22px 22px",
+            backgroundSize: "28px 28px",
             maskImage: "radial-gradient(ellipse 90% 80% at 30% 20%, black, transparent 80%)",
           }}
           aria-hidden
         />
         <Icon
-          size={120}
-          strokeWidth={0.7}
-          className="absolute -bottom-6 right-2 opacity-[0.12]"
+          size={260}
+          strokeWidth={0.55}
+          className="absolute -bottom-16 right-[9%] opacity-[0.12]"
           style={{ color: cover.tint }}
           aria-hidden
         />
-        <div className="absolute inset-x-4 bottom-3">
-          <div className="flex items-center gap-2">
-            <AppIcon icon={cover.icon} tint={cover.tint} size={26} iconSize={14} />
+        <button
+          type="button"
+          onClick={onBack}
+          className="absolute left-5 top-5 inline-flex h-8 items-center gap-2 rounded-full border border-white/[0.1] bg-black/25 px-3 text-[10px] font-medium text-ink-muted backdrop-blur transition hover:bg-black/45 hover:text-ink"
+        >
+          <ArrowLeft size={13} aria-hidden /> Back to store
+        </button>
+        <div className="absolute inset-x-6 bottom-5 max-w-3xl">
+          <div className="flex flex-wrap items-center gap-2">
+            <AppIcon icon={cover.icon} tint={cover.tint} size={36} iconSize={19} />
             <Badge tone={game.kind === "game" ? "accent" : game.kind === "system" ? "violet" : "neutral"}>
-              {game.kind}
+              {game.chocolateyPackageId ? "Chocolatey package" : game.kind}
             </Badge>
             {inLibrary ? (
-              <Badge tone="success" dot>
-                in library
-              </Badge>
+              <Badge tone="success" dot>in Porthole library</Badge>
+            ) : game.chocolateyPackageId ? (
+              <Badge tone="neutral" dot>not installed</Badge>
             ) : (
-              <Badge tone="neutral" dot>
-                not in library
-              </Badge>
+              <Badge tone="neutral" dot>not in library</Badge>
             )}
           </div>
-          <h2 className="mt-2 text-[17px] font-semibold leading-tight tracking-[-0.015em] text-ink">
-            {game.title}
+          <h2 className="mt-3 text-[24px] font-semibold leading-tight tracking-[-0.02em] text-ink sm:text-[30px]">
+            {game.chocolatey?.title || game.title}
           </h2>
+          <p className="mt-1 text-[11px] text-ink-faint">
+            {game.chocolateyPackageId
+              ? `Chocolatey Community Repository · ${game.chocolatey?.version ? `version ${game.chocolatey.version}` : "latest package"}`
+              : `${game.genre} · Porthole catalog`}
+          </p>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <p className="text-[11.5px] leading-relaxed text-ink-muted">{game.summary}</p>
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-8">
+        <div className="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(260px,340px)]">
+          <div className="min-w-0">
+            <p className="text-[12px] leading-relaxed text-ink-muted">{game.chocolatey?.summary || game.summary}</p>
 
         <div className="mt-4 rounded-[9px] border border-white/[0.07] bg-black/20 px-3 py-1">
           <MetaRow label="Version">{game.chocolatey?.version || game.version}</MetaRow>
-          <MetaRow label="Genre">{game.genre}</MetaRow>
+          <MetaRow label="Category">{game.genre}</MetaRow>
           {game.chocolateyPackageId && (
             <MetaRow label="Chocolatey ID">
               {game.chocolatey?.packageId ?? `${game.chocolateyPackageId} · metadata pending`}
             </MetaRow>
           )}
-          <MetaRow label="Expected guest path">
-            <span className="font-mono text-[10px]">{game.exePath || "shell surface"}</span>
-          </MetaRow>
+          {game.exePath && (
+            <MetaRow label="Guest profile path">
+              <span className="font-mono text-[10px]">{game.exePath}</span>
+            </MetaRow>
+          )}
           {game.requiredFiles?.length ? (
             <MetaRow label="Required files">
               {game.requiredFiles.map((file) => file.split("\\").at(-1) ?? file).join(", ")}
             </MetaRow>
           ) : null}
-          <MetaRow label="Location">Browser-local catalog</MetaRow>
+          <MetaRow label="Source">{game.chocolateyPackageId ? "Chocolatey Community Repository" : "Porthole catalog"}</MetaRow>
           {game.sha256 && (
             <MetaRow label="SHA-256">
               <span className="inline-flex items-center gap-1.5 font-mono text-[10px]">
@@ -218,7 +264,7 @@ export function GameDetails({
               Porthole storage
             </p>
             <p className="mt-1.5 text-[10px] leading-relaxed text-ink-faint">
-              Chocolatey .nupkg archives are saved under PortholePackages/ in {storageLabel || "selected storage"}, outside the guest C:\\Game files. Package scripts and installers are not run.
+              One click downloads the Chocolatey .nupkg archive into PortholePackages/ in {storageLabel || "selected storage"}, separate from guest files. Downloading is not installing. The guest runner below can inspect direct x64 EXEs and launch one only after confirmation; PowerShell/command scripts, MSI packages, and external URLs are not executed.
             </p>
             {currentPackagePath && (
               <p className="mt-2 break-all font-mono text-[9px] text-success" title={currentPackagePath}>
@@ -230,6 +276,85 @@ export function GameDetails({
                 Saved archive: {downloadedPackagePaths[0]}
               </p>
             )}
+          </section>
+        )}
+
+        {game.chocolateyPackageId && (
+          <section className="mt-3 rounded-[9px] border border-warning/20 bg-warning/[0.045] p-3" aria-label="Run embedded installer in guest">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-warning">
+                  <Play size={11} aria-hidden />
+                  Guest installer runner
+                </p>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-ink-muted">
+                  {installerArchiveName
+                    ? `Inspect ${installerArchiveName} for directly embedded x64 Windows executables. Only the selected EXE and same-folder non-script files are copied to guest storage.`
+                    : "Download and save a .nupkg archive before inspecting its embedded executable files."}
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={ShieldCheck}
+                loading={inspectingArchive}
+                disabled={!installerArchiveName || inspectingArchive}
+                onClick={onInspectSavedArchive}
+                title="Read the saved ZIP archive only; do not execute package scripts or URLs."
+              >
+                {installerInspected ? "Inspect again" : "Inspect package"}
+              </Button>
+            </div>
+
+            <label className="mt-3 block text-[9.5px] font-medium text-ink-faint" htmlFor="installer-arguments">
+              Optional installer arguments (package-specific)
+            </label>
+            <input
+              id="installer-arguments"
+              value={installerArguments}
+              onChange={(event) => onInstallerArgumentsChange(event.target.value)}
+              placeholder="e.g. silent switches; leave blank to run as-is"
+              className="mt-1 h-8 w-full rounded-[6px] border border-white/[0.08] bg-black/25 px-2 text-[10px] text-ink placeholder:text-ink-ghost focus:border-accent/40 focus:outline-none"
+            />
+
+            {inspectingArchive && <p className="mt-2 text-[9px] text-ink-faint">Checking bounded ZIP entries and locating PE32+ x64 executables…</p>}
+            {installerInspectionError && <p role="alert" className="mt-2 text-[9.5px] text-warning">{installerInspectionError}</p>}
+            {installerInspected && !installerInspectionError && installerExecutables.length === 0 && (
+              <p className="mt-2 rounded-[6px] border border-white/[0.06] bg-black/20 p-2 text-[9.5px] leading-relaxed text-ink-faint">
+                No directly embedded PE32+ x64 executable was found. {unsupportedExecutables.length > 0 ? `${unsupportedExecutables.length} other .exe file(s) are not x64 PE32+ and cannot be loaded.` : "This is likely a Chocolatey script wrapper, an MSI package, or a package that downloads its installer externally."} Porthole does not run those scripts, MSI packages, or external URLs.
+              </p>
+            )}
+            {skippedInstallerScripts > 0 && (
+              <p className="mt-2 text-[9px] text-ink-ghost">{skippedInstallerScripts} PowerShell/command script file(s) were excluded and will not be executed.</p>
+            )}
+            {installerExecutables.map((executable) => (
+              <div key={executable.archivePath} className="mt-2 flex flex-wrap items-center gap-2 rounded-[7px] border border-white/[0.07] bg-black/20 p-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[10px] font-medium text-ink" title={executable.archivePath}>{executable.name}</p>
+                  <p className="truncate font-mono text-[8.5px] text-ink-ghost" title={executable.archivePath}>{executable.archivePath} · {formatBytes(executable.sizeBytes)} · {executable.payload.length} guest file(s)</p>
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={Play}
+                  loading={installerRunBusy}
+                  disabled={Boolean(installerRunDisabledReason) || installerRunBusy || inspectingArchive}
+                  title={installerRunDisabledReason ?? "After confirmation, run only this embedded x64 EXE inside Porthole's Wasm guest."}
+                  onClick={() => onRunEmbeddedInstaller(executable, installerArguments)}
+                >
+                  Run in Emulator
+                </Button>
+              </div>
+            ))}
+            {installerRunDisabledReason && installerInspected && installerExecutables.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[9px] text-ink-ghost">{installerRunDisabledReason}</p>
+                <Button size="xs" variant="secondary" icon={Play} onClick={onLaunch}>Open Emulator</Button>
+              </div>
+            )}
+            <p className="mt-2 text-[9px] leading-relaxed text-ink-ghost">
+              Runs only inside the Porthole Wasm guest—not on the host. Input delivery is pending (KI-04); many interactive installers cannot complete. Porthole persists guest file writes within its bounded C: virtual filesystem when the process exits. A launched installer is not proof of a successful or complete installation.
+            </p>
           </section>
         )}
 
@@ -246,6 +371,35 @@ export function GameDetails({
         <div className="mt-3 flex gap-2 rounded-[9px] border border-white/[0.06] bg-black/15 p-2.5">
           <Info size={12} className="mt-0.5 flex-none text-ink-faint" aria-hidden />
           <p className="text-[10px] leading-relaxed text-ink-ghost">{game.provenance}</p>
+        </div>
+          </div>
+
+          <aside className="h-fit rounded-[12px] border border-white/[0.08] bg-gradient-to-b from-white/[0.045] to-black/20 p-4 lg:sticky lg:top-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">Package status</p>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="grid h-9 w-9 place-items-center rounded-[9px] border border-white/[0.08] bg-black/20 text-accent">
+                <HardDrive size={16} aria-hidden />
+              </span>
+              <div>
+                <p className="text-[11px] font-medium text-ink">{currentPackagePath || downloadedPackagePaths.length > 0 ? "Archive saved" : "Not installed"}</p>
+                <p className="mt-0.5 text-[9.5px] text-ink-faint">{game.chocolateyPackageId ? "Chocolatey package" : "Porthole catalog entry"}</p>
+              </div>
+            </div>
+            <div className="mt-3 rounded-[8px] border border-white/[0.06] bg-black/20 p-3">
+              <p className="text-[10px] font-semibold text-ink-muted">What the button does</p>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-ink-faint">
+                {game.chocolateyPackageId
+                  ? "Download saves the .nupkg archive. A separate, explicitly confirmed action may run a directly embedded PE32+ x64 EXE inside the Wasm guest; it never runs on the host. Package scripts, MSI installers, and vendor URLs are not followed."
+                  : "This catalog entry is a profile or bookmark. It does not fetch an executable unless a package source is listed above."}
+              </p>
+            </div>
+            <div className="mt-3 flex gap-2 rounded-[8px] border border-warning/15 bg-warning/[0.045] p-3">
+              <ShieldCheck size={12} className="mt-0.5 flex-none text-warning" aria-hidden />
+              <p className="text-[9.5px] leading-relaxed text-ink-faint">
+                Downloading is not installing. The guest runner supports only direct x64 EXEs; installer success depends on guest API support, required services, and input forwarding.
+              </p>
+            </div>
+          </aside>
         </div>
       </div>
 
@@ -265,7 +419,7 @@ export function GameDetails({
               >
                 {packageDownloadStatus?.appId === game.appId
                   ? packageDownloadStatus.phase === "saving" ? "Saving to Porthole storage…" : "Downloading package…"
-                  : currentPackagePath ? "Download latest again" : "Download package to storage"}
+                  : currentPackagePath ? "Download latest again" : "Download package"}
               </Button>
               {packageDownloadStatus && (
                 <div className="rounded-[7px] border border-white/[0.06] bg-black/20 p-2">
@@ -330,30 +484,34 @@ export function GameDetails({
                 </Button>
               </div>
             </>
-          ) : (
+          ) : canAddToLibrary ? (
             <div className="flex items-center gap-2">
               <Button
-                variant={game.chocolateyPackageId ? "secondary" : "primary"}
+                variant="secondary"
                 size="sm"
                 icon={BookmarkPlus}
                 onClick={onAdd}
                 className="flex-1"
               >
-                Add to library
+                Save listing
               </Button>
               <Button variant="ghost" size="sm" icon={ScrollText} onClick={onToggleLogs}>
                 Console
               </Button>
             </div>
-          )}
-          {!inLibrary && (
+          ) : game.chocolateyPackageId ? (
+            <p className="rounded-[7px] border border-white/[0.06] bg-black/15 p-2.5 text-[10px] leading-relaxed text-ink-faint">
+              This is a live Chocolatey search result. It can be downloaded as an archive; it is not installed or verified to run in Porthole.
+            </p>
+          ) : null}
+          {!inLibrary && canAddToLibrary && (
             <span className="flex items-center gap-1.5 text-[9px] text-ink-ghost">
               <BookmarkCheck size={10} aria-hidden />
-              Library membership is separate from package downloads.
+              Saving a listing is separate from downloading a package.
             </span>
           )}
         </div>
       </footer>
-    </aside>
+    </section>
   );
 }

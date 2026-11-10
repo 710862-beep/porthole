@@ -1,9 +1,10 @@
 /*
  * Chocolatey Community Repository client.
  *
- * Metadata refreshes use only the NuGet/OData feed. A separate explicit download
- * action fetches the current .nupkg archive; the Store never extracts it or runs
- * package scripts, installer URLs or executables.
+ * Metadata refresh/search and archive download are separated from the bounded
+ * installer inspector. This module fetches and validates .nupkg bytes only; the
+ * Store can later expose a direct embedded x64 EXE for explicit guest-only launch.
+ * Package scripts, MSI files and external installer URLs are never run or followed.
  */
 
 import type { ChocolateyPackageMetadata } from "./types";
@@ -183,6 +184,133 @@ export async function fetchChocolateyMetadata(
       ? `${failures.slice(0, 3).join(" · ")}${failures.length > 3 ? ` · +${failures.length - 3} more` : ""}`
       : null,
   };
+}
+
+export interface ChocolateySearchPage {
+  packages: ChocolateyPackageMetadata[];
+  /** Chocolatey's OData `rel=next` link, validated against the repository origin. */
+  nextUrl: string | null;
+  totalHits: number | null;
+}
+
+const SEARCH_PAGE_SIZE = 24;
+const MAX_SEARCH_RESPONSE_CHARS = 5 * 1024 * 1024;
+
+function parseChocolateySearchFeed(xml: string, requestUrl: URL): ChocolateySearchPage {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) {
+    throw new Error("Chocolatey returned unreadable search results.");
+  }
+
+  const packages: ChocolateyPackageMetadata[] = [];
+  const seen = new Set<string>();
+  const fetchedAt = Date.now();
+  for (const entry of Array.from(doc.getElementsByTagNameNS(ATOM_NS, "entry"))) {
+    const properties = entry.getElementsByTagNameNS(META_NS, "properties")[0];
+    if (!properties) continue;
+    const packageId = field(properties, "Id");
+    if (!packageId || seen.has(packageId.toLowerCase())) continue;
+    seen.add(packageId.toLowerCase());
+
+    const downloadText = field(properties, "DownloadCount");
+    packages.push({
+      packageId,
+      version: field(properties, "Version"),
+      title: field(properties, "Title") || packageId,
+      summary: field(properties, "Summary"),
+      description: field(properties, "Description"),
+      projectUrl: field(properties, "ProjectUrl"),
+      tags: field(properties, "Tags").split(/\\s+/).filter(Boolean),
+      publishedAt: field(properties, "Published"),
+      downloadCount: downloadText && Number.isFinite(Number(downloadText)) ? Number(downloadText) : null,
+      fetchedAt,
+      source: "Chocolatey Community Repository",
+    });
+  }
+
+  const rawNext = Array.from(doc.getElementsByTagNameNS(ATOM_NS, "link"))
+    .find((link) => link.getAttribute("rel") === "next")
+    ?.getAttribute("href");
+  let nextUrl: string | null = null;
+  if (rawNext) {
+    const candidate = new URL(rawNext, requestUrl);
+    if (candidate.protocol === "https:" && candidate.origin === PACKAGE_ORIGIN) {
+      nextUrl = candidate.href;
+    }
+  } else if (packages.length >= SEARCH_PAGE_SIZE) {
+    // Some feeds omit the Atom next link; retain the standard OData skip page.
+    const candidate = new URL(requestUrl.href);
+    candidate.searchParams.set("$skip", String(Number(candidate.searchParams.get("$skip") ?? "0") + packages.length));
+    nextUrl = candidate.href;
+  }
+
+  const rawCount = doc.getElementsByTagNameNS(META_NS, "count")[0]?.textContent?.trim();
+  const count = rawCount === undefined ? Number.NaN : Number(rawCount);
+  return {
+    packages,
+    nextUrl,
+    totalHits: Number.isFinite(count) && count >= 0 ? count : null,
+  };
+}
+
+/** Search the live, paginated Chocolatey Community Repository; this is metadata only. */
+export async function searchChocolateyPackages(
+  query: string,
+  signal?: AbortSignal,
+  pageUrl?: string | null,
+): Promise<ChocolateySearchPage> {
+  const term = query.trim();
+  if (term.length < 2) throw new Error("Enter at least two characters to search Chocolatey.");
+  if (term.length > 120) throw new Error("Chocolatey search is limited to 120 characters.");
+
+  let url: URL;
+  if (pageUrl) {
+    url = new URL(pageUrl);
+    if (url.protocol !== "https:" || url.origin !== PACKAGE_ORIGIN || url.pathname !== "/api/v2/Search()") {
+      throw new Error("Chocolatey returned an invalid pagination link.");
+    }
+  } else {
+    url = new URL("/api/v2/Search()", PACKAGE_ORIGIN);
+    url.searchParams.set("searchTerm", `'${term.replaceAll("'", "''")}'`);
+    url.searchParams.set("targetFramework", "''");
+    url.searchParams.set("includePrerelease", "false");
+    url.searchParams.set("$top", String(SEARCH_PAGE_SIZE));
+  }
+
+  const controller = new AbortController();
+  const relayAbort = (): void => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener("abort", relayAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      mode: "cors",
+      credentials: "omit",
+      redirect: "follow",
+      headers: { Accept: "application/atom+xml, application/xml;q=0.9" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Chocolatey search returned HTTP ${response.status}.`);
+    if (response.url) {
+      const finalUrl = new URL(response.url);
+      if (finalUrl.protocol !== "https:" || finalUrl.origin !== PACKAGE_ORIGIN) {
+        throw new Error("Chocolatey search redirected outside its HTTPS repository.");
+      }
+    }
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SEARCH_RESPONSE_CHARS) {
+      throw new Error("Chocolatey search response exceeded the 5 MB safety limit.");
+    }
+    const xml = await response.text();
+    if (xml.length > MAX_SEARCH_RESPONSE_CHARS) {
+      throw new Error("Chocolatey search response exceeded the 5 MB safety limit.");
+    }
+    return parseChocolateySearchFeed(xml, url);
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", relayAbort);
+  }
 }
 
 export interface ChocolateyPackageDownloadProgress {

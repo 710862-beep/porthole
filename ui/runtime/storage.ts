@@ -97,6 +97,11 @@ export class BrowserStorageService implements PortholeStorageService {
     return this.packageArchives.listInDirectory(await this.persistentRoot());
   }
 
+  async readStoredPackageArchive(name: string): Promise<File | null> {
+    if (this.backend === "memory") return this.packageArchives.readInMemory(name);
+    return this.packageArchives.readInDirectory(await this.persistentRoot(), name);
+  }
+
   describeSelected(): StorageState {
     return {
       backend: this.backend,

@@ -24,10 +24,14 @@ interface PortholeJitCache {
 interface PortholeNvmeVfs extends PortholeJitCache {
   root: FileSystemDirectoryHandle | null;
   gameDir: FileSystemDirectoryHandle | null;
+  guestDir: FileSystemDirectoryHandle | null;
   stats: { mounted: boolean; [name: string]: unknown };
   mount(handle: FileSystemDirectoryHandle, options?: { label?: string }): Promise<unknown>;
   listGameFiles(): Promise<string[]>;
+  listGuestFiles(): Promise<string[]>;
   readGameTree(limitBytes?: number): Promise<PortholeGuestFile[]>;
+  readGuestTree(limitBytes?: number): Promise<PortholeGuestFile[]>;
+  persistGuestFiles(files: readonly PortholeGuestFile[], limitBytes?: number): Promise<{ written: number; bytes: number }>;
   persistPages(records: Uint8Array): Promise<{ written?: number }>;
   fetchPage(pageBase: number): Promise<PortholeNvmePage>;
 }

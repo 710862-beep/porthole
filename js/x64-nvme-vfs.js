@@ -6,6 +6,7 @@
  *   2. Sharded swap files (`.porthole_vmem/shard_XXXXX.bin`, 64 MB each = 16 384 pages) used to
  *      persist pages evicted from the Wasm RAM LRU window.
  *   3. `.porthole_jit_cache/` persistence for hybrid AOT/JIT WebAssembly blocks.
+ *   4. `.porthole_guest_fs/` for persisted C: guest files outside the user-visible Game/ directory.
  *
  * Nothing here ever fakes durability: every failed write is surfaced through `stats` and the
  * returned promise so callers can report the real state.
@@ -29,6 +30,7 @@
       this.jitDir = null;
       this.cacheDir = null;
       this.gameDir = null;
+      this.guestDir = null;
       this.stats = {
         mounted: false,
         pagesWritten: 0,
@@ -63,6 +65,7 @@
       this.vmemDir = await handle.getDirectoryHandle('.porthole_vmem', { create: true });
       this.jitDir = await handle.getDirectoryHandle('.porthole_jit_cache', { create: true });
       this.cacheDir = await handle.getDirectoryHandle('cache', { create: true });
+      this.guestDir = await handle.getDirectoryHandle('.porthole_guest_fs', { create: true });
       try {
         this.gameDir = await handle.getDirectoryHandle('Game', { create: true });
       } catch (error) {
@@ -276,6 +279,7 @@
       const max = limitBytes || 512 * 1024 * 1024;
       const files = [];
       if (!this.gameDir) return files;
+      let total = 0;
       const walk = async (dir, prefix) => {
         for await (const [name, handle] of dir.entries()) {
           const path = prefix ? `${prefix}\\${name}` : name;
@@ -284,15 +288,104 @@
             continue;
           }
           const file = await handle.getFile();
-          if (file.size > max) {
-            this.logger(`Ignorando ${path}: ${file.size} bytes excede o limite`);
+          if (file.size > max || total + file.size > max) {
+            this.logger(`Skipping C:\\Game\\${path}: guest tree would exceed ${max} bytes`);
             continue;
           }
+          total += file.size;
           files.push({ path: `C:\\Game\\${path}`, bytes: new Uint8Array(await file.arrayBuffer()) });
         }
       };
       await walk(this.gameDir, '');
       return files;
+    }
+
+    /** Lists all persisted guest files, including installed files outside C:\\Game. */
+    async listGuestFiles() {
+      const paths = await this.listGameFiles();
+      if (!this.guestDir) return paths;
+      const walk = async (dir, prefix) => {
+        for await (const [name, handle] of dir.entries()) {
+          const relative = prefix ? `${prefix}\\${name}` : name;
+          if (handle.kind === 'directory') await walk(handle, relative);
+          else paths.push(`C:\\${relative}`);
+        }
+      };
+      await walk(this.guestDir, '');
+      return paths;
+    }
+
+    /** Reads the persistent C: virtual drive, with Game/ kept in its user-visible directory. */
+    async readGuestTree(limitBytes) {
+      const max = limitBytes || 512 * 1024 * 1024;
+      const files = await this.readGameTree(max);
+      let total = files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+      if (!this.guestDir) return files;
+      const walk = async (dir, prefix) => {
+        for await (const [name, handle] of dir.entries()) {
+          const path = prefix ? `${prefix}\\${name}` : name;
+          if (handle.kind === 'directory') {
+            await walk(handle, path);
+            continue;
+          }
+          const file = await handle.getFile();
+          if (file.size > max || total + file.size > max) {
+            this.logger(`Skipping C:\\${path}: guest tree would exceed ${max} bytes`);
+            continue;
+          }
+          total += file.size;
+          files.push({ path: `C:\\${path}`, bytes: new Uint8Array(await file.arrayBuffer()) });
+        }
+      };
+      await walk(this.guestDir, '');
+      return files;
+    }
+
+    /** Persists snapshots of the guest's regular files into Game/ or the private guest filesystem. */
+    async persistGuestFiles(files, limitBytes) {
+      const max = limitBytes || 256 * 1024 * 1024;
+      if (!this.gameDir || !this.guestDir) throw new Error('Guest filesystem is not mounted.');
+      const records = [];
+      const seen = new Set();
+      let total = 0;
+      for (const record of files) {
+        const rawPath = String(record.path || '').replaceAll('/', '\\').replace(/\\+/g, '\\');
+        if (!/^C:\\/i.test(rawPath)) continue;
+        const segments = rawPath.slice(3).split('\\');
+        if (segments.length === 0 || segments.some((part) => !part || part === '.' || part === '..' || part.includes(':') || /[\u0000-\u001f<>"|?*]/.test(part))) {
+          continue;
+        }
+        if (/^\.porthole_(?:guest_fs|vmem|jit_cache)$/i.test(segments[0]) || /^cache$/i.test(segments[0])) continue;
+        const key = rawPath.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const bytes = record.bytes instanceof Uint8Array ? record.bytes : new Uint8Array(record.bytes);
+        if (bytes.byteLength > max || total + bytes.byteLength > max) {
+          throw new Error(`Guest files exceed the ${Math.round(max / 1024 / 1024)} MB persistence limit.`);
+        }
+        total += bytes.byteLength;
+        records.push({ segments, bytes });
+      }
+
+      for (const record of records) {
+        const isGame = record.segments[0].toLowerCase() === 'game';
+        const relative = isGame ? record.segments.slice(1) : record.segments;
+        if (relative.length === 0) continue;
+        let directory = isGame ? this.gameDir : this.guestDir;
+        for (const part of relative.slice(0, -1)) {
+          directory = await directory.getDirectoryHandle(part, { create: true });
+        }
+        const handle = await directory.getFileHandle(relative[relative.length - 1], { create: true });
+        const writable = await handle.createWritable({ keepExistingData: false });
+        try {
+          await writable.write(record.bytes);
+          await writable.close();
+        } catch (error) {
+          try { await writable.abort(); } catch (_) { /* preserve the write failure */ }
+          throw error;
+        }
+      }
+      return { written: records.length, bytes: total };
     }
   }
 

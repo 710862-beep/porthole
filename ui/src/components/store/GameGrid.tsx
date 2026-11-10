@@ -1,82 +1,92 @@
-import { BookmarkCheck, BookmarkPlus, HardDrive } from "lucide-react";
+import { Download, HardDrive, Package, Sparkles } from "lucide-react";
 import type { StoreGame } from "@runtime/types";
+import { AppIcon } from "@/components/ui/AppIcon";
 import { Badge } from "@/components/ui/Badge";
-import { cn } from "@/lib/cn";
+import { Button } from "@/components/ui/Button";
 import { coverStyle } from "./cover";
 
 interface GameGridProps {
   games: StoreGame[];
-  selectedId: string | null;
   downloadedPackageIds: ReadonlySet<string>;
-  onSelect: (appId: string) => void;
+  downloadingAppId: string | null;
+  onSelect: (game: StoreGame) => void;
+  onDownload: (game: StoreGame) => void;
 }
 
-/** Catalog card grid; membership badges never imply that a binary is installed. */
-export function GameGrid({ games, selectedId, downloadedPackageIds, onSelect }: GameGridProps) {
+/** App-center cards with an honest one-click package-download action. */
+export function GameGrid({
+  games,
+  downloadedPackageIds,
+  downloadingAppId,
+  onSelect,
+  onDownload,
+}: GameGridProps) {
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(178px, 1fr))" }}>
+    <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr))]">
       {games.map((game) => {
         const cover = coverStyle(game.appId);
-        const Icon = cover.icon;
         const inLibrary = game.status === "in-library";
         const downloaded = downloadedPackageIds.has(game.appId);
-        const selected = selectedId === game.appId;
+        const isDownloading = downloadingAppId === game.appId;
+        const hasPackage = Boolean(game.chocolateyPackageId);
 
         return (
-          <button
+          <article
             key={game.appId}
-            type="button"
-            aria-pressed={selected}
-            onClick={() => onSelect(game.appId)}
-            className={cn(
-              "group relative flex flex-col overflow-hidden rounded-[8px] border text-left transition duration-200 ease-kde",
-              selected
-                ? "border-accent/45 bg-white/[0.05] shadow-[0_0_0_1px_rgb(var(--accent-rgb)/0.16),0_18px_44px_-20px_rgba(0,0,0,0.85)]"
-                : "border-white/[0.07] bg-white/[0.02] hover:-translate-y-0.5 hover:border-white/[0.15] hover:bg-white/[0.04]",
-            )}
+            className="group flex min-w-0 flex-col rounded-[12px] border border-white/[0.075] bg-white/[0.025] p-3 transition duration-200 hover:-translate-y-0.5 hover:border-white/[0.14] hover:bg-white/[0.045] hover:shadow-[0_18px_44px_-30px_rgba(0,0,0,0.9)]"
           >
-            <div className="relative aspect-[4/5] w-full overflow-hidden" style={{ backgroundImage: cover.gradient }}>
-              <div className="absolute inset-0 opacity-40" style={{
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)",
-                backgroundSize: "18px 18px",
-                maskImage: "radial-gradient(ellipse 80% 70% at 50% 30%, black, transparent 78%)",
-              }} aria-hidden />
-              <span className="absolute left-2.5 top-2.5">
-                <Badge tone={game.kind === "game" ? "accent" : game.kind === "system" ? "violet" : "neutral"}>
-                  {game.kind}
+            <button
+              type="button"
+              onClick={() => onSelect(game)}
+              className="flex min-w-0 flex-1 gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              aria-label={`View ${game.title} details`}
+            >
+              <span
+                className="grid h-12 w-12 flex-none place-items-center rounded-[11px] border border-white/[0.1] bg-black/20"
+                style={{ backgroundImage: cover.gradient }}
+              >
+                <AppIcon icon={cover.icon} tint={cover.tint} size={36} iconSize={19} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-[12px] font-semibold text-ink">{game.chocolatey?.title || game.title}</span>
+                  {inLibrary && <Sparkles size={11} className="flex-none text-accent" aria-label="In Porthole library" />}
+                </span>
+                <span className="mt-1 block line-clamp-2 min-h-[30px] text-[10px] leading-[1.5] text-ink-faint">
+                  {game.chocolatey?.summary || game.summary || game.genre}
+                </span>
+              </span>
+            </button>
+
+            <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-2.5">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <Badge tone={hasPackage ? "accent" : "neutral"}>
+                  {hasPackage ? "Chocolatey" : game.kind}
                 </Badge>
-              </span>
-              {inLibrary && (
-                <span className="absolute right-2.5 top-2.5 grid h-5 w-5 place-items-center rounded-full border border-success/30 bg-black/45 text-success backdrop-blur" title="In the local library">
-                  <BookmarkCheck size={12} aria-hidden />
+                <span className="truncate text-[9px] text-ink-ghost" title={game.chocolatey?.version || game.version}>
+                  {game.chocolatey?.version || game.version}
                 </span>
+                {downloaded && <HardDrive size={11} className="flex-none text-success" aria-label="Package saved in Porthole storage" />}
+              </div>
+              {hasPackage ? (
+                <Button
+                  size="xs"
+                  variant={downloaded ? "secondary" : "primary"}
+                  icon={downloaded ? HardDrive : Download}
+                  loading={isDownloading}
+                  disabled={Boolean(downloadingAppId && !isDownloading)}
+                  onClick={() => onDownload(game)}
+                  title={`Download ${game.chocolateyPackageId} package archive to Porthole storage; it will not run the package installer.`}
+                >
+                  {isDownloading ? "Saving…" : downloaded ? "Get latest" : "Get"}
+                </Button>
+              ) : (
+                <Button size="xs" variant="ghost" icon={Package} onClick={() => onSelect(game)}>
+                  Details
+                </Button>
               )}
-              <div className="absolute inset-0 grid place-items-center">
-                <span className="grid h-14 w-14 place-items-center rounded-[12px] border border-white/[0.12] bg-black/25 backdrop-blur-sm" style={{ color: cover.tint, boxShadow: `0 0 28px ${cover.tint}33` }}>
-                  <Icon size={26} strokeWidth={1.7} aria-hidden />
-                </span>
-              </div>
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-2.5 pt-8">
-                <p className="truncate text-[11.5px] font-semibold tracking-[-0.01em] text-ink">{game.title}</p>
-                <p className="mt-0.5 truncate text-[9.5px] text-ink-faint">{game.chocolatey?.version || game.version}</p>
-              </div>
             </div>
-            <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-              <span className="flex min-w-0 items-center gap-1.5 text-[9.5px] text-ink-faint">
-                {downloaded ? (
-                  <HardDrive size={10} className="flex-none text-success" aria-hidden />
-                ) : inLibrary ? (
-                  <BookmarkCheck size={10} className="flex-none text-success" aria-hidden />
-                ) : (
-                  <BookmarkPlus size={10} className="flex-none" aria-hidden />
-                )}
-                <span className="truncate">{downloaded ? "package saved" : inLibrary ? "in library" : "not in library"}</span>
-              </span>
-              <span className="font-mono text-[9px] text-ink-ghost">
-                {game.chocolateyPackageId ? downloaded ? "package saved" : "download" : game.exePath ? "local files" : "runtime record"}
-              </span>
-            </div>
-          </button>
+          </article>
         );
       })}
     </div>

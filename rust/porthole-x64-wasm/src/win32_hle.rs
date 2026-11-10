@@ -776,6 +776,21 @@ impl Win32Kernel {
             .map(|f| f.data.clone())
     }
 
+    pub fn vfs_file_paths(&self) -> Vec<String> {
+        self.files
+            .values()
+            .filter(|file| !file.is_directory)
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    pub fn vfs_file_size(&self, path: &str) -> Option<u32> {
+        self.files
+            .get(&path.to_ascii_uppercase())
+            .filter(|file| !file.is_directory)
+            .map(|file| u32::try_from(file.data.len()).unwrap_or(u32::MAX))
+    }
+
     fn lookup_file(&self, path: &str) -> Option<&GuestFile> {
         self.files.get(&path.to_ascii_uppercase())
     }

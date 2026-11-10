@@ -3,8 +3,9 @@
  *
  * This is the only UI-runtime module that knows about the wasm-bindgen ABI. It
  * reuses the repository's existing JIT host and NvmeVfs implementations through
- * Vite's platform bridge, and confines game bytes to a user-selected C:\\Game or
- * origin-private folder. Chocolatey content is never fetched here.
+ * Vite's platform bridge. Guest files are confined to the selected Porthole storage:
+ * imported files live under C:\\Game and guest-written C: files are persisted in the
+ * private guest filesystem tree. Chocolatey content is never fetched here.
  */
 
 import "@porthole/x64-jit-host";
@@ -56,47 +57,121 @@ interface GuestFile {
 
 interface GuestVfs extends PortholeJitCache {
   listGameFiles(): Promise<string[]>;
+  listGuestFiles(): Promise<string[]>;
   readGameTree(limitBytes: number): Promise<GuestFile[]>;
+  readGuestTree(limitBytes: number): Promise<GuestFile[]>;
   importGameFiles(files: readonly File[]): Promise<string[]>;
+  persistGuestFiles(files: readonly GuestFile[], limitBytes: number): Promise<{ written: number; bytes: number }>;
   persistPages(records: Uint8Array): Promise<{ written?: number }>;
   fetchPage(pageBase: number): Promise<{ pageBase: number; bytes: Uint8Array; zeroFilled?: boolean }>;
 }
 
+function isGamePath(path: string): boolean {
+  return /^c:\\game\\/i.test(path.replaceAll("/", "\\"));
+}
+
+function safeGuestAbsolutePath(value: string): string | null {
+  const normalized = value.replaceAll("/", "\\").replace(/\\+/g, "\\");
+  if (!/^C:\\/i.test(normalized)) return null;
+  const parts = normalized.slice(3).split("\\");
+  if (
+    parts.length === 0 ||
+    parts.some((part) =>
+      !part || part === "." || part === ".." || /[\u0000-\u001f<>:"|?*]/.test(part),
+    )
+  ) return null;
+  if (/^\.porthole_(?:guest_fs|vmem|jit_cache)$/i.test(parts[0]) || /^cache$/i.test(parts[0])) return null;
+  return `C:\\${parts.join("\\")}`;
+}
+
+function safeGuestFileName(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, "_")
+    .replace(/^\.+$/, "_")
+    .trim()
+    .slice(0, 180);
+}
+
+function safeGuestRelativePath(file: File): string {
+  const customPath = (file as File & { portholeRelativePath?: string }).portholeRelativePath;
+  const raw = customPath || file.webkitRelativePath || file.name;
+  if (!raw || raw.startsWith("/") || /^[a-z]:/i.test(raw)) {
+    throw new Error(`Unsafe guest import path: ${raw || "(empty)"}`);
+  }
+  const segments = raw.replaceAll("\\", "/").split("/");
+  if (segments.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`Unsafe guest import path: ${raw.slice(0, 180)}`);
+  }
+  const safe = segments.map(safeGuestFileName);
+  if (safe.some((part) => !part) || safe.join("\\").length > 480) {
+    throw new Error(`Guest import path is empty or too long: ${raw.slice(0, 180)}`);
+  }
+  return safe.join("\\");
+}
+
 class MemoryGuestVfs implements GuestVfs {
-  private readonly files = new Map<string, Uint8Array>();
+  private readonly files = new Map<string, GuestFile>();
   private readonly pages = new Map<number, Uint8Array>();
   private readonly jit = new Map<string, PortholeJitCacheEntry[]>();
 
   async listGameFiles(): Promise<string[]> {
-    return [...this.files.keys()].map((name) => `C:\\Game\\${name}`);
+    return [...this.files.values()].filter((file) => isGamePath(file.path)).map((file) => file.path);
+  }
+
+  async listGuestFiles(): Promise<string[]> {
+    return [...this.files.values()].map((file) => file.path);
   }
 
   async readGameTree(limitBytes: number): Promise<GuestFile[]> {
+    return this.readGuestTree(limitBytes, true);
+  }
+
+  async readGuestTree(limitBytes: number, gameOnly = false): Promise<GuestFile[]> {
     let total = 0;
     const result: GuestFile[] = [];
-    for (const [name, bytes] of this.files) {
-      if (bytes.byteLength > limitBytes || total + bytes.byteLength > limitBytes) continue;
-      total += bytes.byteLength;
-      result.push({ path: `C:\\Game\\${name}`, bytes: bytes.slice() });
+    for (const file of this.files.values()) {
+      if (gameOnly && !isGamePath(file.path)) continue;
+      if (file.bytes.byteLength > limitBytes || total + file.bytes.byteLength > limitBytes) continue;
+      total += file.bytes.byteLength;
+      result.push({ path: file.path, bytes: file.bytes.slice() });
     }
     return result;
   }
 
   async importGameFiles(files: readonly File[]): Promise<string[]> {
-    const names: string[] = [];
-    let total = [...this.files.values()].reduce((sum, bytes) => sum + bytes.byteLength, 0);
+    const paths: string[] = [];
+    let total = [...this.files.values()].reduce((sum, file) => sum + file.bytes.byteLength, 0);
     for (const file of files) {
-      const name = safeGuestFileName(file.name);
-      if (!name) continue;
+      const relativePath = safeGuestRelativePath(file);
       if (file.size > MAX_IMPORT_BYTES || total + file.size > MAX_IMPORT_BYTES) {
         throw new Error(`Import exceeds the ${Math.round(MAX_IMPORT_BYTES / 1024 / 1024)} MB in-memory limit.`);
       }
+      const path = `C:\\Game\\${relativePath}`;
       const bytes = new Uint8Array(await file.arrayBuffer());
-      this.files.set(name.toLowerCase(), bytes);
+      this.files.set(normalizeGuestPath(path), { path, bytes });
       total += bytes.byteLength;
-      names.push(`C:\\Game\\${name}`);
+      paths.push(path);
     }
-    return names;
+    return paths;
+  }
+
+  async persistGuestFiles(files: readonly GuestFile[], limitBytes: number): Promise<{ written: number; bytes: number }> {
+    let total = 0;
+    const records = new Map<string, GuestFile>();
+    for (const file of files) {
+      const path = safeGuestAbsolutePath(file.path);
+      if (!path) continue;
+      const key = normalizeGuestPath(path);
+      if (records.has(key)) continue;
+      if (file.bytes.byteLength > limitBytes || total + file.bytes.byteLength > limitBytes) {
+        throw new Error(`Guest files exceed the ${Math.round(limitBytes / 1024 / 1024)} MB persistence limit.`);
+      }
+      const bytes = file.bytes.slice();
+      records.set(key, { path, bytes });
+      total += bytes.byteLength;
+    }
+    for (const [key, file] of records) this.files.set(key, file);
+    return { written: records.size, bytes: total };
   }
 
   async persistPages(records: Uint8Array): Promise<{ written: number }> {
@@ -149,29 +224,50 @@ class DirectoryGuestVfs implements GuestVfs {
     return this.disk.listGameFiles();
   }
 
+  listGuestFiles(): Promise<string[]> {
+    return this.disk.listGuestFiles();
+  }
+
   readGameTree(limitBytes: number): Promise<GuestFile[]> {
     return this.disk.readGameTree(limitBytes);
+  }
+
+  readGuestTree(limitBytes: number): Promise<GuestFile[]> {
+    return this.disk.readGuestTree(limitBytes);
   }
 
   async importGameFiles(files: readonly File[]): Promise<string[]> {
     const gameDir = this.disk.gameDir;
     if (!gameDir) throw new Error("The mounted storage has no writable Game directory.");
-    const names: string[] = [];
+    const paths: string[] = [];
     let total = 0;
     for (const file of files) {
-      const name = safeGuestFileName(file.name);
-      if (!name) continue;
+      const relativePath = safeGuestRelativePath(file);
       if (file.size > MAX_IMPORT_BYTES || total + file.size > MAX_IMPORT_BYTES) {
         throw new Error(`Import exceeds the ${Math.round(MAX_IMPORT_BYTES / 1024 / 1024)} MB per-session limit.`);
       }
-      const handle = await gameDir.getFileHandle(name, { create: true });
-      const writable = await handle.createWritable();
-      await writable.write(new Uint8Array(await file.arrayBuffer()));
-      await writable.close();
+      const segments = relativePath.split("\\");
+      let directory = gameDir;
+      for (const segment of segments.slice(0, -1)) {
+        directory = await directory.getDirectoryHandle(segment, { create: true });
+      }
+      const handle = await directory.getFileHandle(segments[segments.length - 1], { create: true });
+      const writable = await handle.createWritable({ keepExistingData: false });
+      try {
+        await writable.write(new Uint8Array(await file.arrayBuffer()));
+        await writable.close();
+      } catch (error) {
+        try { await writable.abort(); } catch { /* preserve the write failure */ }
+        throw error;
+      }
       total += file.size;
-      names.push(`C:\\Game\\${name}`);
+      paths.push(`C:\\Game\\${relativePath}`);
     }
-    return names;
+    return paths;
+  }
+
+  persistGuestFiles(files: readonly GuestFile[], limitBytes: number): Promise<{ written: number; bytes: number }> {
+    return this.disk.persistGuestFiles(files, limitBytes);
   }
 
   persistPages(records: Uint8Array): Promise<{ written?: number }> {
@@ -197,14 +293,6 @@ class DirectoryGuestVfs implements GuestVfs {
   loadJitModules(limit?: number): Promise<PortholeJitCacheEntry[]> {
     return this.disk.loadJitModules(limit);
   }
-}
-
-function safeGuestFileName(value: string): string {
-  return value
-    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, "_")
-    .replace(/^\.+$/, "_")
-    .trim()
-    .slice(0, 180);
 }
 
 function cloneCacheEntries(entries: readonly PortholeJitCacheEntry[]): PortholeJitCacheEntry[] {
@@ -360,6 +448,7 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
   private core: WasmCore | null = null;
   private jit: PortholeX64JitHost | null = null;
   private vfs: GuestVfs | null = null;
+  private guestFilePersistence = false;
   private initialized = false;
   private disposed = false;
   private state: EmulatorState = "idle";
@@ -412,8 +501,17 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
     this.module = loaded.module;
     this.memory = loaded.memory;
     this.vfs = vfs;
+    const corePrototype = (loaded.module.BrowserX64Emulator as unknown as {
+      prototype?: { vfs_list_paths?: unknown; vfs_file_size?: unknown };
+    }).prototype;
+    this.guestFilePersistence =
+      typeof corePrototype?.vfs_list_paths === "function" &&
+      typeof corePrototype.vfs_file_size === "function";
     this.initialized = true;
     this.emitLog("info", "runtime", "ABI-v3 BrowserX64Emulator loaded from the Wasm artifact.");
+    if (!this.guestFilePersistence) {
+      this.emitLog("warn", "storage", "The loaded Wasm artifact lacks persistent guest-file exports; embedded installers are disabled until CI publishes the updated ABI-v3 runtime.");
+    }
     this.emitLog("info", "runtime", "Windows API SHIM routes through the core; the shared-memory Wasm JIT host is enabled.");
     this.emitLog("info", "storage", `guest page swap and JIT cache backend: ${storage}`);
     this.emitTelemetry();
@@ -422,6 +520,17 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
   async listGameFiles(): Promise<string[]> {
     if (!this.initialized || !this.vfs) throw new Error("Initialize the runtime before listing guest files.");
     return this.vfs.listGameFiles();
+  }
+
+  async listGuestExecutables(): Promise<string[]> {
+    if (!this.initialized || !this.vfs) throw new Error("Initialize the runtime before listing guest executables.");
+    return (await this.vfs.listGuestFiles())
+      .filter((path) => /\.exe$/i.test(path))
+      .sort((left, right) => left.localeCompare(right));
+  }
+
+  supportsGuestFilePersistence(): boolean {
+    return this.guestFilePersistence;
   }
 
   async importFiles(files: readonly File[]): Promise<string[]> {
@@ -442,6 +551,7 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
     if (this.state === "running" || this.state === "paused" || this.state === "page-fault-wait") {
       this.stopExecution();
     }
+    if (this.core) await this.persistGuestFiles(this.core, "before loading another executable");
     this.core?.free?.();
     this.core = null;
     this.jit = null;
@@ -460,11 +570,11 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
     this.setState("loading");
 
     try {
-      const files = await this.vfs.readGameTree(MAX_GAME_TREE_BYTES);
+      const files = await this.vfs.readGuestTree(MAX_GAME_TREE_BYTES);
       const normalizedPath = normalizeGuestPath(path);
       const target = files.find((file) => normalizeGuestPath(file.path) === normalizedPath);
       if (!target) {
-        throw new Error(`Executable not found in the mounted C:\\Game directory: ${path}. Import the PE32+ file (and its data files) first.`);
+        throw new Error(`Executable not found in the persistent guest C: filesystem: ${path}. Import the PE32+ file first.`);
       }
 
       const CoreConstructor = this.module.BrowserX64Emulator;
@@ -497,7 +607,27 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
       ]) {
         core.vfs_mkdir(directory);
       }
-      for (const file of files) core.vfs_insert(file.path, file.bytes);
+      const createdDirectories = new Set([
+        "C:\\Windows",
+        "C:\\Windows\\System32",
+        "C:\\Users",
+        "C:\\Users\\PORTHOLE",
+        "C:\\Users\\PORTHOLE\\Temp",
+        "C:\\Users\\PORTHOLE\\AppData",
+        "C:\\Users\\PORTHOLE\\AppData\\Roaming",
+        "C:\\Game",
+      ].map(normalizeGuestPath));
+      for (const file of files) {
+        const parts = file.path.replaceAll("/", "\\").split("\\").filter(Boolean);
+        for (let index = 1; index < parts.length - 1; index += 1) {
+          const directory = parts.slice(0, index + 1).join("\\");
+          const key = normalizeGuestPath(directory);
+          if (createdDirectories.has(key)) continue;
+          core.vfs_mkdir(directory);
+          createdDirectories.add(key);
+        }
+        core.vfs_insert(file.path, file.bytes);
+      }
       if (/-timedemo\s+demo1\b/i.test(argumentsLine) && !files.some((file) => /\\demo1\.lmp$/i.test(file.path))) {
         const demo = extractDoomDemo1(files);
         if (demo) {
@@ -574,6 +704,7 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
     }
     this.stopExecution();
     this.accumulateUptime();
+    if (this.core) await this.persistGuestFiles(this.core, "after guest stop");
     this.core?.free?.();
     this.core = null;
     this.jit = null;
@@ -734,6 +865,40 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
     }
   }
 
+  private async persistGuestFiles(core: WasmCore, reason: string): Promise<void> {
+    if (!this.vfs) return;
+    if (typeof core.vfs_list_paths !== "function" || typeof core.vfs_file_size !== "function") {
+      this.emitLog("warn", "storage", "guest-file persistence is unavailable in this Wasm artifact; installer changes may be lost.");
+      return;
+    }
+    try {
+      const paths = core.vfs_list_paths().split("\0").filter(Boolean);
+      const files: GuestFile[] = [];
+      let total = 0;
+      for (const path of paths) {
+        if (!/^C:\\/i.test(path)) continue;
+        const size = Number(core.vfs_file_size(path)) || 0;
+        if (size > MAX_GAME_TREE_BYTES || total + size > MAX_GAME_TREE_BYTES) {
+          this.emitLog("warn", "storage", `guest file not persisted (${size} bytes would exceed the ${Math.round(MAX_GAME_TREE_BYTES / 1024 / 1024)} MB tree limit): ${path}`);
+          continue;
+        }
+        const bytes = core.vfs_read(path);
+        if (!bytes || bytes.byteLength !== size) {
+          this.emitLog("warn", "storage", `guest file snapshot failed or changed size; not persisted: ${path}`);
+          continue;
+        }
+        files.push({ path, bytes });
+        total += bytes.byteLength;
+      }
+      const result = await this.vfs.persistGuestFiles(files, MAX_GAME_TREE_BYTES);
+      if (result.written > 0) {
+        this.emitLog("info", "storage", `persisted ${result.written} guest file(s) (${Math.round(result.bytes / 1024)} KB) ${reason}.`);
+      }
+    } catch (error) {
+      this.emitLog("error", "storage", `could not persist guest files ${reason}: ${errorText(error)}`);
+    }
+  }
+
   private async finishGuest(status: string): Promise<void> {
     const core = this.core;
     if (core) {
@@ -746,6 +911,7 @@ export class WasmEmulatorRuntime implements ExtendedEmulatorRuntime {
           this.emitLog("error", "storage", `final page flush failed: ${errorText(error)}`);
         }
       }
+      await this.persistGuestFiles(core, "after guest exit");
       const consoleOutput = core.take_console().trim();
       if (consoleOutput) this.emitLog("info", "guest", consoleOutput.slice(-4000));
     }

@@ -79,6 +79,10 @@ export interface ExtendedEmulatorRuntime extends EmulatorRuntime {
   initialize(storage: StorageBackendId): Promise<void>;
   /** Lists file names in the mounted C:\\Game tree without reading their contents. */
   listGameFiles(): Promise<string[]>;
+  /** Lists guest-side PE candidates across the persisted C: virtual drive. */
+  listGuestExecutables(): Promise<string[]>;
+  /** True only when the loaded ABI exposes the guest-file snapshot methods. */
+  supportsGuestFilePersistence(): boolean;
   onTelemetry(callback: (telemetry: RuntimeTelemetry) => void): () => void;
   getTelemetry(): RuntimeTelemetry;
   onLog(callback: (entry: RuntimeLogEntry) => void): () => void;
@@ -120,6 +124,7 @@ export interface PortholeStorageService extends StorageSelector {
   getDirectoryHandle(): FileSystemDirectoryHandle | null;
   storePackageArchive(file: File): Promise<StoredPackageArchive>;
   listStoredPackageArchives(): Promise<StoredPackageArchive[]>;
+  readStoredPackageArchive(name: string): Promise<File | null>;
   describeSelected(): StorageState;
   setSelected(backend: StorageBackendId, detail?: string): StorageState;
   clearSelection(): void;

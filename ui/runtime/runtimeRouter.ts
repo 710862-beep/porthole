@@ -50,6 +50,15 @@ export class RuntimeRouter implements ExtendedEmulatorRuntime {
     return this.wasm.listGameFiles();
   }
 
+  listGuestExecutables(): Promise<string[]> {
+    this.assertAvailable();
+    return this.wasm.listGuestExecutables();
+  }
+
+  supportsGuestFilePersistence(): boolean {
+    return this.initializationFailure === null && this.wasm.supportsGuestFilePersistence();
+  }
+
   loadExecutable(path: string, argumentsLine = ""): Promise<ProcessHandle> {
     this.assertAvailable();
     return this.wasm.loadExecutable(path, argumentsLine);

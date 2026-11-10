@@ -246,6 +246,15 @@ impl BrowserX64Emulator {
         self.kernel.vfs_snapshot(path)
     }
 
+    /// Returns NUL-delimited paths for regular files in the guest VFS. NUL is not legal in a Windows filename.
+    pub fn vfs_list_paths(&self) -> String {
+        self.kernel.vfs_file_paths().join("\0")
+    }
+
+    pub fn vfs_file_size(&self, path: &str) -> u32 {
+        self.kernel.vfs_file_size(path).unwrap_or(0)
+    }
+
     /// Sets the guest command line (`GetCommandLineA/W`, `argc`/`argv`), e.g.
     /// `"kernel32_test.exe atom"` so a winetest binary runs a single subtest.
     pub fn set_command_line(&mut self, line: &str) {

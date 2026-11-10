@@ -25,6 +25,8 @@ export interface WasmEmulatorBindings {
   vfs_mkdir(path: string): void;
   vfs_insert(path: string, bytes: Uint8Array): void;
   vfs_read(path: string): Uint8Array | undefined;
+  vfs_list_paths(): string;
+  vfs_file_size(path: string): number;
   // run loop: "next" | "exit:<code>" | "fault:<msg>" | "page-fault:<addr>" | "modal" | "halt"
   run_slice(budget: number): string;
   drain_evicted_pages(): Uint8Array;                   // [u64 base][4096 bytes]*

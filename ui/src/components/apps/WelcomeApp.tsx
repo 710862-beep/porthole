@@ -100,7 +100,7 @@ export function WelcomeApp() {
             <ul className="mt-2 flex flex-col gap-1.5 text-[10.5px] leading-relaxed text-ink-muted">
               <li>Not a Windows kernel, BIOS or OS image.</li>
               <li>Not a Windows compatibility guarantee: the Doom timedemo remains unresolved in the current hybrid-JIT path.</li>
-              <li>Chocolatey `.nupkg` archives are saved under `PortholePackages/` in selected Porthole storage, separate from guest files; package scripts and installers are never run by the Store.</li>
+              <li>Chocolatey `.nupkg` archives are saved separately from guest files. Only directly embedded x64 EXEs can be explicitly launched inside the Wasm guest; package scripts, MSI files and external URLs are not run, and a launch is not proof of installation.</li>
               <li>Keyboard and mouse-button delivery remain pending (KI-04); pointer coordinates are a separate limited path.</li>
             </ul>
           </div>

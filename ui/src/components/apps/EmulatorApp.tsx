@@ -68,6 +68,10 @@ function normalizeGuestPath(value: string): string {
   return value.replaceAll("/", "\\").replace(/\\+/g, "\\").toLowerCase();
 }
 
+function guestExecutableName(path: string): string {
+  return path.replaceAll("/", "\\").split("\\").at(-1) ?? path;
+}
+
 function mergeGuestPaths(current: readonly string[], incoming: readonly string[]): string[] {
   const paths = new Map(current.map((path) => [normalizeGuestPath(path), path]));
   for (const path of incoming) paths.set(normalizeGuestPath(path), path);
@@ -114,6 +118,7 @@ export function EmulatorApp() {
   const { openApp } = useWindowManager();
   const games = useLibraryStore((state) => state.games);
   const profileRequest = useEmulatorStore((state) => state.selectedProfileId);
+  const selectedGuestExecutable = useEmulatorStore((state) => state.selectedGuestExecutable);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -126,6 +131,8 @@ export function EmulatorApp() {
   const [importing, setImporting] = useState(false);
   const [guestFiles, setGuestFiles] = useState<string[]>([]);
   const [guestFilesLoading, setGuestFilesLoading] = useState(false);
+  const [guestExecutables, setGuestExecutables] = useState<string[]>([]);
+  const [guestExecutablesLoading, setGuestExecutablesLoading] = useState(false);
   /** Launch profile chosen from the browser-local library list. */
   const [pickedAppId, setPickedAppId] = useState<string | null>(null);
 
@@ -136,13 +143,18 @@ export function EmulatorApp() {
 
   /** A catalog entry is only a launch profile; its executable must be imported locally. */
   const game = useMemo<StoreGame | null>(() => {
+    if (selectedGuestExecutable) return null;
     if (pickedAppId) return gameStore.getGame(pickedAppId);
     return libraryEntries[0] ?? null;
-  }, [gameStore, libraryEntries, pickedAppId]);
+  }, [gameStore, libraryEntries, pickedAppId, selectedGuestExecutable]);
   const missingRequiredFiles = useMemo(
     () => missingFilesFor(game, guestFiles),
     [game, guestFiles],
   );
+  const activeGuestPath = selectedGuestExecutable ?? (telemetry?.processId ? telemetry.executable : null);
+  const workloadTitle = selectedGuestExecutable
+    ? guestExecutableName(selectedGuestExecutable)
+    : game?.title ?? (activeGuestPath ? guestExecutableName(activeGuestPath) : "No workload loaded");
 
   useEffect(() => {
     if (!profileRequest || games.length === 0) return;
@@ -177,13 +189,38 @@ export function EmulatorApp() {
     };
   }, [mode, runtime, status]);
 
+  useEffect(() => {
+    if (mode !== "wasm" || status !== "ready") {
+      setGuestExecutablesLoading(false);
+      return;
+    }
+    let active = true;
+    setGuestExecutablesLoading(true);
+    void runtime.listGuestExecutables()
+      .then((paths) => {
+        if (active) setGuestExecutables(paths);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          const message = error instanceof Error ? error.message : String(error);
+          toast({ title: "Could not inspect guest executables", message, tone: "warning" });
+        }
+      })
+      .finally(() => {
+        if (active) setGuestExecutablesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [guestState, mode, runtime, status]);
+
   useFramebuffer(canvasRef, chrome.visible);
 
   useEffect(() => {
     useWindowStore
       .getState()
-      .setTitle(chrome.id, game ? `${game.title} — Emulator` : "Porthole Emulator");
-  }, [chrome.id, game]);
+      .setTitle(chrome.id, `${workloadTitle} — Emulator`);
+  }, [chrome.id, workloadTitle]);
 
   const running = guestState === "running";
   const paused = guestState === "paused";
@@ -193,6 +230,7 @@ export function EmulatorApp() {
     (entry: StoreGame): void => {
       setPickerOpen(false);
       setPickedAppId(entry.appId);
+      useEmulatorStore.getState().setSelectedGuestExecutable(null);
       if (guestFilesLoading) {
         toast({ title: "Checking mounted files", message: "The Emulator is scanning C:\\Game. Try again in a moment.", tone: "info" });
         return;
@@ -298,17 +336,17 @@ export function EmulatorApp() {
           <Cpu size={14} aria-hidden />
         </span>
         <div className="min-w-0">
-          <p className="truncate text-[11.5px] font-medium text-ink">
-            {game?.title ?? "No workload loaded"}
-          </p>
+          <p className="truncate text-[11.5px] font-medium text-ink">{workloadTitle}</p>
           <p className="truncate font-mono text-[9.5px] text-ink-faint">
-            {game
-              ? guestFilesLoading
-                ? "checking files in C:\\Game…"
-                : missingRequiredFiles.length > 0
-                  ? `needs ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")} · import from device`
-                  : game.exePath
-              : "choose a catalog profile and import its local files first"}
+            {selectedGuestExecutable
+              ? selectedGuestExecutable
+              : game
+                ? guestFilesLoading
+                  ? "checking files in C:\\Game…"
+                  : missingRequiredFiles.length > 0
+                    ? `needs ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")} · import from device`
+                    : game.exePath
+                : activeGuestPath ?? (guestExecutablesLoading ? "scanning persistent guest C: files…" : "choose a profile or guest executable")}
           </p>
         </div>
 
@@ -355,14 +393,14 @@ export function EmulatorApp() {
               aria-haspopup="listbox"
               aria-expanded={pickerOpen}
               onClick={() => setPickerOpen((value) => !value)}
-              disabled={libraryEntries.length === 0}
+              disabled={libraryEntries.length === 0 && guestExecutables.length === 0}
             >
-              Profile
+              {selectedGuestExecutable ? "Guest file" : "Profile"}
             </Button>
             {pickerOpen && (
               <div
                 role="listbox"
-                aria-label="Catalog launch profiles"
+                aria-label="Catalog profiles and guest executables"
                 className="absolute right-0 top-[34px] z-20 w-[260px] overflow-hidden rounded-[10px] border border-white/10 bg-[rgba(17,17,27,0.97)] p-1 shadow-dialog backdrop-blur-xl"
               >
                 {libraryEntries.map((entry) => (
@@ -371,7 +409,11 @@ export function EmulatorApp() {
                     type="button"
                     role="option"
                     aria-selected={game?.appId === entry.appId}
-                    onClick={() => { setPickedAppId(entry.appId); setPickerOpen(false); }}
+                    onClick={() => {
+                      setPickedAppId(entry.appId);
+                      useEmulatorStore.getState().setSelectedGuestExecutable(null);
+                      setPickerOpen(false);
+                    }}
                     className="flex w-full flex-col items-start gap-0.5 rounded-[7px] px-2.5 py-1.5 text-left transition hover:bg-white/[0.06]"
                   >
                     <span className="text-[11px] text-ink">{entry.title}</span>
@@ -380,9 +422,31 @@ export function EmulatorApp() {
                     </span>
                   </button>
                 ))}
-                {libraryEntries.length === 0 && (
+                {guestExecutables.length > 0 && (
+                  <div className="my-1 border-t border-white/[0.06] pt-1">
+                    <p className="px-2.5 py-1 text-[8.5px] font-semibold uppercase tracking-[0.12em] text-ink-ghost">Guest executables</p>
+                    {guestExecutables.map((path) => (
+                      <button
+                        key={path}
+                        type="button"
+                        role="option"
+                        aria-selected={normalizeGuestPath(selectedGuestExecutable ?? "") === normalizeGuestPath(path)}
+                        onClick={() => {
+                          useEmulatorStore.getState().setSelectedGuestExecutable(path);
+                          setPickedAppId(null);
+                          setPickerOpen(false);
+                        }}
+                        className="flex w-full flex-col items-start gap-0.5 rounded-[7px] px-2.5 py-1.5 text-left transition hover:bg-white/[0.06]"
+                      >
+                        <span className="text-[10.5px] text-ink">{guestExecutableName(path)}</span>
+                        <span className="truncate font-mono text-[8.5px] text-ink-faint">{path}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {libraryEntries.length === 0 && guestExecutables.length === 0 && (
                   <p className="px-2.5 py-2 text-[10.5px] text-ink-faint">
-                    No library profiles. Add a catalog bookmark; it will not install files.
+                    {guestExecutablesLoading ? "Scanning guest C: files…" : "No guest executables or library profiles yet."}
                   </p>
                 )}
               </div>
@@ -402,12 +466,22 @@ export function EmulatorApp() {
               size="sm"
               variant="primary"
               icon={Play}
-              disabled={!game || mode !== "wasm" || status !== "ready" || guestFilesLoading || importing}
+              disabled={(!selectedGuestExecutable && (!game || guestFilesLoading)) || mode !== "wasm" || status !== "ready" || importing}
               onClick={() => {
-                if (game) launchGame(game);
+                if (selectedGuestExecutable) {
+                  void loadAndLaunch(selectedGuestExecutable);
+                } else if (game) {
+                  launchGame(game);
+                }
               }}
             >
-              {guestFilesLoading ? "Checking files…" : mode === "wasm" && missingRequiredFiles.length > 0 ? "Import files" : "Launch"}
+              {selectedGuestExecutable
+                ? "Launch guest file"
+                : guestFilesLoading
+                  ? "Checking files…"
+                  : mode === "wasm" && missingRequiredFiles.length > 0
+                    ? "Import files"
+                    : "Launch"}
             </Button>
           )}
 
@@ -484,12 +558,24 @@ export function EmulatorApp() {
                   </p>
                   <p className="mt-1 max-w-[46ch] text-[10.5px] leading-relaxed text-ink-faint">
                     {missingRequiredFiles.length > 0
-                      ? `Required in C:\\Game: ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")}. Select Import files; the Store saves .nupkg archives separately and does not install guest executables or game data.`
-                      : "The canvas draws only frames reported by the ABI-v3 core. No demo image or synthetic guest frame is substituted."}
+                      ? `Required in C:\\Game: ${missingRequiredFiles.map((path) => path.split("\\").at(-1) ?? path).join(", ")}. Import the files, or use the Store's explicitly confirmed direct-EXE runner for a supported embedded x64 installer.`
+                      : selectedGuestExecutable
+                        ? "This PE32+ executable runs in the Wasm guest only. Keyboard and mouse-button delivery are still pending."
+                        : "The canvas draws only frames reported by the ABI-v3 core. No demo image or synthetic guest frame is substituted."}
                   </p>
                 </div>
                 <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
-                  {game ? (
+                  {selectedGuestExecutable ? (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      icon={Play}
+                      disabled={mode !== "wasm" || status !== "ready" || importing}
+                      onClick={() => { void loadAndLaunch(selectedGuestExecutable); }}
+                    >
+                      Launch {guestExecutableName(selectedGuestExecutable)}
+                    </Button>
+                  ) : game ? (
                     <Button
                       size="sm"
                       variant="primary"

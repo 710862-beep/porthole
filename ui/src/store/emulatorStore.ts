@@ -19,6 +19,7 @@ interface EmulatorStore {
   telemetry: RuntimeTelemetry | null;
   processHandle: ProcessHandle | null;
   selectedProfileId: string | null;
+  selectedGuestExecutable: string | null;
   logs: RuntimeLogEntry[];
   logsOpen: boolean;
   lastFrameAt: number | null;
@@ -30,6 +31,7 @@ interface EmulatorStore {
   setTelemetry: (telemetry: RuntimeTelemetry) => void;
   setProcessHandle: (handle: ProcessHandle | null) => void;
   setSelectedProfileId: (appId: string | null) => void;
+  setSelectedGuestExecutable: (path: string | null) => void;
   pushLog: (entry: RuntimeLogEntry) => void;
   replaceLogs: (logs: readonly RuntimeLogEntry[]) => void;
   clearLogs: () => void;
@@ -53,6 +55,7 @@ export const useEmulatorStore = create<EmulatorStore>()((set, get) => ({
   telemetry: null,
   processHandle: null,
   selectedProfileId: null,
+  selectedGuestExecutable: null,
   logs: [],
   logsOpen: false,
   lastFrameAt: null,
@@ -64,6 +67,7 @@ export const useEmulatorStore = create<EmulatorStore>()((set, get) => ({
   setTelemetry: (telemetry) => set({ telemetry }),
   setProcessHandle: (processHandle) => set({ processHandle }),
   setSelectedProfileId: (selectedProfileId) => set({ selectedProfileId }),
+  setSelectedGuestExecutable: (selectedGuestExecutable) => set({ selectedGuestExecutable }),
   pushLog: (entry) =>
     set((state) => ({
       logs: [...state.logs, entry].slice(-MAX_MIRRORED_LOGS),
