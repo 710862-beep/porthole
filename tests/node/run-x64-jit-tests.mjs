@@ -49,8 +49,8 @@ if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 const tests = Number(result.stdout.match(/^# tests (\d+)$/m)?.[1] ?? 0);
 const skipped = Number(result.stdout.match(/^# skipped (\d+)$/m)?.[1] ?? 0);
-if (tests !== 13 || skipped !== 0) {
-  console.error(`Expected all 13 ABI-v3 JIT tests to execute (zero skips); observed tests=${tests}, skipped=${skipped}, core=${wasmDir}.`);
+if (tests !== 15 || skipped !== 0) {
+  console.error(`Expected all 15 ABI-v3 JIT tests to execute (zero skips); observed tests=${tests}, skipped=${skipped}, core=${wasmDir}.`);
   process.exit(1);
 }
 console.log(`Verified: ${tests} x64 JIT tests passed against ${wasmDir}.`);

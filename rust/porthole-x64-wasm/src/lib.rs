@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use iced_x86::{Decoder, DecoderOptions, OpKind};
+use iced_x86::{Decoder, DecoderOptions, InstructionInfoFactory, OpAccess, OpKind, Register};
 use wasm_bindgen::prelude::*;
 
 pub mod cpu;
@@ -105,6 +105,100 @@ fn decode_guest_instruction(vmm: &VirtualMemoryManager, rip: u64) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("bytes={code} {:?} {operands}", ins.mnemonic())
+}
+
+fn gpr_index(register: Register) -> Option<usize> {
+    Some(match register.full_register() {
+        Register::RAX => 0, Register::RCX => 1, Register::RDX => 2, Register::RBX => 3,
+        Register::RSP => 4, Register::RBP => 5, Register::RSI => 6, Register::RDI => 7,
+        Register::R8 => 8, Register::R9 => 9, Register::R10 => 10, Register::R11 => 11,
+        Register::R12 => 12, Register::R13 => 13, Register::R14 => 14, Register::R15 => 15,
+        _ => return None,
+    })
+}
+
+fn gpr_name(index: usize) -> &'static str {
+    ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+     "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"][index]
+}
+
+fn access_reads(access: OpAccess) -> bool {
+    matches!(access, OpAccess::Read | OpAccess::CondRead | OpAccess::ReadWrite | OpAccess::ReadCondWrite)
+}
+
+/// Capture the decoded operation and its exact guest-side address expression before the
+/// exception path replaces CPU state. `ea_sum_pre_truncation` is the full wrapping u64 sum;
+/// `ea_arch` applies iced-x86's decoded address-size and segment rules.
+fn fault_instruction_details(vmm: &VirtualMemoryManager, cpu: &CpuState) -> String {
+    let mut bytes = [0u8; 16];
+    if vmm.audit_read_bytes(cpu.rip, &mut bytes).is_err() {
+        return format!("iced_decode=unavailable rip=0x{:x} bytes=unavailable rsp_full=0x{:016x}\n", cpu.rip, cpu.gpr[4]);
+    }
+    let Ok(mut decoder) = Decoder::try_new(64, &bytes, DecoderOptions::NONE) else {
+        return format!("iced_decode=unavailable rip=0x{:x} decoder=unavailable rsp_full=0x{:016x}\n", cpu.rip, cpu.gpr[4]);
+    };
+    decoder.set_ip(cpu.rip);
+    let ins = decoder.decode();
+    if ins.is_invalid() {
+        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        return format!("iced_decode=invalid rip=0x{:x} bytes={hex} rsp_full=0x{:016x}\n", cpu.rip, cpu.gpr[4]);
+    }
+
+    let len = (ins.len() as usize).min(bytes.len());
+    let hex = bytes[..len].iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let operands = (0..ins.op_count())
+        .map(|operand| format_instruction_operand(&ins, operand))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut factory = InstructionInfoFactory::new();
+    let info = factory.info(&ins);
+    let mut source_registers: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    for used in info.used_registers() {
+        if !access_reads(used.access()) { continue; }
+        if let Some(index) = gpr_index(used.register()) {
+            source_registers.entry(index).or_default().insert(format!("{:?}", used.register()));
+        }
+    }
+    let source_values = source_registers.iter()
+        .map(|(&index, aliases)| format!(
+            "{}(full={},iced={})=0x{:016x}", gpr_name(index), gpr_name(index),
+            aliases.iter().cloned().collect::<Vec<_>>().join("/"), cpu.gpr[index]
+        ))
+        .collect::<Vec<_>>().join(" ");
+    let source_text = if source_values.is_empty() { "<none>".to_string() } else { source_values };
+
+    let mut out = format!(
+        "iced_instruction=rip:0x{:x} next:0x{:x} bytes:{} {:?} {}\nrsp_full=0x{:016x}\nsource_gprs={}\n",
+        ins.ip(), ins.next_ip(), hex, ins.mnemonic(), operands, cpu.gpr[4], source_text
+    );
+    for (index, memory) in info.used_memory().iter().enumerate() {
+        let gpr_value = |register: Register| gpr_index(register).map(|i| cpu.gpr[i]);
+        let base_value = if memory.base() == Register::None { Some(0) } else { gpr_value(memory.base()) };
+        let index_value = if memory.index() == Register::None { Some(0) } else { gpr_value(memory.index()) };
+        let raw_sum = base_value.zip(index_value).map(|(base, index)| {
+            memory.displacement()
+                .wrapping_add(base)
+                .wrapping_add(index.wrapping_mul(memory.scale() as u64))
+        });
+        let architectural_ea = memory.virtual_address(0, |register, _, _| match register {
+            Register::FS => Some(cpu.fs_base),
+            Register::GS => Some(cpu.gs_base),
+            Register::CS | Register::DS | Register::ES | Register::SS => Some(0),
+            _ => gpr_value(register),
+        });
+        let raw_text = raw_sum.map(|address| format!("0x{address:016x}"))
+            .unwrap_or_else(|| "<unavailable>".to_string());
+        let ea_text = architectural_ea.map(|address| format!("0x{address:016x}"))
+            .unwrap_or_else(|| "<unavailable>".to_string());
+        let page_text = architectural_ea.map(|address| format!("0x{:016x}", address & !0xFFF))
+            .unwrap_or_else(|| "<unavailable>".to_string());
+        out.push_str(&format!(
+            "memory[{index}]=access:{:?} address_size:{:?} segment:{:?} base:{:?} index:{:?} scale:{} displacement:0x{:x} ea_sum_pre_truncation:{raw_text} ea_arch:{ea_text} ea_page:{page_text}\n",
+            memory.access(), memory.address_size(), memory.segment(), memory.base(),
+            memory.index(), memory.scale(), memory.displacement()
+        ));
+    }
+    out
 }
 
 fn decode_rip_history(vmm: &VirtualMemoryManager, history: &str, source_rip: u64) -> String {
@@ -840,8 +934,9 @@ impl BrowserX64Emulator {
                         } else { "<unavailable>".to_string() };
                         stack.push(format!("[0x{stack_addr:x}]={value}"));
                     }
+                    let decoded_fault = fault_instruction_details(&self.vmm, fault_cpu);
                     self.faulting_context = format!(
-                        "access=unknown target=0x{addr:x} rip=0x{:x} rflags=0x{:x}\ninstruction_bytes={instruction_hex}\nregisters={registers}\nstack={}\nlast_rips={}\nlast_rip_states={}\n",
+                        "access=unknown target=0x{addr:x} rip=0x{:x} rflags=0x{:x}\ninstruction_bytes={instruction_hex}\nregisters={registers}\nstack={}\n{decoded_fault}last_rips={}\nlast_rip_states={}\n",
                         fault_cpu.rip, fault_cpu.rflags, stack.join(" "), fault_cpu.render_rip_history(),
                         fault_cpu.render_rip_history_with_rsp()
                     );

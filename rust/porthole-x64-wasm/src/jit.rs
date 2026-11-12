@@ -1208,6 +1208,9 @@ impl HybridWasmJit {
         }
     }
 
+    /// Build the guest virtual address with i64 arithmetic. `mem_addr` sends 32-bit
+    /// base/index address-size forms to the interpreter; 32-bit operand results are
+    /// separately masked/zero-extended by the register emitters.
     fn emit_ea(b: &mut Vec<u8>, addr: &MemAddr) {
         if let Some(rip) = addr.rip {
             Self::i64_const(b, rip as i64); Self::local_set(b, 21);
