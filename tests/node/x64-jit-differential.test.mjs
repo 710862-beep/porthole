@@ -76,12 +76,14 @@ test('JIT and interpreter agree on a 32-bit store whose effective address is abo
   jit.load_pe(pe64(code));
   const host = new X64JitHost(jit, {}, { memory: second.memory });
   jit.set_jit_enabled(true);
+  jit.aot_compile_text();
+  await host.drainPending();
   const jitStatus = await runToEnd(jit, host);
   assert.ok(jitStatus === 'stopped' || jitStatus === 'exit:0', jitStatus);
   await host.drainPending();
   assert.deepEqual(regs(jit), expected, 'JIT and interpreter must agree on the high-address store');
   assert.ok(jit.peek_qwords(address, 1).includes('0x0000000055667788'));
-  assert.ok(host.stats.executedInstructions > 0, 'the high-address block must execute natively');
+  assert.ok(host.stats.executedInstructions > 0, `the high-address block must execute natively: ${JSON.stringify(host.stats)}`);
 });
 
 test('JIT RIP-relative loads in one block use each instruction end as the displacement base', async t => {
@@ -112,11 +114,13 @@ test('JIT RIP-relative loads in one block use each instruction end as the displa
   jit.load_pe(pe64(code));
   const host = new X64JitHost(jit, {}, { memory: second.memory });
   jit.set_jit_enabled(true);
+  jit.aot_compile_text();
+  await host.drainPending();
   const jitStatus = await runToEnd(jit, host);
   assert.ok(jitStatus === 'stopped' || jitStatus === 'exit:0', jitStatus);
   await host.drainPending();
   assert.deepEqual(regs(jit), expected, 'each RIP-relative operand must use its own next IP');
-  assert.ok(host.stats.executedInstructions > 0, 'the RIP-relative block must execute natively');
+  assert.ok(host.stats.executedInstructions > 0, `the RIP-relative block must execute natively: ${JSON.stringify(host.stats)}`);
 });
 
 test('JIT and interpreter agree on RFLAGS across a native self-loop sub/nop/jnz block', async t => {
