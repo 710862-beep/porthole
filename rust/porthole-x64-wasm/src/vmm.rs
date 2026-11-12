@@ -4,6 +4,8 @@ pub const PAGE_SIZE: usize = 4096;
 pub const JIT_SHADOW_PAGE_CAP: usize = 4096;
 pub const PAGE_MASK: u64 = 0xFFF;
 pub const PAGE_SHIFT: u32 = 12;
+const VMM_TLB_ENTRIES: usize = 4096;
+const VMM_TLB_MASK: usize = VMM_TLB_ENTRIES - 1;
 
 pub const MEM_COMMIT: u32 = 0x0000_1000;
 pub const MEM_RESERVE: u32 = 0x0000_2000;
@@ -58,6 +60,28 @@ struct PageEntry {
     last_used_gen: u64,
 }
 
+/// Direct-mapped resident-page translation. `host_offset` points to a boxed `PageEntry`,
+/// whose address stays stable across `HashMap` growth. A layout-epoch change clears the
+/// table before any page backing is removed or replaced.
+#[derive(Clone, Copy)]
+struct VmmTlbEntry {
+    tag: u64,
+    host_offset: usize,
+    layout_epoch: u64,
+    state: u32,
+    protect: u32,
+}
+
+impl VmmTlbEntry {
+    const EMPTY: Self = Self {
+        tag: u64::MAX,
+        host_offset: 0,
+        layout_epoch: 0,
+        state: 0,
+        protect: 0,
+    };
+}
+
 /// One observed store inside the watched VA window (see [`VirtualMemoryManager::set_write_watch`]).
 ///
 /// `rip` is the guest instruction pointer that was executing when the store happened, supplied by
@@ -87,10 +111,13 @@ pub struct ShadowWritePage {
 /// Phase 2: NVMe-backed VirtualMemoryManager.
 ///
 /// Manages a 64-bit sparse virtual address space (supporting 16 GB–64 GB+ guest VA ranges)
-/// backed by an in-Wasm LRU page cache (`HashMap<u64, Vec<u8>>` semantics) and an eviction/fault
-/// queue bridged to `FileSystemDirectoryHandle` swap shards on the host NVMe drive.
+/// backed by an in-Wasm LRU page cache, a fixed-size direct-mapped resident-page TLB, and an
+/// eviction/fault queue bridged to `FileSystemDirectoryHandle` swap shards on the host NVMe drive.
 pub struct VirtualMemoryManager {
-    page_cache: HashMap<u64, PageEntry>,
+    // Box each resident descriptor so its address remains stable while the page-cache
+    // HashMap grows. The fixed-size direct-mapped TLB stores that host offset.
+    page_cache: HashMap<u64, Box<PageEntry>>,
+    vmm_tlb: Box<[VmmTlbEntry]>,
     swapped_out_pages: HashSet<u64>,
     evicted_dirty_pages: Vec<EvictedPage>,
     page_write_epochs: HashMap<u64, u32>,
@@ -101,7 +128,7 @@ pub struct VirtualMemoryManager {
     pub pages_evicted: u64,
     pub pages_faulted_in: u64,
     pub dirty_pages_queued: u64,
-    /// Increments when resident page backing storage may have moved/freed; JIT TLB generation.
+    /// Increments when resident backing or VMA layout changes; invalidates VMM and JIT TLBs.
     pub layout_epoch: u64,
     /// Guest RIP stamped onto [`WatchEvent`]s; maintained by the execution driver.
     pub current_rip: u64,
@@ -120,6 +147,7 @@ impl VirtualMemoryManager {
     pub fn new(max_resident_pages: usize) -> Self {
         Self {
             page_cache: HashMap::new(),
+            vmm_tlb: vec![VmmTlbEntry::EMPTY; VMM_TLB_ENTRIES].into_boxed_slice(),
             swapped_out_pages: HashSet::new(),
             evicted_dirty_pages: Vec::new(),
             page_write_epochs: HashMap::new(),
@@ -342,6 +370,27 @@ impl VirtualMemoryManager {
     }
 
     #[inline]
+    fn bump_layout_epoch(&mut self) {
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        // Cached host offsets are only valid while resident backing and VMA metadata
+        // retain the layout epoch they were resolved against.
+        self.vmm_tlb.fill(VmmTlbEntry::EMPTY);
+    }
+
+    #[inline]
+    fn tlb_index(page_base: u64) -> usize {
+        ((page_base >> PAGE_SHIFT) as usize) & VMM_TLB_MASK
+    }
+
+    #[inline]
+    fn tlb_lookup(&self, page_base: u64) -> Option<(usize, u32, u32)> {
+        let tag = page_base >> PAGE_SHIFT;
+        let entry = &self.vmm_tlb[Self::tlb_index(page_base)];
+        (entry.host_offset != 0 && entry.tag == tag && entry.layout_epoch == self.layout_epoch)
+            .then_some((entry.host_offset, entry.state, entry.protect))
+    }
+
+    #[inline]
     fn bump_gen(&mut self) -> u64 {
         self.access_gen = self.access_gen.wrapping_add(1);
         self.access_gen
@@ -362,7 +411,7 @@ impl VirtualMemoryManager {
         mem_type: u32,
         pinned: bool,
     ) {
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.bump_layout_epoch();
         let aligned_base = Self::align_down(base);
         let end = Self::align_up(base.saturating_add(size));
         let aligned_size = end.saturating_sub(aligned_base).max(PAGE_SIZE as u64);
@@ -382,12 +431,12 @@ impl VirtualMemoryManager {
             let mut page = aligned_base;
             while page < aligned_base + aligned_size {
                 let gen = self.bump_gen();
-                let entry = self.page_cache.entry(page).or_insert_with(|| PageEntry {
+                let entry = self.page_cache.entry(page).or_insert_with(|| Box::new(PageEntry {
                     data: vec![0u8; PAGE_SIZE],
                     dirty: false,
                     pinned: true,
                     last_used_gen: gen,
-                });
+                }));
                 entry.pinned = true;
                 entry.last_used_gen = gen;
                 page += PAGE_SIZE as u64;
@@ -402,7 +451,7 @@ impl VirtualMemoryManager {
         alloc_type: u32,
         protect: u32,
     ) -> u64 {
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.bump_layout_epoch();
         if size == 0 {
             return 0;
         }
@@ -508,7 +557,7 @@ impl VirtualMemoryManager {
     }
 
     pub fn virtual_free(&mut self, addr: u64, size: u64, free_type: u32) -> bool {
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.bump_layout_epoch();
         let aligned = Self::align_down(addr);
         if (free_type & MEM_RELEASE) != 0 {
             if size != 0 {
@@ -553,7 +602,7 @@ impl VirtualMemoryManager {
 
     pub fn virtual_protect(&mut self, addr: u64, size: u64, new_protect: u32) -> Option<u32> {
         if size == 0 { return None; }
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.bump_layout_epoch();
         let lo = Self::align_down(addr);
         let hi = Self::align_up(addr.saturating_add(size));
         let reg = self.find_region(lo)?.clone();
@@ -592,22 +641,26 @@ impl VirtualMemoryManager {
         None
     }
 
-    fn check_committed(&self, page_base: u64, is_write: bool) -> Result<(), MemoryTrap> {
-        if let Some(reg) = self.find_region(page_base) {
-            let base_protect = reg.protect & !(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
-            if (reg.state & MEM_COMMIT) == 0 || base_protect == PAGE_NOACCESS {
-                return Err(MemoryTrap::AccessViolation(page_base));
-            }
-            if is_write
-                && (base_protect == PAGE_READONLY || base_protect == PAGE_EXECUTE_READ || base_protect == PAGE_EXECUTE)
-            {
-                // Allow HLE/loader writes via host_write_bytes; guest writes respect protection
-                return Err(MemoryTrap::AccessViolation(page_base));
-            }
-            Ok(())
-        } else {
-            Err(MemoryTrap::AccessViolation(page_base))
+    #[inline]
+    fn check_committed_flags(page_base: u64, state: u32, protect: u32, is_write: bool) -> Result<(), MemoryTrap> {
+        let base_protect = protect & !(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
+        if (state & MEM_COMMIT) == 0 || base_protect == PAGE_NOACCESS {
+            return Err(MemoryTrap::AccessViolation(page_base));
         }
+        if is_write
+            && (base_protect == PAGE_READONLY || base_protect == PAGE_EXECUTE_READ || base_protect == PAGE_EXECUTE)
+        {
+            // Allow HLE/loader writes via host_write_bytes; guest writes respect protection.
+            return Err(MemoryTrap::AccessViolation(page_base));
+        }
+        Ok(())
+    }
+
+    fn check_committed(&self, page_base: u64, is_write: bool) -> Result<(), MemoryTrap> {
+        let Some(reg) = self.find_region(page_base) else {
+            return Err(MemoryTrap::AccessViolation(page_base));
+        };
+        Self::check_committed_flags(page_base, reg.state, reg.protect, is_write)
     }
 
     /// Consume a one-shot PAGE_GUARD bit on guest access. Loader/HLE host writes do not
@@ -665,8 +718,9 @@ impl VirtualMemoryManager {
         let Some(victim_base) = oldest_key else {
             return;
         };
+        // Invalidate cached offsets before dropping the boxed page descriptor.
+        self.bump_layout_epoch();
         if let Some(victim) = self.page_cache.remove(&victim_base) {
-            self.layout_epoch = self.layout_epoch.wrapping_add(1);
             self.pages_evicted += 1;
             self.swapped_out_pages.insert(victim_base);
             if victim.dirty {
@@ -697,6 +751,28 @@ impl VirtualMemoryManager {
         enforce_protect: bool,
         protected_peer: Option<u64>,
     ) -> Result<&mut [u8], MemoryTrap> {
+        let page_base = Self::align_down(page_base);
+        if let Some((host_offset, state, protect)) = self.tlb_lookup(page_base) {
+            if enforce_protect {
+                Self::check_committed_flags(page_base, state, protect, mark_dirty)?;
+                if protect & PAGE_GUARD != 0 {
+                    self.check_guard(page_base)?;
+                }
+            }
+            let gen = self.bump_gen();
+            if mark_dirty {
+                self.bump_write_epoch(page_base);
+            }
+            // SAFETY: TLB offsets point into Box<PageEntry> allocations. Every removal or
+            // replacement invalidates the TLB first, and &mut self serializes all accesses.
+            let entry = unsafe { &mut *(host_offset as *mut PageEntry) };
+            entry.last_used_gen = gen;
+            if mark_dirty {
+                entry.dirty = true;
+            }
+            return Ok(&mut entry.data);
+        }
+
         if enforce_protect {
             self.check_committed(page_base, mark_dirty)?;
             self.check_guard(page_base)?;
@@ -711,22 +787,30 @@ impl VirtualMemoryManager {
             let gen2 = self.bump_gen();
             self.page_cache.insert(
                 page_base,
-                PageEntry {
+                Box::new(PageEntry {
                     data: vec![0u8; PAGE_SIZE],
                     dirty: mark_dirty,
                     pinned: false,
                     last_used_gen: gen2,
-                },
+                }),
             );
         }
         if mark_dirty {
             self.bump_write_epoch(page_base);
         }
+        let (state, protect) = self.find_region(page_base)
+            .map(|region| (region.state, region.protect))
+            .unwrap_or((0, 0));
+        let layout_epoch = self.layout_epoch;
+        let slot = Self::tlb_index(page_base);
+        let tag = page_base >> PAGE_SHIFT;
         let entry = self.page_cache.get_mut(&page_base).unwrap();
         entry.last_used_gen = gen;
         if mark_dirty {
             entry.dirty = true;
         }
+        let host_offset = (&mut **entry as *mut PageEntry) as usize;
+        self.vmm_tlb[slot] = VmmTlbEntry { tag, host_offset, layout_epoch, state, protect };
         Ok(&mut entry.data)
     }
 
@@ -798,12 +882,12 @@ impl VirtualMemoryManager {
         }
         let gen = self.bump_gen();
         self.bump_write_epoch(page_base);
-        let entry = self.page_cache.entry(page_base).or_insert_with(|| PageEntry {
+        let entry = self.page_cache.entry(page_base).or_insert_with(|| Box::new(PageEntry {
             data: vec![0u8; PAGE_SIZE],
             dirty: true,
             pinned: false,
             last_used_gen: gen,
-        });
+        }));
         entry.data.copy_from_slice(&data);
         entry.dirty = true;
         entry.last_used_gen = gen;
@@ -812,7 +896,7 @@ impl VirtualMemoryManager {
 
     /// Supplies a 4 KB page fetched asynchronously from the NVMe swap shard after `MemoryTrap::PageFault`.
     pub fn supply_faulted_page(&mut self, addr: u64, data: &[u8]) {
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.bump_layout_epoch();
         let page_base = Self::align_down(addr);
         self.swapped_out_pages.remove(&page_base);
         if !self.page_cache.contains_key(&page_base) {
@@ -824,12 +908,12 @@ impl VirtualMemoryManager {
         page_vec[..copy_len].copy_from_slice(&data[..copy_len]);
         self.page_cache.insert(
             page_base,
-            PageEntry {
+            Box::new(PageEntry {
                 data: page_vec,
                 dirty: false,
                 pinned: false,
                 last_used_gen: gen,
-            },
+            }),
         );
         self.pages_faulted_in += 1;
     }
@@ -1323,5 +1407,37 @@ mod tests {
         assert!(vmm.write_u64(base + PAGE_SIZE as u64, 0x1234).is_ok());
         assert!(vmm.write_u64(base, 0x1234).is_err());
         assert_ne!(vmm.page_write_epoch(base + PAGE_SIZE as u64), epoch_before);
+    }
+
+    #[test]
+    fn direct_mapped_tlb_checks_tags_and_invalidates_on_protect_and_unmap() {
+        let mut vmm = VirtualMemoryManager::new(64);
+        let base = 0x1_0000u64;
+        let alias = base + VMM_TLB_ENTRIES as u64 * PAGE_SIZE as u64;
+        vmm.map_region(base, PAGE_SIZE as u64, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+        vmm.map_region(alias, PAGE_SIZE as u64, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+
+        vmm.write_u8(base, 0x11).unwrap();
+        vmm.write_u8(alias, 0x22).unwrap();
+        assert_eq!(vmm.read_u8(base).unwrap(), 0x11);
+        assert_eq!(vmm.read_u8(alias).unwrap(), 0x22);
+
+        assert_eq!(vmm.virtual_protect(alias, PAGE_SIZE as u64, PAGE_READONLY), Some(PAGE_READWRITE));
+        assert_eq!(vmm.write_u8(alias, 0x33), Err(MemoryTrap::AccessViolation(alias)));
+        assert_eq!(vmm.read_u8(alias).unwrap(), 0x22);
+
+        assert_eq!(vmm.virtual_protect(alias, PAGE_SIZE as u64, PAGE_READWRITE | PAGE_GUARD), Some(PAGE_READONLY));
+        let mut host_byte = [0u8; 1];
+        vmm.host_read_bytes(alias, &mut host_byte).unwrap();
+        assert_eq!(host_byte, [0x22]);
+        assert_eq!(vmm.read_u8(alias), Err(MemoryTrap::GuardPage(alias)));
+        assert!(!vmm.has_guard(alias));
+        assert_eq!(vmm.read_u8(alias).unwrap(), 0x22);
+
+        assert!(vmm.virtual_free(base, 0, MEM_RELEASE));
+        assert_eq!(vmm.read_u8(base), Err(MemoryTrap::AccessViolation(base)));
+        vmm.map_region(base, PAGE_SIZE as u64, PAGE_READWRITE, MEM_COMMIT, MEM_PRIVATE, false);
+        vmm.write_u8(base, 0x44).unwrap();
+        assert_eq!(vmm.read_u8(base).unwrap(), 0x44);
     }
 }
